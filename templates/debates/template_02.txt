@@ -1,0 +1,169 @@
+DEBATE TEMPLATE 02
+
+PURPOSE
+This template is designed for debates that should sound more dynamic, more interruptible, and more conversational than template_01 while still remaining easy to parse with Python.
+
+IMPORTANT FOR DEEPSEEK
+- Populate this template one segment at a time.
+- Keep all field names and delimiter lines exactly as written.
+- Do not rename keys.
+- Do not remove required fields.
+- Use NONE when a field does not apply.
+- Every segment must repeat the required debate metadata.
+- The same debate must keep the same TEMPLATE_ID, DEBATE_ID, and DEBATE_TITLE across all segments.
+- SEGMENT_ORDER must increase by 1 for each new segment of the same debate.
+- GLOBAL_EVENT_ORDER must continue increasing across all segments of the same debate.
+- This template allows fragments, interruptions, reactions, and overlapping delivery.
+- If an event is cut off, use COMPLETION_STATUS: cut_off or fragment as appropriate.
+- If an event overlaps the previous event, set OVERLAP_WITH_PREVIOUS: YES.
+- If an event interrupts the previous event, set INTERRUPTS_PREVIOUS: YES.
+- If there is no moderator, set MODERATOR_MODE to NONE.
+- If there is no audience, set AUDIENCE_PRESENT to NO and AUDIENCE_PARTICIPATION to NONE.
+- If the audience is present but silent, set AUDIENCE_PRESENT to YES and AUDIENCE_PARTICIPATION to NO.
+- This output will be parsed and merged later, so structural consistency is required.
+
+FORMAT RULES
+- Use the exact start and end markers shown below.
+- Do not add markdown.
+- Keep values on one line.
+- Use semicolons for list-style values.
+- Allowed EVENT_KIND values: speech; interruption; reaction; moderation; stage_direction
+- Allowed TONE_SHIFT values: neutral; calm; firm; passionate; skeptical; reflective; urgent; confrontational; respectful; analytical; playful; solemn; escalating; deflective
+- Allowed VOLUME values: soft; moderate; loud; rising; falling
+- Allowed PACE values: slow; medium; fast; accelerating; decelerating
+- Allowed PAUSE values: none; short; medium; long
+- Allowed COMPLETION_STATUS values: complete; cut_off; fragment; trailing; handoff
+
+HOW TO USE THIS TEMPLATE
+1. Copy the full segment template for each generated piece.
+2. Fill in all metadata before adding events.
+3. Add one or more EVENT blocks.
+4. Keep GLOBAL_EVENT_ORDER increasing across the full debate.
+5. Set IS_FINAL_SEGMENT to YES only on the final segment.
+6. Use CARRY_FORWARD to tell the next generation pass what to continue.
+
+SEGMENT TEMPLATE START
+=== DEBATE_SEQUENCE_START ===
+TEMPLATE_ID: template_02
+DEBATE_ID: <stable_unique_id_for_this_debate>
+DEBATE_TITLE: <title_of_the_debate>
+DEBATE_TOPIC: <short_topic_summary>
+DEBATE_STYLE: <dynamic; interruptible; conversational; crossfire; panel>
+SEGMENT_ORDER: <integer_starting_at_1>
+IS_FINAL_SEGMENT: <YES_or_NO>
+SETTING: <brief_setting_description_or_NONE>
+MODERATOR_MODE: <NONE_or_SINGLE_or_PANEL>
+MODERATOR_NAMES: <name1; name2; name3_or_NONE>
+AUDIENCE_PRESENT: <YES_or_NO>
+AUDIENCE_PARTICIPATION: <YES_or_NO_or_NONE>
+PARTICIPANT_NAMES: <participant1; participant2; participant3>
+PARTICIPANT_COUNT: <integer_2_or_greater>
+CARRY_FORWARD: <brief continuity note for the next segment_or_NONE>
+
++++ EVENT START +++
+GLOBAL_EVENT_ORDER: <integer>
+SEGMENT_EVENT_ORDER: <integer_starting_at_1_within_this_segment>
+EVENT_KIND: <speech; interruption; reaction; moderation; stage_direction>
+SPEAKER_ROLE: <participant_or_moderator_or_audience>
+SPEAKER_NAME: <speaker_name>
+ADDRESSEE: <opponent; moderator; audience; all; specific_name; NONE>
+TONE_SHIFT: <allowed_tone_value_or_semicolon_separated_values>
+VOLUME: <allowed_volume_value>
+PACE: <allowed_pace_value>
+PAUSE_BEFORE: <allowed_pause_value>
+PAUSE_AFTER: <allowed_pause_value>
+OVERLAP_WITH_PREVIOUS: <YES_or_NO>
+INTERRUPTS_PREVIOUS: <YES_or_NO>
+COMPLETION_STATUS: <complete; cut_off; fragment; trailing; handoff>
+NONVERBAL: <laughter; sigh; applause; booing; crosstalk; silence; gasp; NONE>
+TEXT: <spoken text_or_NONE>
++++ EVENT END +++
+
++++ EVENT START +++
+GLOBAL_EVENT_ORDER: <integer>
+SEGMENT_EVENT_ORDER: <integer>
+EVENT_KIND: <speech; interruption; reaction; moderation; stage_direction>
+SPEAKER_ROLE: <participant_or_moderator_or_audience>
+SPEAKER_NAME: <speaker_name>
+ADDRESSEE: <opponent; moderator; audience; all; specific_name; NONE>
+TONE_SHIFT: <allowed_tone_value_or_semicolon_separated_values>
+VOLUME: <allowed_volume_value>
+PACE: <allowed_pace_value>
+PAUSE_BEFORE: <allowed_pause_value>
+PAUSE_AFTER: <allowed_pause_value>
+OVERLAP_WITH_PREVIOUS: <YES_or_NO>
+INTERRUPTS_PREVIOUS: <YES_or_NO>
+COMPLETION_STATUS: <complete; cut_off; fragment; trailing; handoff>
+NONVERBAL: <laughter; sigh; applause; booing; crosstalk; silence; gasp; NONE>
+TEXT: <spoken text_or_NONE>
++++ EVENT END +++
+
+=== DEBATE_SEQUENCE_END ===
+SEGMENT TEMPLATE END
+
+OPTIONAL GUIDANCE
+- Use EVENT_KIND: reaction for audible reactions such as laughter, applause, boos, or collective surprise.
+- Use EVENT_KIND: stage_direction for non-spoken ambience or scene-level actions.
+- Use EVENT_KIND: interruption when a speaker cuts in before another speaker has fully finished.
+- Use EVENT_KIND: moderation for moderator rule-setting, time warnings, or redirection.
+- TEXT may be NONE for pure reaction or stage_direction events.
+
+EXAMPLE SKELETON
+=== DEBATE_SEQUENCE_START ===
+TEMPLATE_ID: template_02
+DEBATE_ID: debate_002
+DEBATE_TITLE: <fill_here>
+DEBATE_TOPIC: <fill_here>
+DEBATE_STYLE: crossfire
+SEGMENT_ORDER: 1
+IS_FINAL_SEGMENT: NO
+SETTING: <fill_here_or_NONE>
+MODERATOR_MODE: NONE
+MODERATOR_NAMES: NONE
+AUDIENCE_PRESENT: YES
+AUDIENCE_PARTICIPATION: YES
+PARTICIPANT_NAMES: <participant_a>; <participant_b>
+PARTICIPANT_COUNT: 2
+CARRY_FORWARD: <fill_here_or_NONE>
+
++++ EVENT START +++
+GLOBAL_EVENT_ORDER: 1
+SEGMENT_EVENT_ORDER: 1
+EVENT_KIND: speech
+SPEAKER_ROLE: participant
+SPEAKER_NAME: <fill_here>
+ADDRESSEE: all
+TONE_SHIFT: firm
+VOLUME: moderate
+PACE: medium
+PAUSE_BEFORE: none
+PAUSE_AFTER: short
+OVERLAP_WITH_PREVIOUS: NO
+INTERRUPTS_PREVIOUS: NO
+COMPLETION_STATUS: complete
+NONVERBAL: NONE
+TEXT: <opening statement>
++++ EVENT END +++
+
++++ EVENT START +++
+GLOBAL_EVENT_ORDER: 2
+SEGMENT_EVENT_ORDER: 2
+EVENT_KIND: interruption
+SPEAKER_ROLE: participant
+SPEAKER_NAME: <fill_here>
+ADDRESSEE: <other_participant>
+TONE_SHIFT: urgent; confrontational
+VOLUME: rising
+PACE: fast
+PAUSE_BEFORE: none
+PAUSE_AFTER: short
+OVERLAP_WITH_PREVIOUS: YES
+INTERRUPTS_PREVIOUS: YES
+COMPLETION_STATUS: fragment
+NONVERBAL: crosstalk
+TEXT: <brief interruption>
++++ EVENT END +++
+
+=== DEBATE_SEQUENCE_END ===
+
+END OF TEMPLATE

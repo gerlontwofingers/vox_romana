@@ -1,0 +1,179 @@
+DEBATE TEMPLATE 01
+
+PURPOSE
+This template is designed for a debate script that will be generated in pieces by an LLM, then parsed by Python, and later used in a speech-to-text exercise.
+
+IMPORTANT FOR DEEPSEEK
+- Populate this template one chunk at a time.
+- Keep the field names, section names, and delimiter lines exactly as written.
+- Do not rename keys.
+- Do not remove required fields.
+- Optional fields may be filled with NONE when not used.
+- Keep values on a single line unless a field explicitly allows multiple lines.
+- Preserve ordering fields exactly so multiple generated chunks can be sorted and merged later.
+- Every generated chunk must be self-contained and repeat the required debate metadata.
+- The same debate must keep the same DEBATE_ID and DEBATE_TITLE across all chunks.
+- CHUNK_ORDER must increase by 1 for each new chunk of the same debate.
+- GLOBAL_UTTERANCE_ORDER values must continue increasing across all chunks of the same debate.
+- Use natural spoken language in spoken text.
+- Delivery controls are allowed through the defined fields only.
+- If a moderator does not exist, set MODERATOR_MODE to NONE.
+- If there is no audience, set AUDIENCE_PRESENT to NO and use NONE for audience-related fields.
+- If there is an audience but it does not participate, set AUDIENCE_PRESENT to YES and AUDIENCE_PARTICIPATION to NO.
+- If audience participation is partial, only include participating audience utterances.
+- If there are multiple moderators, use PANEL in MODERATOR_MODE.
+- This output will be parsed later, so consistency is more important than creativity in formatting.
+
+FORMAT RULES
+- Use the exact start and end markers shown below.
+- Do not add extra markers.
+- Do not add markdown.
+- Do not wrap values in quotes unless the value itself requires quotes as spoken content.
+- Use commas inside a value only when natural. Do not use commas to represent structure.
+- Use semicolons in list-style fields.
+- Allowed values for TONE: neutral; calm; firm; passionate; skeptical; reflective; urgent; confrontational; respectful; analytical; playful; solemn
+- Allowed values for VOLUME: soft; moderate; loud; rising; falling
+- Allowed values for PACE: slow; medium; fast; accelerating; decelerating
+- Allowed values for PAUSE: none; short; medium; long
+- Allowed values for ROLE: participant; moderator; audience
+- If a value does not apply, write NONE.
+
+HOW TO USE THIS TEMPLATE
+1. Copy the full chunk template for each generated piece of the debate.
+2. Fill in all required metadata.
+3. Add one or more UTTERANCE blocks.
+4. Keep GLOBAL_UTTERANCE_ORDER increasing across the entire debate, not just within the current chunk.
+5. Set IS_FINAL_CHUNK to YES only on the final generated chunk for that debate.
+6. If continuing a previously started debate, retain all persistent debate-level fields and only advance the chunk and utterance order values.
+
+CHUNK TEMPLATE START
+=== DEBATE_CHUNK_START ===
+TEMPLATE_ID: template_01
+DEBATE_ID: <stable_unique_id_for_this_debate>
+DEBATE_TITLE: <title_of_the_debate>
+DEBATE_TOPIC: <short_topic_summary>
+DEBATE_FORMAT: <general_format_such_as_formal; town_hall; panel; classroom; public_forum>
+CHUNK_ORDER: <integer_starting_at_1>
+IS_FINAL_CHUNK: <YES_or_NO>
+SETTING: <brief_setting_description_or_NONE>
+MODERATOR_MODE: <NONE_or_SINGLE_or_PANEL>
+MODERATOR_NAMES: <name1; name2; name3_or_NONE>
+AUDIENCE_PRESENT: <YES_or_NO>
+AUDIENCE_PARTICIPATION: <YES_or_NO_or_NONE>
+PARTICIPANT_NAMES: <participant1; participant2; participant3>
+PARTICIPANT_COUNT: <integer_2_or_greater>
+NOTES_FOR_CONTINUITY: <brief continuity note for the next chunk_or_NONE>
+
+--- UTTERANCE START ---
+GLOBAL_UTTERANCE_ORDER: <integer>
+CHUNK_UTTERANCE_ORDER: <integer_starting_at_1_within_this_chunk>
+SPEAKER_ROLE: <participant_or_moderator_or_audience>
+SPEAKER_NAME: <speaker_name>
+TARGET: <opponent; moderator; audience; all; specific_name; NONE>
+TONE: <allowed_tone_value_or_semicolon_separated_values>
+VOLUME: <allowed_volume_value>
+PACE: <allowed_pace_value>
+PAUSE_BEFORE: <allowed_pause_value>
+PAUSE_AFTER: <allowed_pause_value>
+INTERRUPTION: <YES_or_NO>
+NONVERBAL: <laughter; sigh; applause; booing; crosstalk; silence; NONE>
+SPOKEN_TEXT: <the actual spoken line>
+--- UTTERANCE END ---
+
+--- UTTERANCE START ---
+GLOBAL_UTTERANCE_ORDER: <integer>
+CHUNK_UTTERANCE_ORDER: <integer>
+SPEAKER_ROLE: <participant_or_moderator_or_audience>
+SPEAKER_NAME: <speaker_name>
+TARGET: <opponent; moderator; audience; all; specific_name; NONE>
+TONE: <allowed_tone_value_or_semicolon_separated_values>
+VOLUME: <allowed_volume_value>
+PACE: <allowed_pace_value>
+PAUSE_BEFORE: <allowed_pause_value>
+PAUSE_AFTER: <allowed_pause_value>
+INTERRUPTION: <YES_or_NO>
+NONVERBAL: <laughter; sigh; applause; booing; crosstalk; silence; NONE>
+SPOKEN_TEXT: <the actual spoken line>
+--- UTTERANCE END ---
+
+=== DEBATE_CHUNK_END ===
+CHUNK TEMPLATE END
+
+MINIMUM REQUIREMENTS FOR EACH GENERATED CHUNK
+- At least 2 participants must exist in PARTICIPANT_NAMES.
+- At least 1 UTTERANCE block must be present.
+- DEBATE_TITLE and CHUNK_ORDER must always be present.
+- GLOBAL_UTTERANCE_ORDER must be unique within the same debate.
+- CHUNK_UTTERANCE_ORDER must restart at 1 for each chunk.
+- SPEAKER_NAME must match one of the known participants, moderators, or audience labels established for the debate.
+
+OPTIONAL AUDIENCE GUIDANCE
+- If the audience is present but silent, do not create audience utterances.
+- If the audience participates, use SPEAKER_ROLE: audience.
+- Audience speakers may be named as Audience Member 1, Audience Member 2, and so on.
+- Audience reactions without spoken words may still appear by setting SPOKEN_TEXT to NONE and using NONVERBAL.
+
+OPTIONAL MODERATOR GUIDANCE
+- A single moderator may open, redirect, clarify rules, or close.
+- A moderator panel may alternate speaking using separate utterance blocks.
+- If no moderator exists, participants may begin directly.
+
+CONTINUITY GUIDANCE FOR PIECEWISE GENERATION
+- Each chunk should read naturally on its own while still continuing the same debate.
+- NOTES_FOR_CONTINUITY should briefly describe what should happen next, such as who should respond, whether tension is rising, or whether the debate is nearing closing remarks.
+- If a chunk ends on an interruption or unresolved challenge, reflect that in NOTES_FOR_CONTINUITY.
+- If the debate is complete, set IS_FINAL_CHUNK to YES and NOTES_FOR_CONTINUITY to NONE.
+
+EXAMPLE SKELETON
+=== DEBATE_CHUNK_START ===
+TEMPLATE_ID: template_01
+DEBATE_ID: debate_001
+DEBATE_TITLE: <fill_here>
+DEBATE_TOPIC: <fill_here>
+DEBATE_FORMAT: public_forum
+CHUNK_ORDER: 1
+IS_FINAL_CHUNK: NO
+SETTING: <fill_here_or_NONE>
+MODERATOR_MODE: SINGLE
+MODERATOR_NAMES: <fill_here_or_NONE>
+AUDIENCE_PRESENT: YES
+AUDIENCE_PARTICIPATION: NO
+PARTICIPANT_NAMES: <participant_a>; <participant_b>
+PARTICIPANT_COUNT: 2
+NOTES_FOR_CONTINUITY: <fill_here_or_NONE>
+
+--- UTTERANCE START ---
+GLOBAL_UTTERANCE_ORDER: 1
+CHUNK_UTTERANCE_ORDER: 1
+SPEAKER_ROLE: moderator
+SPEAKER_NAME: <fill_here>
+TARGET: all
+TONE: neutral
+VOLUME: moderate
+PACE: medium
+PAUSE_BEFORE: none
+PAUSE_AFTER: short
+INTERRUPTION: NO
+NONVERBAL: NONE
+SPOKEN_TEXT: <opening statement or introduction>
+--- UTTERANCE END ---
+
+--- UTTERANCE START ---
+GLOBAL_UTTERANCE_ORDER: 2
+CHUNK_UTTERANCE_ORDER: 2
+SPEAKER_ROLE: participant
+SPEAKER_NAME: <fill_here>
+TARGET: all
+TONE: calm; analytical
+VOLUME: moderate
+PACE: medium
+PAUSE_BEFORE: short
+PAUSE_AFTER: short
+INTERRUPTION: NO
+NONVERBAL: NONE
+SPOKEN_TEXT: <first participant statement>
+--- UTTERANCE END ---
+
+=== DEBATE_CHUNK_END ===
+
+END OF TEMPLATE

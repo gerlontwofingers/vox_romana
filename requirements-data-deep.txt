@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Deep learning dependencies for vox_romana DataResearcher (OPTIONAL)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# HUMAN REVIEW: These are heavy packages for deep / advanced studies.
+# Only install if you need neural-network-based analysis (time series
+# forecasting with transformers, deep classification, embeddings, etc.).
+#
+# INSTALL:  pip install -r requirements-data-deep.txt
+# REQUIRES: requirements-data.txt must be installed first.
+# OPTIONAL: The DataResearcher works fine without these — it falls back
+#           to classical methods from requirements-data.txt.
+#
+# ⚠️  WARNING: PyTorch and TensorFlow are large (~2-5 GB each).
+#     Only install what you need.  The recipes that use them are
+#     clearly marked in vox_romana/data/recipes/.
+#
+# Python: 3.12.*
+# Pinned: 2026-04-05
+# ──────────────────────────────────────────────────────────────────────────
+
+# ── Deep learning frameworks (pick one or both) ─────────────────────────
+torch>=2.4,<2.6
+# tensorflow>=2.17,<2.18   # uncomment if needed; large install
+
+# ── Time series ─────────────────────────────────────────────────────────
+# neuralforecast>=1.7,<1.8  # uncomment for transformer-based forecasting
+
+# ── NLP / embeddings ────────────────────────────────────────────────────
+sentence-transformers>=3.0,<3.2
+transformers>=4.44,<4.46
+
+# ── Memory system (LoRA fine-tuning + dataset loading) ──────────────────
+peft>=0.12,<0.14
+datasets>=3.0,<3.2
