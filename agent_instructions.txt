@@ -1,0 +1,97 @@
+Agent Instructions — Implementer Handoff
+Date: April 18, 2026
+
+1. Conversation Overview
+- Primary Objectives:
+  - Add a non-interactive Editor agent that reviews generated "chunks" (show/segment/round/chapter), enforces user intent, and requests targeted regeneration (cap retries = 3).
+  - Create a rehearsal flow: full show run without editor, Editor reviews rehearsal, then up to 3 live attempts guided by Editor feedback.
+  - Persist rubric, editor reviews, and agent notes into studio memory for auditability and learning.
+- Session Context:
+  - Started with model-choice questions, moved into codebase inspection, prompt review, diagnosis of repetitive output, then design of Editor/conductor interplay and memory/rubric policies. The assistant used repository reads and persistent memory writes to iterate designs, producing an intention-first handoff for implementers.
+- User Intent Evolution:
+  - From "which LLM to use" → "inspect project" → "why outputs are flat" → "design Editor + rehearsal + chunking" → "intention-first handoff and agent-notes policy."
+
+2. Technical Foundation
+- Core Technology:
+  - Python project `vox_romana` with modular show pipelines (debates, news), DeepSeek LLM client for chat, optional Google Custom Search integration.
+- Search/Research:
+  - Researcher agent uses pluggable search providers; DeepSeek is the default LLM client, Google CSE optional with API keys.
+- Architectural Patterns:
+  - Bootstrap (architect/profile/director) → Conductor (runtime) → Editor (proposed reviewer) → TTS rendering; per-agent local notes + conductor gatekeeping.
+
+3. Codebase Status
+- Files examined (high-level):
+  - `prompts/*` — multiple prompt templates read and reviewed.
+  - `vox_romana/core/search.py` — `GoogleSearchProvider` implementation and requirements.
+  - `vox_romana/core/client.py` — `DeepSeekClient`; `DEEPSEEK_API_KEY` present in `.env`.
+  - `run_news.py`, `run_debate.py`, `run_show.py` — CLI flows and `--research` handling; noted inconsistency in fallback behavior across runners.
+  - `shows/*` modules — bootstrap, researcher, conductor, director, parser, serializer files reviewed.
+- Persistent memory changes:
+  - Created and expanded `/memories/editor_todo.md` (detailed todo with acceptance criteria, privacy, telemetry).
+  - Updated persistent todo list entries to include rubric persistence and review memory tasks.
+
+4. Problem Resolution
+- Issues Encountered:
+  - Repetitive/flat outputs traced to prompt rigidity, low sampling variability, and lack of narrative-level review.
+  - Inconsistent `--research` fallback behavior across CLI entry points.
+- Solutions Implemented (design-level):
+  - Proposed Editor agent with rubric and rehearsal flow; chunking strategy; retry recipe capped at 3; wildcard novelty hints; per-agent notes with conductor gatekeeping.
+  - Persisted intent-level todos and policy documents in studio memory for implementers.
+
+5. Progress Tracking
+- Completed:
+  - Repository inspection, prompt reads and critique, high-level design produced, persistent todo and agent-notes policy written, intention-first implementer spec produced.
+- In progress / pending:
+  - Persist rubric file, create editor review memory folders & sample notes, formal JSON schema (handshake and rehearsal report), code implementation (explicitly deferred), telemetry dashboards, test harness.
+
+6. Active Work State
+- Current Focus:
+  - Finalizing intention-first artifacts for implementer: rehearsal-report template, Editor response spec, rubric sketch, and agent-notes policy (all delivered as drafts).
+- Recent Context:
+  - Assistant had just produced the agent-notes policy and implemented persistent todo updates; user asked for a structured conversation summary which this document captures.
+- Immediate Context:
+  - The next developer-facing deliverable (user-selected) would be a rehearsal-report template or persisted rubric; implementer to select which to prioritize.
+
+7. Recent Operations
+- Last Agent Commands (described generically):
+  - Directory listings to discover prompt files; content reads of multiple prompt files.
+  - Code reads of core modules (`search`, `client`, `bootstrap`, `researcher`, CLI scripts).
+  - Persistent memory creation and updates (editor todo list).
+  - Repository searches to locate classes and methods relevant to agents and research flow.
+- Tool Results Summary (truncated):
+  - Prompts: detailed scene and broadcast specs (length, tone, structure).
+  - `search.py`: `GoogleSearchProvider` requires `GOOGLE_API_KEY` and `GOOGLE_CSE_ID`; will raise errors if missing.
+  - `.env`: `DEEPSEEK_API_KEY` present; Google keys commented out (not configured).
+  - `DebateResearcher`: falls back to LLM compilation if no search provider; `NewsBootstrap` requires a search_provider for `auto_research=True` (observed inconsistency).
+  - Memory writes: `/memories/editor_todo.md` created and updated with acceptance criteria, privacy, telemetry, and other tasks.
+
+8. Continuation Plan
+- Immediate next artifacts available for the implementer (pick one):
+  - Rehearsal-report template (show-level fields + example).
+  - Editor submission/response JSON schema (handshake examples).
+  - Persisted rubric example for `/memories/editor_rubric.json`.
+- Priority: implementer to select which deliverable to prepare first; assistant can produce that intention-first artifact (no code) and record it in persistent memory if requested.
+
+Appendix: Notes & Constraints
+- Do not modify source code without an explicit instruction from the implementer.
+- Editor must be non-interactive; retry cap = 3; provide targeted remediation hints when rejecting/generated chunks.
+- Per-agent notes are private by default and summarized/sanitized by the Conductor before persistence.
+- DeepSeek is the default fact-checker; Google CSE is optional and requires env keys.
+- Speaker clarity & dialogue guidance:
+  - Problem: Historically, it can be difficult to tell which characters are speaking when only text is available. In audio/visual media, speaker changes are made obvious with audio cues, camera cuts, or visual labels; plain text can lose that clarity.
+  - Recommendation for agents: Prefer explicit speaker identification in generated chunks. When dialogue is ambiguous, insert one of:
+    - Short speaker tags (e.g., "Alex:", "Host:") at the start of lines.
+    - Brief scene direction or stingers (e.g., "Announcer (V.O.):", "Cut to the field reporter:") between chunks.
+    - Bracketed actions or audio cues (e.g., "[music swells]", "[door slams]") to signal transitions.
+  - Radio-style inspiration: Use conventions from old radio broadcasting — announcer lead-ins, clear speaker cues, and short sonic markers — to make speaker turns unambiguous in audio renderers and for later TTS alignment.
+  - Editor behavior: When reviewing dialog chunks, prefer adding or requesting explicit speaker labels or scene cues rather than merging ambiguous lines. If a chunk lacks clear speaker turns, mark it as "requires speaker disambiguation" and suggest concrete insertions.
+ - Director outline & cast awareness:
+   - Role: The `Director` agent maintains an evolving show outline derived from instructions given to the Director. The Director must make the current outline available to the entire cast.
+   - Outline propagation: Any time the outline is created or updated — including changes triggered by the Orchestrator or the Editor — the Director must broadcast a concise outline snapshot to all character agents, the Conductor, and Editor. The snapshot should include `outline_id`, `version`, `timestamp`, `summary`, and `changed_sections`.
+   - Outline structure: Represent the outline as an ordered array of `sections`, each with `id`, `title`, `expected_duration`, `key_beats`, `speaker_assignments`, and `acceptance_criteria`.
+   - Cast awareness: Character agents must check incoming outline snapshots and update their internal state to match assigned beats. If a character cannot comply, it must report a short `issue` message to the Director with proposed remediation text.
+   - Interaction with Editor/Orchestrator: When the Editor or Orchestrator requests changes (e.g., trimming, merging, inserting, reordering), Director updates the outline version and rebroadcasts to the cast. Editor reviews should reference the outline `version` they validated.
+   - Persistence and audit: The Conductor should persist outline snapshots in studio memory for rehearsal and audit trails.
+   - Implementation notes: Use idempotent JSON snapshots and version numbers. Keep messages small; favor `summary` for human readability and `sections` for machine validation.
+
+-- End of agent_instructions.txt
