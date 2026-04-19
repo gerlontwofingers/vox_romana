@@ -106,6 +106,26 @@ class NewsConductorResult(ConductorResult):
         if not isinstance(config, NewsConfig):
             raise TypeError(f"Expected a NewsConfig, got {type(config)}")
 
+        # Build voice casting from anchor and host profiles.
+        voice_casting: dict[str, str] = {}
+        voice_hints: dict[str, str] = {}
+        tts_styles: dict[str, str] = {}
+        for anchor in config.anchors:
+            if anchor.voice_gender:
+                voice_casting[anchor.name] = anchor.voice_gender
+            if anchor.voice_hint:
+                voice_hints[anchor.name] = anchor.voice_hint
+            if anchor.tts_style:
+                tts_styles[anchor.name] = anchor.tts_style
+        if config.show_host:
+            host = config.show_host
+            if host.voice_gender:
+                voice_casting[host.name] = host.voice_gender
+            if host.voice_hint:
+                voice_hints[host.name] = host.voice_hint
+            if host.tts_style:
+                tts_styles[host.name] = host.tts_style
+
         return MergedNewsShow(
             show_id=self.show_id,
             title=config.title or "Untitled News Show",
@@ -119,6 +139,9 @@ class NewsConductorResult(ConductorResult):
             topic=config.topic,
             tone=config.tone,
             segment_count=len(self.news_segments),
+            voice_casting=voice_casting,
+            voice_hints=voice_hints,
+            tts_styles=tts_styles,
         )
 
 

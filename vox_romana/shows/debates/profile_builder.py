@@ -75,6 +75,22 @@ of this character for text-to-speech voice assignment. Base this on who the \
 character IS, not how they argue. For real people and fictional characters, \
 use their canonical gender.",
 
+  "voice_hint": "string — a short natural-language casting note describing \
+the ideal SOUND of this character's voice. Think of it as the note a casting \
+director tapes to the audition sheet. Focus on vocal qualities: accent, age \
+range, energy, warmth, authority, texture. Examples: 'warm British baritone, \
+late 40s, professorial', 'young California surfer energy, upbeat', 'sharp \
+New York newsroom voice, 50s, no-nonsense'. This is NOT about what they say \
+— it's about how they SOUND.",
+
+  "tts_style": "string — a persistent text-to-speech style prefix that will \
+be prepended to EVERY utterance this character delivers. This instructs the \
+voice engine on ongoing delivery style. Keep it to 1-2 sentences. Examples: \
+'Speak with quiet authority and measured pacing, like a senior professor \
+delivering a keynote.', 'Deliver with punchy cable-news energy, slightly \
+breathless, like breaking news.'  This persists across all turns — it's the \
+character's baseline vocal personality, not a per-line emotion cue.",
+
   "voice_fingerprint": "string — how this person TALKS, not what they BELIEVE. \
 Rhetorical habits, sentence patterns, favorite phrases, verbal tics, \
 preferred sentence length, use of questions vs statements, formality level.",
@@ -237,6 +253,8 @@ class DebateProfileBuilder:
             side=stub.side,
             role=stub.role,
             voice_gender=data.get("voice_gender"),
+            voice_hint=data.get("voice_hint"),
+            tts_style=data.get("tts_style"),
             voice_fingerprint=data.get("voice_fingerprint"),
             behavioral_triggers=data.get("behavioral_triggers"),
             emotional_arc=data.get("emotional_arc"),

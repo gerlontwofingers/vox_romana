@@ -24,7 +24,16 @@ VOICE ASSIGNMENT:
     The renderer needs to decide which TTS voice plays each speaker.
     There are three modes:
 
-    AUTOMATIC + VOICE CASTING (default):
+    CATALOG-MATCHED (when voice_hints are present):
+        If the show JSON includes a "voice_hints" dict mapping speaker
+        names to natural-language casting notes (e.g. "warm British
+        baritone, late 40s, professorial"), the renderer uses the voice
+        catalog to find the best-matching voice for each speaker based
+        on tag overlap scoring. This ensures Frank doesn't sound like a
+        teenage girl. Voices are assigned uniquely — no two speakers
+        share a voice. Gender info from "voice_casting" is also used.
+
+    AUTOMATIC + VOICE CASTING (fallback when no hints):
         If the show JSON includes a "voice_casting" dict mapping speaker
         names to genders ("male"/"female"), the renderer picks from the
         appropriate voice pool. Voices are grouped by gender prefix:
@@ -37,6 +46,14 @@ VOICE ASSIGNMENT:
              "Dr. Robert Vance": VoiceConfig(voice_id="am_adam")}
 
         This gives you full control over who sounds like what.
+
+TTS STYLE:
+
+    If the show JSON includes a "tts_styles" dict mapping speaker names
+    to persistent style instructions (e.g. "Speak with quiet authority
+    and measured pacing"), these are prepended to every emotion hint for
+    that speaker. This gives each character a consistent vocal baseline
+    that persists across all their utterances.
 
 EMOTION TRANSLATION:
 
@@ -193,7 +210,9 @@ class TTSRenderer:
         # We need to know every speaker name that appears in events.
         speaker_names = self._extract_speakers(events)
         voice_casting = debate_data.get("voice_casting", {})
-        voice_map = self._build_voice_map(speaker_names, voice_casting)
+        voice_hints = debate_data.get("voice_hints", {})
+        tts_styles = debate_data.get("tts_styles", {})
+        voice_map = self._build_voice_map(speaker_names, voice_casting, voice_hints)
 
         if not quiet:
             print(f"  Voice assignments:")
@@ -222,7 +241,9 @@ class TTSRenderer:
             # ── Build the emotion hint from event metadata ────────
             # We combine tone, pace, volume, and nonverbal cues into
             # a single string that the engine can interpret.
-            emotion = self._build_emotion_hint(event)
+            # If a persistent tts_style is set for this speaker, it
+            # is prepended as a baseline delivery instruction.
+            emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
 
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))
@@ -354,27 +375,61 @@ class TTSRenderer:
         self,
         speaker_names: list[str],
         voice_casting: dict[str, str] | None = None,
+        voice_hints: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Build a speaker→voice_id mapping.
 
         Priority order:
         1. Manual voice_map (passed to TTSRenderer constructor).
-        2. Gender-aware assignment using voice_casting metadata from the
+        2. Catalog-matched voice using voice_hints metadata. If any
+           speaker has a voice_hint, the catalog's ``match_voices_for_cast``
+           assigns distinct voices based on hint tag overlap.
+        3. Gender-aware assignment using voice_casting metadata from the
            show JSON (maps speaker names to "male"/"female").
-        3. Round-robin through available voices (fallback).
+        4. Round-robin through available voices (fallback).
 
         Args:
             speaker_names:  Speaker names in order of first appearance.
             voice_casting:  Optional dict mapping speaker names to gender
                             strings ("male" or "female") from the show JSON.
+            voice_hints:    Optional dict mapping speaker names to natural-
+                            language casting notes for catalog matching.
 
         Returns:
             Dict mapping every speaker name to a voice_id string.
         """
         available = self._engine.available_voices()
         casting = voice_casting or {}
+        hints = voice_hints or {}
         result: dict[str, str] = {}
 
+        # ── Manual overrides first ────────────────────────────────────
+        for name in speaker_names:
+            if name in self._voice_map:
+                result[name] = self._voice_map[name].voice_id
+
+        # ── Catalog matching (when any speaker has a voice_hint) ──────
+        # Build a cast dict for unassigned speakers that have hints.
+        remaining = [n for n in speaker_names if n not in result]
+        if remaining and any(n in hints for n in remaining):
+            from .voice_catalog import match_voices_for_cast
+
+            cast_info: dict[str, dict] = {}
+            for name in remaining:
+                info: dict[str, str] = {}
+                if name in casting:
+                    info["gender"] = casting[name]
+                if name in hints:
+                    info["voice_hint"] = hints[name]
+                cast_info[name] = info
+
+            # Catalog assigns unique voices for the entire cast.
+            catalog_map = match_voices_for_cast(cast_info)
+            for name, voice_id in catalog_map.items():
+                if voice_id and name not in result:
+                    result[name] = voice_id
+
+        # ── Gender-only fallback for any still-unassigned speakers ────
         # Partition voices by gender using the Kokoro naming convention:
         #   af_* / bf_* = female voices
         #   am_* / bm_* = male voices
@@ -385,10 +440,9 @@ class TTSRenderer:
         fallback_idx = 0
 
         for name in speaker_names:
-            if name in self._voice_map:
-                # Manual assignment wins.
-                result[name] = self._voice_map[name].voice_id
-            elif name in casting and casting[name] == "female" and female_voices:
+            if name in result:
+                continue
+            if name in casting and casting[name] == "female" and female_voices:
                 result[name] = female_voices[female_idx % len(female_voices)]
                 female_idx += 1
             elif name in casting and casting[name] == "male" and male_voices:
@@ -414,21 +468,30 @@ class TTSRenderer:
         return voices[0] if voices else "default"
 
     @staticmethod
-    def _build_emotion_hint(event: dict) -> str:
-        """Translate DebateEvent metadata into a natural-language emotion hint.
+    def _build_emotion_hint(event: dict, tts_style: str | None = None) -> str:
+        """Translate event metadata into a natural-language emotion hint.
+
+        If a persistent ``tts_style`` is provided for the speaker, it is
+        prepended as a baseline delivery instruction. Per-event tone, pace,
+        volume, and nonverbal cues are appended after it.
 
         The engine receives this string and interprets it however it can.
         Kokoro and OpenAI TTS understand natural language instructions.
         Piper mostly ignores it. That's fine.
 
         Args:
-            event: A debate event dict.
+            event:     A show event dict.
+            tts_style: Optional persistent style prefix for this speaker.
 
         Returns:
             A human-readable emotion hint string, e.g.:
-            "aggressive, rising; pace: fast; volume: loud; gesturing emphatically"
+            "Speak with quiet authority. aggressive, rising; pace: fast"
         """
         parts: list[str] = []
+
+        # Persistent style prefix — the character's baseline vocal personality.
+        if tts_style:
+            parts.append(tts_style.rstrip(". ") + ".")
 
         # Add tone descriptors (e.g. "aggressive", "contemplative").
         tone = event.get("tone", [])

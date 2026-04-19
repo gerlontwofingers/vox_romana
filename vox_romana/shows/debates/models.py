@@ -75,6 +75,8 @@ class MergedDebate:
     continuity_notes: tuple[str, ...] = ()
     source_count: int = 0
     voice_casting: dict[str, str] = field(default_factory=dict)
+    voice_hints: dict[str, str] = field(default_factory=dict)
+    tts_styles: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,4 +98,6 @@ class MergedDebate:
             "continuity_notes": list(self.continuity_notes),
             "source_count": self.source_count,
             "voice_casting": self.voice_casting,
+            "voice_hints": self.voice_hints,
+            "tts_styles": self.tts_styles,
         }

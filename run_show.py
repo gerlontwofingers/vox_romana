@@ -1,33 +1,112 @@
 #!/usr/bin/env python3
 """vox_romana CLI — generate any show type from a prompt file.
 
-Unified entry point. Hand it a brief and it figures out the rest:
+Unified entry point that replaces run_debate.py and run_news.py with a
+single command. Hand it a brief and the system figures out the rest:
 
-    prompt file → router (classify) → bootstrap → conductor → JSON output
+    prompt file → router → bootstrap → conductor → editor → JSON output
 
-The router reads your brief and decides whether it's a debate, a news
-show, or (eventually) something else. Then it dispatches to the right
-pipeline. You never need to choose between run_debate.py and run_news.py.
+THE BROADCAST PRODUCTION ANALOGY:
+
+    Think of vox_romana as a television network's production pipeline:
+
+    1. YOUR PROMPT FILE is the show pitch. You walk into the network
+       office, drop a one-pager on the desk, and say "make this."
+       Natural language. No special format. Just describe the show.
+
+    2. THE ROUTER is the programming scheduler. It reads your pitch and
+       decides which studio floor should produce it — Studio A (debates)
+       or Studio B (news). If the pitch is ambiguous, you can force the
+       assignment with --type. The scheduler also flags whether the show
+       needs a research team (fact-checking, web lookups).
+
+    3. THE BOOTSTRAP is pre-production. A team of AI agents reads your
+       pitch and does all the planning you didn't explicitly specify:
+       casting (who speaks), profiling (their personalities), directing
+       (the dramatic arc), and runsheet planning (segment order, beats).
+       You control as much or as little as you want — leave things out
+       and the team fills in smart defaults.
+
+    4. THE CONDUCTOR is the live recording. Each agent takes their turn
+       at the mic, the moderator/anchor keeps things moving, and the
+       director checks in periodically for pacing adjustments.
+
+    5. THE EDITOR is the quality control booth. After each chunk of
+       content is generated, the editor reviews it for speaker clarity,
+       repetition, and narrative quality. If a chunk fails review, the
+       conductor regenerates it with detailed feedback — up to
+       --max-retries times. This is the new editing pipeline from the
+       design spec (see agent_instructions.txt sections E-F).
+
+    6. THE JSON OUTPUT is the final cut — ready for the sound booth
+       (render_show.py) to produce audio.
 
 USAGE:
-    # Just point at a prompt file — the router figures out the rest:
+
+    # The simplest case — the router auto-detects show type:
     python run_show.py prompts/ubi_debate.txt
     python run_show.py prompts/tech_news.txt
 
-    # Force a show type (skip the router):
-    python run_show.py prompts/ambiguous.txt --type debate
-    python run_show.py prompts/ambiguous.txt --type news
+    # Force a show type (bypass the router):
+    python run_show.py prompts/ambiguous_topic.txt --type debate
+    python run_show.py prompts/ambiguous_topic.txt --type news
 
-    # With research, tags, overrides:
-    python run_show.py prompts/ubi_debate.txt --research --tag batch_01
-    python run_show.py prompts/tech_news.txt --segments 6 --tone urgent
+    # Enable web research (Google if keys are set, LLM fallback otherwise):
+    python run_show.py prompts/ubi_debate.txt --research
+    python run_show.py prompts/tech_news.txt --research
 
-    # Quiet mode:
+    # Explicitly disable research even if the router recommends it:
+    python run_show.py prompts/ubi_debate.txt --no-research
+
+    # Override parameters that the Architect would normally decide:
+    python run_show.py prompts/ubi_debate.txt --turns 50 --tone "cable news"
+    python run_show.py prompts/tech_news.txt --segments 6 --tone "urgent"
+
+    # Control the editing pipeline:
+    python run_show.py prompts/ubi_debate.txt --max-retries 5
+    python run_show.py prompts/quick_test.txt --max-retries 0
+
+    # Tag outputs for batch management:
+    python run_show.py prompts/ubi_debate.txt --tag batch_01
+    python run_show.py prompts/ubi_debate.txt --tag experiment_high_temp
+
+    # Quiet mode (just the output path — ideal for scripting):
     python run_show.py prompts/ubi_debate.txt --quiet
 
+    # Combine freely:
+    python run_show.py prompts/ubi_debate.txt \
+        --research --turns 50 --tone "unhinged" --tag v3 --max-retries 4
+
+    # Pipe into the renderer for a complete text-to-speech pipeline:
+    python run_show.py prompts/ubi_debate.txt --quiet | xargs python render_show.py
+
 PROMPT FILE FORMAT:
-    Plain text. No special syntax. Describe what you want in natural
-    language. The router + architect will handle everything.
+
+    Plain text. No special syntax. No YAML, no JSON, no tags.
+    Just describe the show you want, like you're pitching it to a
+    producer. The router and architect will handle everything.
+
+    Example (debate):
+        Four economists debate UBI in an Oxford-style format.
+        Two pro, two con. Aggressive moderator who interrupts.
+        50 turns. Cable news energy but with real data.
+
+    Example (news):
+        Top 5 AI stories this week. Cover the major model releases,
+        regulatory developments, and one human interest story.
+        Authoritative but accessible. Think NPR meets tech podcast.
+
+    The more detail you put in, the more control you have. The less
+    detail, the more creative freedom the AI gets. Both are valid.
+
+ENVIRONMENT:
+    Requires DEEPSEEK_API_KEY in .env (or exported in shell).
+    Optional: GOOGLE_API_KEY + GOOGLE_CSE_ID for --research mode.
+
+OUTPUT:
+    Saves a JSON file to the output directory. The filename encodes
+    the prompt stem, optional tag, and a timestamp:
+        {prompt_stem}_{tag}_{YYYYMMDD_HHMMSS}.json
 """
 
 from __future__ import annotations
@@ -45,16 +124,46 @@ from vox_romana.core.router import ShowRouter
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    The only REQUIRED argument is the path to a prompt file. Everything
+    else is optional — the system infers what it needs from the brief.
+
+    Override flags (--turns, --tone, --segments, etc.) are applied AFTER
+    the Architect reads your prompt. Think of them as last-minute notes
+    slipped to the production team: "Actually, make it 50 turns."
+
+    Args:
+        argv: Arguments to parse. Defaults to sys.argv[1:] if None.
+
+    Returns:
+        Parsed namespace with all options.
+    """
     parser = argparse.ArgumentParser(
         prog="run_show",
         description="Generate a show (debate, news, etc.) from a prompt file.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
+            "  # Auto-detect show type from the brief:\n"
             "  python run_show.py prompts/ubi_debate.txt\n"
-            "  python run_show.py prompts/tech_news.txt --research\n"
+            "  python run_show.py prompts/tech_news.txt\n"
+            "\n"
+            "  # Force show type:\n"
             "  python run_show.py prompts/ambiguous.txt --type debate\n"
-            "  python run_show.py prompts/topic.txt --tag v2 --quiet\n"
+            "\n"
+            "  # With research and overrides:\n"
+            "  python run_show.py prompts/ubi_debate.txt --research --turns 50\n"
+            "  python run_show.py prompts/tech_news.txt --segments 6 --tone urgent\n"
+            "\n"
+            "  # Control editor retry behavior:\n"
+            "  python run_show.py prompts/ubi_debate.txt --max-retries 5\n"
+            "\n"
+            "  # Tag for batch management:\n"
+            "  python run_show.py prompts/ubi_debate.txt --tag batch_01 --quiet\n"
+            "\n"
+            "  # Pipe directly into the renderer:\n"
+            "  python run_show.py prompts/ubi_debate.txt --quiet | xargs python render_show.py\n"
         ),
     )
 
@@ -110,34 +219,57 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     # ── Debate-specific overrides ────────────────────────────────────
+    # These only matter when the show type is "debate". Ignored for news.
     debate_group = parser.add_argument_group("debate overrides")
     debate_group.add_argument(
         "--turns",
         type=int,
         default=None,
-        help="Override target debate turns.",
+        help="Override target debate turns (default: ~35).",
     )
     debate_group.add_argument(
         "--tone",
         type=str,
         default=None,
-        help="Override tone (works for both debates and news).",
+        help=(
+            "Override tone (works for both debates and news). "
+            "Examples: 'academic', 'cable news', 'conversational', 'urgent'."
+        ),
     )
     debate_group.add_argument(
         "--format",
         type=str,
         default=None,
         dest="debate_format",
-        help="Override debate format (e.g. 'oxford', 'crossfire').",
+        help="Override debate format (e.g. 'oxford', 'crossfire', 'public_forum').",
     )
 
     # ── News-specific overrides ──────────────────────────────────────
+    # These only matter when the show type is "news". Ignored for debates.
     news_group = parser.add_argument_group("news overrides")
     news_group.add_argument(
         "--segments",
         type=int,
         default=None,
-        help="Override number of news segments.",
+        help="Override number of news segments (default: ~5).",
+    )
+
+    # ── Editing pipeline ─────────────────────────────────────────────
+    # The editor reviews each generated chunk and can request retakes.
+    # max_retries controls how persistent the editor is. Setting it to 0
+    # effectively skips editor review (useful for quick drafts).
+    editing_group = parser.add_argument_group("editing pipeline")
+    editing_group.add_argument(
+        "--max-retries",
+        type=int,
+        default=None,
+        dest="max_retries",
+        help=(
+            "Max editor retry attempts per chunk (default: 3). "
+            "The editor reviews each chunk for quality (speaker clarity, "
+            "repetition, narrative coherence). Failed chunks are regenerated "
+            "with detailed feedback. Set to 0 for no editor review."
+        ),
     )
 
     return parser.parse_args(argv)
@@ -149,11 +281,28 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
-    """Run the debate pipeline, return the output path."""
+    """Run the debate pipeline, return the output path.
+
+    This is the debate studio floor. The brief has already been classified
+    by the router — this function handles everything from pre-production
+    (bootstrap) through recording (conductor) to final cut (serializer).
+
+    Args:
+        brief:  The full text of the user's prompt file.
+        client: Shared DeepSeek API client.
+        args:   Parsed CLI arguments (overrides, research, tag, etc.).
+
+    Returns:
+        Path to the saved JSON output file.
+    """
     from vox_romana.shows.debates.bootstrap import DebateBootstrap
     from vox_romana.shows.debates.conductor import DebateConductor
     from vox_romana.shows.debates.serializer import DebateSerializer
 
+    # ── Build overrides from CLI flags ───────────────────────────────
+    # These stomp whatever the Architect decided. If the user said
+    # --turns 50, that's what they get, regardless of what the AI
+    # thought was appropriate.
     overrides = {}
     if args.turns is not None:
         overrides["target_turns"] = args.turns
@@ -161,6 +310,8 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides["tone"] = args.tone
     if args.debate_format is not None:
         overrides["debate_format"] = args.debate_format
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Phase 2: Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
@@ -222,16 +373,31 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
 
 
 def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
-    """Run the news pipeline, return the output path."""
+    """Run the news pipeline, return the output path.
+
+    Same structure as _run_debate but dispatches to the news studio:
+    bootstrap → conductor → serializer, with news-specific config.
+
+    Args:
+        brief:  The full text of the user's prompt file.
+        client: Shared DeepSeek API client.
+        args:   Parsed CLI arguments (overrides, research, tag, etc.).
+
+    Returns:
+        Path to the saved JSON output file.
+    """
     from vox_romana.shows.news.bootstrap import NewsBootstrap
     from vox_romana.shows.news.conductor import NewsConductor
     from vox_romana.shows.news.serializer import NewsSerializer
 
+    # ── Build overrides from CLI flags ───────────────────────────────
     overrides = {}
     if args.segments is not None:
         overrides["target_segments"] = args.segments
     if args.tone is not None:
         overrides["tone"] = args.tone
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Phase 2: Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
@@ -301,6 +467,15 @@ _RUNNERS = {
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the full show generation pipeline.
+
+    This is the top-level entry point. It validates input, routes the
+    brief to the right studio, and orchestrates the full pipeline.
+
+    Args:
+        argv: CLI arguments. Defaults to sys.argv[1:] if None.
+              Exposed as a parameter so tests can call main() directly.
+    """
     args = parse_args(argv)
 
     if not args.prompt.exists():
@@ -314,9 +489,16 @@ def main(argv: list[str] | None = None) -> None:
 
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # ── Create a shared client ─────────────────────────────────────
+    # One client for the whole run so bootstrap + conductor + editor
+    # all share the same connection pool.
     client = DeepSeekClient()
 
-    # ── Phase 1: Route ───────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 1: ROUTE — classify the brief → pick the right studio
+    # ══════════════════════════════════════════════════════════════════
+    # The router makes a single LLM call to decide: debate or news?
+    # If you passed --type, we skip this entirely.
     print(f"\n{'═' * 60}")
     print(f"  VOX ROMANA — Show Generator")
     print(f"{'═' * 60}")
@@ -354,7 +536,11 @@ def main(argv: list[str] | None = None) -> None:
 
     print()
 
-    # ── Phase 2–4: Run the pipeline ──────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 2–4: RUN THE PIPELINE — bootstrap → conductor → serialize
+    # ══════════════════════════════════════════════════════════════════
+    # The dispatch table routes to the right studio floor based on the
+    # classified show type. Each runner handles its own phases internally.
     runner = _RUNNERS[show_type]
     t_start = time.time()
     output_path = runner(brief, client, args)

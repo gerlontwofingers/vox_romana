@@ -301,3 +301,36 @@ class TestShowTypes:
 
     def test_is_tuple(self):
         assert isinstance(SHOW_TYPES, tuple)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# render_show.py CLI arg parsing
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRenderShowArgs:
+    """Tests for render_show.py's parse_args — voice-policy flag."""
+
+    @staticmethod
+    def _parse(argv: list[str]):
+        from render_show import parse_args
+        return parse_args(argv)
+
+    def test_voice_policy_default_is_auto(self, tmp_path):
+        p = tmp_path / "show.json"
+        p.write_text("{}")
+        args = self._parse([str(p)])
+        assert args.voice_policy == "auto"
+
+    def test_voice_policy_matched(self, tmp_path):
+        p = tmp_path / "show.json"
+        p.write_text("{}")
+        args = self._parse([str(p), "--voice-policy", "matched"])
+        assert args.voice_policy == "matched"
+
+    def test_voice_policy_invalid_rejected(self, tmp_path):
+        import sys
+        p = tmp_path / "show.json"
+        p.write_text("{}")
+        with pytest.raises(SystemExit):
+            self._parse([str(p), "--voice-policy", "bogus"])

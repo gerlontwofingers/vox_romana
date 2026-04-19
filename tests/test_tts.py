@@ -1,4 +1,4 @@
-"""Tests for the TTS pipeline — engine, mixer, renderer, and engine plugins.
+"""Tests for the TTS pipeline — engine, mixer, renderer, voice catalog, and plugins.
 
 This file tests:
     1. SynthesizedAudio and VoiceConfig data classes
@@ -6,6 +6,9 @@ This file tests:
     3. TTSRenderer: voice assignment, emotion hints, pace→speed, event rendering
     4. PiperEngine: model loading, WAV generation, speed control (mocked)
     5. KokoroEngine: generate_audio call, temp file handling, emotion (mocked)
+    6. VoiceCatalog: voice matching, cast assignment, gender filtering
+    7. Catalog-based renderer voice matching (voice_hints integration)
+    8. TTS style passthrough (tts_styles → emotion hint prefix)
 
 All TTS engine tests use mocks — no real models, no real GPU, no real audio
 generation. The mixer tests use real pydub AudioSegments built from silence
@@ -966,3 +969,204 @@ class TestRendererMixerIntegration:
         assert result.output_path.exists()
         assert result.rendered == 0
         assert result.skipped == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. VOICE CATALOG TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestVoiceCatalog:
+    """Tests for voice_catalog.py — voice metadata and matching algorithms."""
+
+    def test_catalog_has_voices(self):
+        """The catalog should contain all 24 Kokoro voices."""
+        from vox_romana.tts.voice_catalog import KOKORO_VOICE_CATALOG
+        assert len(KOKORO_VOICE_CATALOG) >= 20
+
+    def test_voice_descriptor_fields(self):
+        """Each VoiceDescriptor should have required fields populated."""
+        from vox_romana.tts.voice_catalog import KOKORO_VOICE_CATALOG, VoiceDescriptor
+        for vid, desc in KOKORO_VOICE_CATALOG.items():
+            assert isinstance(desc, VoiceDescriptor), f"{vid} is not a VoiceDescriptor"
+            assert desc.voice_id == vid
+            assert desc.gender in ("male", "female"), f"{vid} has invalid gender"
+            assert desc.accent, f"{vid} has no accent"
+            assert desc.tags, f"{vid} has no tags"
+
+    def test_match_voice_returns_best_fit(self):
+        """match_voice should return the voice with highest tag overlap."""
+        from vox_romana.tts.voice_catalog import match_voice
+        # "warm female british" should match a British female voice.
+        result = match_voice("warm british female")
+        assert result is not None
+        assert result.startswith("bf_"), f"Expected British female, got {result}"
+
+    def test_match_voice_gender_filter(self):
+        """match_voice with gender= should only return that gender."""
+        from vox_romana.tts.voice_catalog import match_voice
+        result = match_voice("warm authoritative", gender="male")
+        assert result is not None
+        # Check it's a male voice (am_* or bm_*).
+        assert result[:2] in ("am", "bm"), f"Expected male voice, got {result}"
+
+    def test_match_voice_with_empty_hint(self):
+        """An empty hint should still return a voice (first in catalog)."""
+        from vox_romana.tts.voice_catalog import match_voice
+        result = match_voice("")
+        assert result is not None
+
+    def test_match_voices_for_cast_unique(self):
+        """Cast matching should assign unique voices to each speaker."""
+        from vox_romana.tts.voice_catalog import match_voices_for_cast
+        cast = {
+            "Dr. Chen": {"gender": "female", "voice_hint": "warm academic"},
+            "Professor Hartley": {"gender": "male", "voice_hint": "authoritative british"},
+            "Jordan Lee": {"gender": "male", "voice_hint": "young casual"},
+        }
+        result = match_voices_for_cast(cast)
+        assert len(result) == 3
+        # All voices should be different.
+        voice_ids = list(result.values())
+        assert len(set(voice_ids)) == 3, f"Duplicate voices: {voice_ids}"
+
+    def test_match_voices_for_cast_respects_gender(self):
+        """Cast matching should use gender cues from hints."""
+        from vox_romana.tts.voice_catalog import match_voices_for_cast
+        cast = {
+            "Alice": {"gender": "female"},
+            "Bob": {"gender": "male"},
+        }
+        result = match_voices_for_cast(cast)
+        assert result["Alice"][:2] in ("af", "bf"), f"Alice got {result['Alice']}"
+        assert result["Bob"][:2] in ("am", "bm"), f"Bob got {result['Bob']}"
+
+    def test_get_voices_by_gender(self):
+        """get_voices_by_gender should partition correctly."""
+        from vox_romana.tts.voice_catalog import get_voices_by_gender
+        males = get_voices_by_gender("male")
+        females = get_voices_by_gender("female")
+        assert all(v[:2] in ("am", "bm") for v in males)
+        assert all(v[:2] in ("af", "bf") for v in females)
+        assert len(males) > 0
+        assert len(females) > 0
+
+    def test_get_catalog_voice(self):
+        """get_catalog_voice should return metadata for known voices."""
+        from vox_romana.tts.voice_catalog import get_catalog_voice
+        desc = get_catalog_voice("af_heart")
+        assert desc is not None
+        assert desc.voice_id == "af_heart"
+        assert desc.gender == "female"
+
+    def test_get_catalog_voice_unknown(self):
+        """get_catalog_voice should return None for unknown voice IDs."""
+        from vox_romana.tts.voice_catalog import get_catalog_voice
+        assert get_catalog_voice("nonexistent_voice") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. CATALOG-BASED RENDERER VOICE MATCHING
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCatalogVoiceMatching:
+    """Tests for voice_hints-driven catalog matching in the renderer."""
+
+    KOKORO_VOICES = [
+        "af_heart", "af_alloy", "af_nova",
+        "am_adam", "am_echo", "am_eric",
+        "bf_emma", "bf_isabella",
+        "bm_daniel", "bm_george",
+    ]
+
+    def test_voice_hints_triggers_catalog_matching(self, tmp_path):
+        """When voice_hints are present, the renderer uses catalog matching."""
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine)
+        data = make_debate_data(speakers=["Alice", "Bob"], num_events=2)
+        data["voice_casting"] = {"Alice": "female", "Bob": "male"}
+        data["voice_hints"] = {
+            "Alice": "warm British female",
+            "Bob": "authoritative American male",
+        }
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        # Alice should get a female voice, Bob a male voice.
+        alice_voice = result.voice_map["Alice"]
+        bob_voice = result.voice_map["Bob"]
+        assert alice_voice[:2] in ("af", "bf"), f"Alice got {alice_voice}"
+        assert bob_voice[:2] in ("am", "bm"), f"Bob got {bob_voice}"
+        # They should be different.
+        assert alice_voice != bob_voice
+
+    def test_voice_hints_absent_falls_back_to_gender(self, tmp_path):
+        """Without voice_hints, the renderer uses the gender-only fallback."""
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine)
+        data = make_debate_data(speakers=["Alice", "Bob"], num_events=2)
+        data["voice_casting"] = {"Alice": "female", "Bob": "male"}
+        # No voice_hints key.
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        # Should still assign by gender.
+        assert result.voice_map["Alice"][:2] in ("af", "bf")
+        assert result.voice_map["Bob"][:2] in ("am", "bm")
+
+    def test_manual_voice_map_overrides_catalog(self, tmp_path):
+        """Manual voice_map should still take priority over catalog matching."""
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        voice_map = {"Alice": VoiceConfig(voice_id="bm_george")}
+        renderer = TTSRenderer(engine, voice_map=voice_map)
+        data = make_debate_data(speakers=["Alice", "Bob"], num_events=2)
+        data["voice_hints"] = {"Alice": "warm female", "Bob": "male deep"}
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        # Manual override wins for Alice even though hint says "female".
+        assert result.voice_map["Alice"] == "bm_george"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. TTS STYLE PASSTHROUGH
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTtsStylePassthrough:
+    """Tests for tts_styles integration in the emotion hint pipeline."""
+
+    def test_tts_style_prepended_to_emotion_hint(self):
+        """tts_style should be prepended to the per-event emotion hint."""
+        event = {"tone": ["aggressive"], "pace": "fast"}
+        hint = TTSRenderer._build_emotion_hint(event, tts_style="Speak with quiet authority")
+        assert hint.startswith("Speak with quiet authority.")
+        assert "aggressive" in hint
+        assert "pace: fast" in hint
+
+    def test_no_tts_style_preserves_original_behavior(self):
+        """Without tts_style, _build_emotion_hint works exactly as before."""
+        event = {"tone": ["calm", "measured"], "volume": "soft"}
+        hint = TTSRenderer._build_emotion_hint(event)
+        assert hint == "calm, measured; volume: soft"
+
+    def test_tts_style_with_empty_event(self):
+        """tts_style alone should produce a clean hint."""
+        event = {}
+        hint = TTSRenderer._build_emotion_hint(event, tts_style="Deliver with energy")
+        assert hint == "Deliver with energy."
+
+    def test_tts_styles_reach_engine(self, tmp_path):
+        """tts_styles from the show JSON should flow through to synthesize()."""
+        engine = FakeEngine(voices=["voice_a", "voice_b"])
+        renderer = TTSRenderer(engine)
+        data = make_debate_data(speakers=["Alice", "Bob"], num_events=2)
+        data["tts_styles"] = {
+            "Alice": "Speak with calm authority",
+            "Bob": "Deliver with punchy energy",
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        # Check that the engine received emotion hints with tts_style prefix.
+        alice_call = engine.calls[0]
+        bob_call = engine.calls[1]
+        assert "Speak with calm authority." in alice_call["emotion"]
+        assert "Deliver with punchy energy." in bob_call["emotion"]

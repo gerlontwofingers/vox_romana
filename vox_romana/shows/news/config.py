@@ -61,11 +61,24 @@ class AnchorConfig:
                     Example: "Warm, authoritative NPR-style delivery."
         voice_fingerprint:
                     HOW this anchor talks — cadence, patterns, verbal habits.
+        voice_gender:
+                    The vocal gender for TTS voice assignment.
+                    "male", "female", or None (auto-detect).
+        voice_hint:
+                    Casting note for the renderer's voice catalog — what
+                    this anchor should sound like. E.g., "clear, warm,
+                    authoritative, American male, 40s".
+        tts_style:
+                    Persistent TTS instruction for this anchor's vocal
+                    identity. Prepended to every utterance's emotion hint.
     """
 
     name: str = ""
     style: str | None = None
     voice_fingerprint: str | None = None
+    voice_gender: str | None = None
+    voice_hint: str | None = None
+    tts_style: str | None = None
 
 
 @dataclass

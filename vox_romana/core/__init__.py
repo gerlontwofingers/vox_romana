@@ -1,3 +1,33 @@
+"""vox_romana.core — shared infrastructure for all show types.
+
+This package contains everything that's content-type agnostic: the LLM
+client, agent wrappers, base configuration, search providers, the catalog,
+the editing pipeline, and the notes archive. Show-specific code lives under
+vox_romana.shows (debates, news, etc.).
+
+Architecture at a glance:
+
+    client.py        — DeepSeekClient: thin API wrapper (one per pipeline run).
+    agent.py         — DeepSeekAgent: simple stateful agent (no compression).
+    session.py       — AgentSession: production agent with sliding-window
+                       compression. Used by all persistent broadcast agents.
+    config.py        — ContentConfig base class + ParticipantProfile.
+    conductor.py     — BaseConductor: abstract lifecycle for reactive shows.
+    router.py        — ShowRouter: classifies briefs → show type.
+    catalog.py       — Catalog: SQLite content log with FTS5 search.
+    search.py        — BaseSearchProvider + GoogleSearchProvider.
+    data_researcher.py — DataResearcher: grounded statistical analysis.
+    models.py        — AudioEvent, AgentResponse, FactCard.
+    archive.py       — NoteArchive + OutlineArchive (JSONL persistence).
+    librarian.py     — Librarian: ephemeral search agent for the archive.
+    editing/         — ChunkEditor, DirectorOutline, RetryLoop (quality gating).
+    planner.py       — ContentPlanner (placeholder for episodic splitting).
+    runsheet.py      — Runsheet entries for broadcast-style shows.
+
+All public symbols are re-exported here for convenience:
+    from vox_romana.core import DeepSeekClient, AgentSession, ChunkEditor
+"""
+
 from .agent import DeepSeekAgent
 from .archive import EditorNote, NoteArchive, OutlineArchive, OutlineRecord
 from .catalog import Catalog, RunRecord, StudyRecord

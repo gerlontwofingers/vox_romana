@@ -413,6 +413,26 @@ class TestDebateProfileBuilder:
         assert profile.key_positions == []
         assert profile.factual_claims == []
 
+    def test_parse_voice_hint_and_tts_style(self):
+        """voice_hint and tts_style should be extracted when present."""
+        data = {
+            "voice_gender": "female",
+            "voice_hint": "warm British alto, late 30s, academic",
+            "tts_style": "Speak with measured precision and quiet confidence.",
+            "voice_fingerprint": "hedging phrases",
+        }
+        profile = self.builder.parse_response(json.dumps(data), stub=self.stub)
+        assert profile.voice_hint == "warm British alto, late 30s, academic"
+        assert profile.tts_style == "Speak with measured precision and quiet confidence."
+        assert profile.voice_gender == "female"
+
+    def test_parse_missing_voice_hint_defaults_none(self):
+        """voice_hint and tts_style should be None when LLM omits them."""
+        data = {"voice_gender": "male", "voice_fingerprint": "punchy"}
+        profile = self.builder.parse_response(json.dumps(data), stub=self.stub)
+        assert profile.voice_hint is None
+        assert profile.tts_style is None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 5: Director JSON parsing

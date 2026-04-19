@@ -201,14 +201,24 @@ class DebateConductorResult(ConductorResult):
 
         # Build voice casting from profile voice_gender fields.
         voice_casting: dict[str, str] = {}
+        voice_hints: dict[str, str] = {}
+        tts_styles: dict[str, str] = {}
         for p in config.participants:
             if p.voice_gender:
                 voice_casting[p.name] = p.voice_gender
+            if p.voice_hint:
+                voice_hints[p.name] = p.voice_hint
+            if p.tts_style:
+                tts_styles[p.name] = p.tts_style
         if config.moderator and config.moderator.name:
             # Moderators don't have profiles, default to male.
             voice_casting.setdefault(config.moderator.name, "male")
         if config.show_host and config.show_host.voice_gender:
             voice_casting[config.show_host.name] = config.show_host.voice_gender
+        if config.show_host and config.show_host.voice_hint:
+            voice_hints[config.show_host.name] = config.show_host.voice_hint
+        if config.show_host and config.show_host.tts_style:
+            tts_styles[config.show_host.name] = config.show_host.tts_style
 
         return MergedDebate(
             template_id="conductor",
@@ -238,6 +248,8 @@ class DebateConductorResult(ConductorResult):
             ),
             source_count=1,
             voice_casting=voice_casting,
+            voice_hints=voice_hints,
+            tts_styles=tts_styles,
         )
 
 

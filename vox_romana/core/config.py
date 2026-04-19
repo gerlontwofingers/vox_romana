@@ -197,12 +197,29 @@ class ParticipantProfile:
                     The vocal gender for TTS voice assignment.
                     "male", "female", or None (auto-detect from name/context).
                     Set by the profile builder based on character identity.
+
+        voice_hint:
+                    A casting note describing what this character's voice
+                    should SOUND like — age, warmth, accent, vocal quality.
+                    Used by the renderer's voice catalog to pick the best
+                    TTS voice. E.g., "deep authoritative baritone, 50s,
+                    British accent, world-weary." Set by the profile builder.
+
+        tts_style:
+                    A persistent TTS instruction prepended to every
+                    utterance's per-line emotion hint. Keeps the character's
+                    vocal identity stable across the whole show. E.g.,
+                    "Speak with a gruff, world-weary gravitas." Engines
+                    that support natural-language instructions (Kokoro,
+                    OpenAI) will use this; others ignore it gracefully.
     """
 
     name: str = ""
     side: str | None = None
     role: str = "participant"
     voice_gender: str | None = None
+    voice_hint: str | None = None
+    tts_style: str | None = None
     voice_fingerprint: str | None = None
     behavioral_triggers: str | None = None
     emotional_arc: str | None = None
@@ -241,10 +258,20 @@ class ShowHostConfig:
         voice_gender:
                     The vocal gender for TTS voice assignment.
                     "male", "female", or None (auto-detect).
+
+        voice_hint:
+                    Casting note for TTS voice selection — what the host
+                    should sound like. See ParticipantProfile.voice_hint.
+
+        tts_style:
+                    Persistent TTS instruction for this host's vocal
+                    identity. See ParticipantProfile.tts_style.
     """
 
     name: str = ""
     role: str = "narrator"
     style: str | None = None
     voice_gender: str | None = None
+    voice_hint: str | None = None
+    tts_style: str | None = None
     voice_fingerprint: str | None = None
