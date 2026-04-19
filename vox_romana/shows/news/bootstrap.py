@@ -169,8 +169,9 @@ class NewsBootstrap:
             reference_material: Factual source text to ground the output.
             fact_check:         "off", "quick", or "thorough".
             overrides:          Dict of NewsConfig field names to override.
-            auto_research:      If True, research the topic via web search.
-            search_provider:    Required when auto_research=True.
+            auto_research:      If True, research the topic before generating.
+            search_provider:    Search provider for web research. If None and
+                                auto_research=True, falls back to LLM-only research.
 
         Returns:
             A fully populated NewsConfig.
@@ -179,13 +180,14 @@ class NewsBootstrap:
 
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
-            if search_provider is None:
-                raise ValueError(
-                    "auto_research=True requires a search_provider."
-                )
             # Reuse the debate researcher — it works for any topic.
             from ..debates.researcher import DebateResearcher
-            researcher = DebateResearcher(self._client, search_provider)
+            if search_provider is None:
+                # No search provider → LLM-only research (DeepSeek compiles
+                # from training knowledge).
+                researcher = DebateResearcher(self._client)
+            else:
+                researcher = DebateResearcher(self._client, search_provider)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
