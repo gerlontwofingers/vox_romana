@@ -172,6 +172,7 @@ class DirectorBrief:
     key_moments: list[str] = field(default_factory=list)
     closing_strategy: str | None = None
     check_interval: int = 7
+    outline_sections: list | None = None  # list of OutlineSection dicts
 
 
 # ─────────────────────────────────────────────────────────────────────────────

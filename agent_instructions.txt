@@ -1,6 +1,13 @@
 Agent Instructions — Implementer Handoff
 Date: April 18, 2026
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOTE TO AGENT: Sections 1–8 are HISTORICAL CONTEXT only — they describe how
+we arrived at the current design. Do NOT treat them as active instructions.
+The Active Design Spec begins at the APPENDIX section below. That is the
+authoritative source of truth for what to build.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 1. Conversation Overview
 - Primary Objectives:
   - Add a non-interactive Editor agent that reviews generated "chunks" (show/segment/round/chapter), enforces user intent, and requests targeted regeneration (cap retries = 3).
@@ -72,26 +79,256 @@ Date: April 18, 2026
   - Persisted rubric example for `/memories/editor_rubric.json`.
 - Priority: implementer to select which deliverable to prepare first; assistant can produce that intention-first artifact (no code) and record it in persistent memory if requested.
 
-Appendix: Notes & Constraints
-- Do not modify source code without an explicit instruction from the implementer.
-- Editor must be non-interactive; retry cap = 3; provide targeted remediation hints when rejecting/generated chunks.
-- Per-agent notes are private by default and summarized/sanitized by the Conductor before persistence.
-- DeepSeek is the default fact-checker; Google CSE is optional and requires env keys.
-- Speaker clarity & dialogue guidance:
-  - Problem: Historically, it can be difficult to tell which characters are speaking when only text is available. In audio/visual media, speaker changes are made obvious with audio cues, camera cuts, or visual labels; plain text can lose that clarity.
-  - Recommendation for agents: Prefer explicit speaker identification in generated chunks. When dialogue is ambiguous, insert one of:
-    - Short speaker tags (e.g., "Alex:", "Host:") at the start of lines.
-    - Brief scene direction or stingers (e.g., "Announcer (V.O.):", "Cut to the field reporter:") between chunks.
-    - Bracketed actions or audio cues (e.g., "[music swells]", "[door slams]") to signal transitions.
-  - Radio-style inspiration: Use conventions from old radio broadcasting — announcer lead-ins, clear speaker cues, and short sonic markers — to make speaker turns unambiguous in audio renderers and for later TTS alignment.
-  - Editor behavior: When reviewing dialog chunks, prefer adding or requesting explicit speaker labels or scene cues rather than merging ambiguous lines. If a chunk lacks clear speaker turns, mark it as "requires speaker disambiguation" and suggest concrete insertions.
- - Director outline & cast awareness:
-   - Role: The `Director` agent maintains an evolving show outline derived from instructions given to the Director. The Director must make the current outline available to the entire cast.
-   - Outline propagation: Any time the outline is created or updated — including changes triggered by the Orchestrator or the Editor — the Director must broadcast a concise outline snapshot to all character agents, the Conductor, and Editor. The snapshot should include `outline_id`, `version`, `timestamp`, `summary`, and `changed_sections`.
-   - Outline structure: Represent the outline as an ordered array of `sections`, each with `id`, `title`, `expected_duration`, `key_beats`, `speaker_assignments`, and `acceptance_criteria`.
-   - Cast awareness: Character agents must check incoming outline snapshots and update their internal state to match assigned beats. If a character cannot comply, it must report a short `issue` message to the Director with proposed remediation text.
-   - Interaction with Editor/Orchestrator: When the Editor or Orchestrator requests changes (e.g., trimming, merging, inserting, reordering), Director updates the outline version and rebroadcasts to the cast. Editor reviews should reference the outline `version` they validated.
-   - Persistence and audit: The Conductor should persist outline snapshots in studio memory for rehearsal and audit trails.
-   - Implementation notes: Use idempotent JSON snapshots and version numbers. Keep messages small; favor `summary` for human readability and `sections` for machine validation.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ACTIVE DESIGN SPEC — authoritative source of truth for implementation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A. Core Principle
+-----------------
+The root problem we are solving: previous generated shows were bland, speakers
+lacked a clear plan, content grew repetitive, and it was often impossible to
+tell who was speaking. The entire design below exists to fix that.
+
+The goal: a production that sounds like a real broadcast — purposeful,
+varied, clearly narrated, and faithful to the original prompt.
+
+
+B. Agent Roles & Persistence
+-----------------------------
+- Every agent (Director, Conductor, Editor, FactChecker, and all cast members)
+  is instantiated ONCE per broadcast and remains alive for its entire duration.
+  There are no one-off LLM calls during a live run. Context accumulates.
+- A fresh set of agents is created at the start of each new broadcast.
+- The Editor and Conductor additionally receive a compact notes archive from
+  PREVIOUS broadcasts at session start so they are aware of past issues,
+  patterns, and what has or has not worked before.
+- This persistent-session model is the primary mechanism for coherence.
+  Agents "remember" what happened earlier in the same broadcast because their
+  message history grows throughout the run.
+- Context window management: ALL persistent agent sessions use the same
+  sliding-window compression strategy as the existing DebateConductor.
+  This is not optional — apply it uniformly to Director, Editor, cast members,
+  and the Conductor itself. The implementation is:
+    1. Keep a fixed "recent window" of the last K verbatim message turns.
+    2. Compress older turns into a rolling summary injected at system context.
+    3. K and summary token budget are configurable per agent type.
+  No agent session should grow unbounded.
+
+
+C. Agent Roles Summary
+-----------------------
+  Conductor   The runtime engine and orchestrator. Drives the turn loop,
+              decides chunk boundaries (see section D), manages timing,
+              and routes Editor feedback back through the chain of command.
+              (Note: in older notes, "Orchestrator" and "Conductor" are
+              the same agent. Use "Conductor" everywhere going forward.)
+
+  Director    Holds and maintains the show outline for the full broadcast.
+              Shapes dramatic arc, mood, pacing. Can make small on-the-fly
+              adjustments during the run (see section E). Stateful and
+              persistent for the whole broadcast.
+
+  Cast        All speaking agents (debate participants, news anchors, field
+              reporters, guests, moderator, etc.) — one persistent session
+              each. Their voices, positions, and internal states accumulate
+              across the broadcast.
+
+  Editor      Non-interactive quality gating agent. Reviews each completed
+              chunk and decides pass or redo (see section F). Persistent for
+              the broadcast; receives historical notes at start.
+
+  FactChecker Verifies factual claims. DeepSeek by default; Google CSE if
+              keys are configured. Called by the Researcher pipeline as usual,
+              AND optionally by the Editor on-demand during review.
+
+  Librarian   On-demand, ephemeral agent spun up by any persistent agent to
+              query the historical notes archive. NOT persistent — it is
+              instantiated for a single query, returns its results, and is
+              discarded. See section K for full details.
+
+
+D. Chunks — Definition & Boundaries
+-------------------------------------
+- A "chunk" is the atomic unit of production: one Director outline section
+  = one chunk.
+- Chunk boundaries are defined by the Conductor and must be semantically
+  meaningful for the show type:
+    - News show    → each segment (intro, story A, story B, weather, etc.)
+    - Debate       → each round, or each topic/question block
+    - (Future)     → audiobook chapters, podcast acts, etc.
+- The Conductor signals chunk start/end. The Editor is invoked at chunk end.
+- Chunks should be large enough to be narratively meaningful but small enough
+  to redo without losing the whole show.
+
+
+E. Director Outline & Cast Awareness
+--------------------------------------
+- The Director is given instructions at broadcast start and produces an initial
+  versioned outline. This is the plan. Agents must follow it.
+- During the broadcast the Director may make SMALL on-the-fly adjustments
+  (e.g., "this topic is running long — I'm trimming the closing segment").
+  The Director must stay within the spirit of the original brief. Major
+  structural changes are not allowed mid-broadcast.
+- EVERY outline change — even small ones — must be broadcast to the entire
+  cast AND the Conductor AND the Editor BEFORE the Director proceeds.
+  Think of it as the director pausing, updating the call sheet in their head,
+  and then verbally telling the whole room before the next take.
+- Outline snapshot fields (minimum):
+    outline_id, version, timestamp, summary, changed_sections
+- Each section in the outline should carry:
+    id, title, expected_duration, key_beats, speaker_assignments,
+    acceptance_criteria
+- Outline snapshots are persisted by the Conductor for audit and rehearsal.
+- If a cast member cannot comply with an outline beat, they must report a
+  short issue message to the Director with proposed remediation.
+- Editor reviews reference the outline version they validated.
+- What counts as a SMALL change (Director may make freely, then broadcast):
+    - Adjusting key_beats within an existing section
+    - Changing expected_duration of a section
+    - Reordering beats within a section
+    - Adding a minor transitional beat
+- What counts as a MAJOR change (must be flagged to the Conductor, who may
+  warn or veto before the Director proceeds):
+    - Altering speaker_assignments for any section
+    - Removing a section entirely
+    - Adding a new section not in the original brief
+    - Merging two existing sections into one
+  The Conductor logs a warning if a major change is accepted mid-broadcast.
+
+
+F. Editor — Chunk Review & Retry Flow
+---------------------------------------
+- The Editor reviews each completed chunk synchronously before the Conductor
+  advances to the next chunk.
+- The Editor's review lens (not exhaustive — use judgment):
+    1. Speaker clarity  — Can the audience tell who is speaking at all times?
+    2. Repetition       — Has this been said before? Is it adding value?
+    3. Intention fidelity — Does this chunk serve the prompt and the outline?
+    4. Instruction compliance — Are all specific instructions being followed?
+    5. Factual accuracy — Optionally, consult the FactChecker on specific
+                          claims if the Editor has doubts.
+    6. Narrative quality — Is this engaging? Does it advance the show?
+- On PASS: Conductor proceeds to the next chunk. Editor logs a compact note.
+- On FAIL: Editor writes detailed rejection notes explaining exactly what is
+  wrong. Notes flow THROUGH the chain of command (Editor → Conductor →
+  Director → cast) so the redo has full context at every level. The whole
+  chunk is regenerated from scratch — not patched.
+- max_retries is configurable (default: 3). After exhausting retries, the
+  Conductor publishes the best available attempt WITH a warning flag in the
+  output JSON and a summary of the Editor's unresolved objections.
+- The Editor is NOT interactive and does NOT block for human input. It decides
+  and moves on.
+- The Editor may call the FactChecker at any point during its review.
+  Otherwise the FactChecker operates normally in the research pipeline.
+
+
+G. Editor Notes — Archival & Memory
+-------------------------------------
+- ALL Editor notes are preserved — passes, fails, and partial-redo notes.
+- Notes must be COMPACT but DETAILED ENOUGH TO BE USEFUL. The audience for
+  these notes is the next Conductor and the next Editor. Write for them.
+  Good note: "Round 2 opened with both speakers restating their round 1
+  positions almost verbatim. Accepted on retry 2 after injecting a
+  wildcard pivot beat."
+  Bad note: "Repetitive. Redone."
+- Notes accumulate across broadcasts and will grow over time.
+  Compaction policy: keep the last 10 broadcasts verbatim; for everything
+  older, the Librarian (see section K) or an offline job summarizes them
+  into a rolling "patterns" summary stored alongside the raw archive.
+  The session-start note injection must never exceed a defined token budget
+  (configurable; suggested default: ~600 tokens).
+- At the START of each new broadcast, the Conductor and Editor each receive
+  a Librarian-assembled summary of relevant past notes, within the token
+  budget, so they can be mindful of recurring issues and successful patterns.
+- Notes are stored in the studio memory layer (persistent JSON/JSONL).
+  Outline version snapshots are stored alongside them for traceability.
+- Note schema (minimum fields):
+    broadcast_id, chunk_id, outline_version, status (pass|fail|warn),
+    attempt_number, summary, issues[], recommendations[]
+
+
+H. Speaker Clarity & Radio-Style Dialogue
+-------------------------------------------
+- Historical problem: It is often impossible to tell which character is
+  speaking from the generated text alone. In visual/audio media, camera cuts
+  and mixing do this work; in pure text and TTS, we must do it explicitly.
+- All agents should prefer explicit speaker identification:
+    - Speaker tags at line start: "Alex:", "Host:", "MORGAN (skeptical):"
+    - Scene direction stingers between speakers or chunks:
+      "Announcer (V.O.):", "[Cut to field reporter]"
+    - Bracketed audio/action cues to signal transitions:
+      "[theme music]", "[applause]", "[door slam]"
+- Inspiration: old radio broadcasting conventions — announcer lead-ins,
+  clear handoffs, sonic markers. Every transition should be audible.
+- Editor behavior on speaker ambiguity: do NOT merge ambiguous lines. Mark
+  the chunk as "requires speaker disambiguation", specify exactly which lines
+  are unclear, and suggest concrete label insertions in the redo notes.
+
+
+I. Shared Core Resources & Extensibility
+------------------------------------------
+- The codebase already separates show-agnostic infrastructure (core/) from
+  show-specific logic (shows/debates/, shows/news/). PRESERVE THIS.
+- New capabilities — Editor, Chunker, retry loop, outline versioning,
+  FactChecker interface — belong in core/ or a new core/editing/ sub-module
+  so all show types can use them.
+- Future show types (e.g., audiobook) plug into the shared core and add a
+  shows/audiobook/ module. They inherit the Editor, outline, and retry
+  machinery automatically.
+- Do not duplicate logic across show types. If something is general, it goes
+  in core/.
+
+
+J. Implementation Safety Guidelines
+-------------------------------------
+- Extend existing dataclasses (e.g., DirectorBrief) rather than replacing
+  them. Add new fields as Optional with sensible defaults so existing tests
+  remain green.
+- The existing _director_note / check_interval pattern in DebateConductor is
+  the seed of the new Director outline broadcast. Evolve it, don't rewrite it.
+- max_retries must be a config field, not a hardcoded constant.
+- Persistent agent sessions should wrap the existing LLM client and accumulate
+  message history in a list; this is a thin layer over existing client code.
+  Apply sliding-window compression to ALL persistent sessions (not just the
+  Conductor). Window size K and summary token budget are config fields.
+- Keep all changes reversible at the module level: feature-flag new behavior
+  where possible so the old pipeline still runs without the Editor.
+- The Librarian is always ephemeral. Never give it a persistent session.
+  It reads from the archive store and returns structured results — that is
+  its entire job. This keeps the archive access pattern clean and auditable.
+
+
+K. Librarian — Searchable Historical Archive
+----------------------------------------------
+- Purpose: Any persistent agent (Conductor, Editor, Director, cast member)
+  may at any time ask the Librarian to search the historical notes archive.
+  The Librarian handles retrieval, relevance filtering, and formatting so
+  the querying agent receives an answer it can immediately act on.
+- Lifecycle: EPHEMERAL. The Librarian is spun up on demand, performs its
+  query, returns structured results to the calling agent, and is discarded.
+  It has no memory of its own and carries no session state.
+- Query interface: the calling agent sends a natural-language query plus
+  optional filters (show_type, date_range, chunk_type, status). Example:
+    "Find all Editor rejections on debate rounds where speakers were
+     flagged for repetition in the last 5 broadcasts."
+- Result format: the Librarian returns a compact, structured summary the
+  calling agent can inject into its own context. It should:
+    - Rank results by relevance to the query
+    - Strip redundant metadata; keep only what's useful
+    - Respect the caller's token budget (passed as a parameter)
+    - Flag if no relevant records were found
+- Search strategy: keyword + metadata filter first (fast, cheap); fall back
+  to LLM-assisted semantic matching if keyword search returns nothing useful.
+  The archive is JSON/JSONL — no external vector DB required initially.
+  Add vector indexing only if search quality proves insufficient.
+- Typical callers and use cases:
+    Conductor at session start → "What recurring issues should I watch for
+                                   with this topic/format?"
+    Editor during review       → "Has this specific failure pattern appeared
+                                   before? What fixed it?"
+    Director at outline build  → "What outline structures worked well for
+                                   this show type in the past?"
+- The Librarian lives in core/ (not tied to any show type). All show types
+  share the same archive and the same Librarian.
 
 -- End of agent_instructions.txt

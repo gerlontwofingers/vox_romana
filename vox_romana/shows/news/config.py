@@ -115,6 +115,7 @@ class DirectorBrief:
     segment_order_notes: str | None = None
     closing_strategy: str | None = None
     check_interval: int = 3
+    outline_sections: list | None = None  # list of OutlineSection dicts
 
 
 @dataclass

@@ -108,6 +108,7 @@ class ContentConfig:
     fact_check: FactCheckMode = "off"
     title: str | None = None
     estimated_duration_minutes: int | None = None
+    max_retries: int = 3
 
     def validate(self) -> list[str]:
         """Return a list of problems with this config. Empty list = all good.
