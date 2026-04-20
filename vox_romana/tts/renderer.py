@@ -94,12 +94,48 @@ EXAMPLE:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE DIRECTION STRIPPING
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Matches any (parenthetical) block in utterance text, e.g.:
+#   (laughs)  (dramatic pause)  (Leaning in, voice low)
+# These are LLM-generated performance directions. Standard TTS engines
+# have no way to act on them, so they end up spoken literally.
+_STAGE_DIR_RE = re.compile(r'\([^)]*\)')
+
+
+def strip_stage_directions(text: str) -> str:
+    """Remove parenthetical stage directions from TTS text.
+
+    Strips all (parenthetical) blocks regardless of their position in the
+    string, then collapses any resulting runs of whitespace.  Ellipsis
+    clusters around the removed block are preserved.
+
+    Examples::
+
+        >>> strip_stage_directions("(laughs) Well, that's funny.")
+        "Well, that's funny."
+        >>> strip_stage_directions("Let me tell you... (dramatic pause) Gold.")
+        'Let me tell you... Gold.'
+        >>> strip_stage_directions("Just plain dialogue.")
+        'Just plain dialogue.'
+    """
+    cleaned = _STAGE_DIR_RE.sub('', text)
+    # Collapse multiple whitespace (including from removed leading direction)
+    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    # Tidy up triple-dot + space created when a mid-sentence direction is removed
+    cleaned = re.sub(r'\.\.\.\s+', '... ', cleaned)
+    return cleaned.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -159,14 +195,20 @@ class TTSRenderer:
         engine: BaseTTSEngine,
         *,
         voice_map: dict[str, VoiceConfig] | None = None,
+        strip_directions: bool = False,
     ) -> None:
         """Initialize the renderer.
 
         Args:
-            engine:    Any BaseTTSEngine implementation (Piper, Kokoro, etc.).
-            voice_map: Optional manual speaker→voice mapping. If not provided,
-                       voices are auto-assigned from the engine's available
-                       voices when render() is called.
+            engine:           Any BaseTTSEngine implementation (Piper, Kokoro, etc.).
+            voice_map:        Optional manual speaker→voice mapping. If not provided,
+                              voices are auto-assigned from the engine's available
+                              voices when render() is called.
+            strip_directions: If True, strip parenthetical stage directions
+                              (e.g. "(laughs)", "(dramatic pause)") from each
+                              utterance's text before synthesis.  The original
+                              JSON is never modified — only the text sent to the
+                              TTS engine is cleaned.
 
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
@@ -174,6 +216,7 @@ class TTSRenderer:
         """
         self._engine = engine
         self._voice_map = voice_map or {}
+        self._strip_directions = strip_directions
 
     def render(
         self,
@@ -230,6 +273,12 @@ class TTSRenderer:
             # for the mixer or downstream processing, not TTS.
             text = event.get("text", "")
             event_kind = event.get("event_kind", "utterance")
+
+            # Strip parenthetical stage directions before synthesis if enabled.
+            # We do this before the empty-text guard so that an utterance that
+            # consists *only* of a direction (e.g. "(pause)") is also skipped.
+            if self._strip_directions:
+                text = strip_stage_directions(text)
 
             if not text or not text.strip() or event_kind not in SPOKEN_EVENT_KINDS:
                 skipped += 1

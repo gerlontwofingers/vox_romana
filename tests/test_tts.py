@@ -1170,3 +1170,176 @@ class TestTtsStylePassthrough:
         bob_call = engine.calls[1]
         assert "Speak with calm authority." in alice_call["emotion"]
         assert "Deliver with punchy energy." in bob_call["emotion"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. STAGE DIRECTION STRIPPING
+# ═══════════════════════════════════════════════════════════════════════════
+
+from vox_romana.tts.renderer import strip_stage_directions
+
+
+class TestStripStageDirections:
+    """Unit tests for the strip_stage_directions() helper."""
+
+    def test_leading_direction_stripped(self):
+        """A leading (direction) block is removed."""
+        assert strip_stage_directions("(laughs) Well, that's funny.") == "Well, that's funny."
+
+    def test_mid_sentence_direction_stripped(self):
+        """A mid-sentence (pause) direction is removed and whitespace tightened."""
+        result = strip_stage_directions("Let me tell you... (dramatic pause) Gold.")
+        assert "(dramatic pause)" not in result
+        assert "Let me tell you..." in result
+        assert "Gold." in result
+
+    def test_no_direction_unchanged(self):
+        """Text with no parenthetical blocks passes through unchanged."""
+        text = "Just plain dialogue."
+        assert strip_stage_directions(text) == text
+
+    def test_multiple_directions_all_stripped(self):
+        """Multiple (blocks) in sequence are all removed."""
+        result = strip_stage_directions("(Warm, chuckling) (Leans in) The answer is yes.")
+        assert "(Warm, chuckling)" not in result
+        assert "(Leans in)" not in result
+        assert "The answer is yes." in result
+
+    def test_direction_only_text_becomes_empty(self):
+        """Text that is only a direction becomes empty string."""
+        assert strip_stage_directions("(pause)") == ""
+
+    def test_whitespace_collapsed(self):
+        """No double-spaces left after stripping."""
+        result = strip_stage_directions("(Excited, melodic) And what a fiasco!")
+        assert "  " not in result
+
+    def test_ellipsis_preserved(self):
+        """Ellipsis before a stripped direction is preserved cleanly."""
+        result = strip_stage_directions("And then... (dramatic pause) it happened.")
+        assert "..." in result
+        assert "(dramatic pause)" not in result
+
+    def test_empty_string(self):
+        """Empty input returns empty output."""
+        assert strip_stage_directions("") == ""
+
+    def test_real_script_sample(self):
+        """A real sample from the generated Trash Pandas script is handled."""
+        text = (
+            "(Dramatic, conspiratorial whisper, leaning into the microphone) "
+            "Welcome, listeners, to the trashiest drama in baseball."
+        )
+        result = strip_stage_directions(text)
+        assert not result.startswith("(")
+        assert "Welcome, listeners" in result
+
+
+class TestRendererStripDirections:
+    """Tests for strip_directions= parameter on TTSRenderer."""
+
+    def test_strip_off_by_default(self, tmp_path):
+        """Directions are NOT stripped when strip_directions=False (default)."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine)
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "(laughs) Well that's interesting.",
+                "tone": [],
+                "pace": "medium",
+                "volume": "normal",
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        assert engine.calls[0]["text"] == "(laughs) Well that's interesting."
+
+    def test_strip_on_removes_parentheticals(self, tmp_path):
+        """Directions are stripped when strip_directions=True."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, strip_directions=True)
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "(laughs) Well that's interesting.",
+                "tone": [],
+                "pace": "medium",
+                "volume": "normal",
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        assert engine.calls[0]["text"] == "Well that's interesting."
+
+    def test_direction_only_event_skipped_when_stripping(self, tmp_path):
+        """An event that is only a direction becomes empty → skipped."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, strip_directions=True)
+        data = {
+            "events": [
+                {
+                    "event_kind": "utterance",
+                    "speaker_name": "Alice",
+                    "text": "(pause)",
+                    "tone": [],
+                    "pace": "medium",
+                    "volume": "normal",
+                    "nonverbal": [],
+                    "interruption": False,
+                    "overlap_with_previous": False,
+                    "pause_before": None,
+                },
+                {
+                    "event_kind": "utterance",
+                    "speaker_name": "Bob",
+                    "text": "This one has real text.",
+                    "tone": [],
+                    "pace": "medium",
+                    "volume": "normal",
+                    "nonverbal": [],
+                    "interruption": False,
+                    "overlap_with_previous": False,
+                    "pause_before": None,
+                },
+            ],
+            "participants": [{"name": "Alice"}, {"name": "Bob"}],
+        }
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        assert result.rendered == 1
+        assert result.skipped == 1
+        assert engine.calls[0]["text"] == "This one has real text."
+
+    def test_json_not_modified(self, tmp_path):
+        """The original show_data dict is never mutated by stripping."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, strip_directions=True)
+        original_text = "(laughs) Well that's interesting."
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": original_text,
+                "tone": [],
+                "pace": "medium",
+                "volume": "normal",
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        # The original dict must be untouched.
+        assert data["events"][0]["text"] == original_text

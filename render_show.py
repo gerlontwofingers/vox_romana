@@ -374,6 +374,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Stage direction stripping ───────────────────────────────────────────────
+    # LLMs often write stage directions inline in utterance text,
+    # e.g. "(laughs) Well, that's funny." or "(dramatic pause) Gold."
+    # Standard TTS engines can't act on these cues, so they're spoken
+    # literally, which sounds broken.
+    #
+    # Stripping is ON by default because no supported TTS engine
+    # (Piper, Kokoro) can perform the gestures/expressions. Pass
+    # --no-strip-directions to disable if you need the raw text.
+    parser.add_argument(
+        "--no-strip-directions",
+        action="store_false",
+        default=True,
+        dest="strip_directions",
+        help=(
+            "Disable stripping of parenthetical stage directions from "
+            "utterance text before synthesis. By default, blocks like "
+            "'(laughs)' and '(dramatic pause)' are removed because no "
+            "supported TTS engine can act on them (they would be spoken "
+            "literally otherwise). The original JSON is never modified."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -433,7 +456,11 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     # ── Build the renderer and render ────────────────────────────────
-    renderer = TTSRenderer(engine, voice_map=voice_map)
+    renderer = TTSRenderer(
+        engine,
+        voice_map=voice_map,
+        strip_directions=args.strip_directions,
+    )
 
     if not args.quiet:
         print(f"  Input:  {json_path}")

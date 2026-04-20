@@ -390,6 +390,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip volume normalization.",
     )
 
+    render_group.add_argument(
+        "--no-strip-directions",
+        action="store_true",
+        default=False,
+        dest="no_strip_directions",
+        help=(
+            "Disable stripping of parenthetical stage directions (e.g. "
+            "'(laughs)', '(dramatic pause)') before synthesis. Stripping "
+            "is ON by default because no supported TTS engine can act on "
+            "these cues."
+        ),
+    )
+
     # ── Shared flags ─────────────────────────────────────────────────
     parser.add_argument(
         "--quiet", "-q",
@@ -485,6 +498,8 @@ def _build_render_argv(
         argv.append("--no-normalize")
     if args.no_log_audio_duration:
         argv.append("--no-log-audio-duration")
+    if args.no_strip_directions:
+        argv.append("--no-strip-directions")
     if args.quiet:
         argv.append("--quiet")
 
