@@ -435,12 +435,22 @@ class AudiobookConductor(BaseConductor):
             duration_instruction = f"Aim for {min_s}-{max_s} sentences."
 
             # Add word budget hint when target_words is set.
+            remaining_chapters = total_chapters - chapter_number + 1
+            remaining_beats = remaining_chapters * num_beats - beat_idx
             if config.target_words and num_beats > 0:
                 words_per_chapter = config.target_words // total_chapters
                 words_per_beat = words_per_chapter // num_beats
+                words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
                 duration_instruction += (
                     f" Target approximately {words_per_beat} words for this beat."
                 )
+
+            # Append runtime budget status for the LLM.
+            budget_status = self._budget_status_for_prompt(
+                remaining_beats, total_steps=total_chapters * num_beats,
+            )
+            if budget_status:
+                duration_instruction += f"\n{budget_status}"
 
             # Build beat-specific instruction.
             beat_points = points_per_beat[beat_idx] if beat_idx < len(points_per_beat) else []

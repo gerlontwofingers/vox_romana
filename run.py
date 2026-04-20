@@ -413,8 +413,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _build_generate_argv(args: argparse.Namespace) -> list[str]:
     """Build an argv list for run_show.main().
 
-    Always includes --quiet so we can capture the output path from
-    stdout without banner noise.
+    Always includes --quiet so we can reliably parse the output path
+    from stdout.  run.py provides its own user-facing progress
+    messages ("Step 1/2", "Step 2/2").
 
     Args:
         args: Parsed namespace from our parse_args().

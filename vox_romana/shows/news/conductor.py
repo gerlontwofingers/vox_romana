@@ -547,12 +547,22 @@ class NewsConductor(BaseConductor):
             duration_instruction = f"Aim for {min_s}-{max_s} sentences."
 
             # Add word budget hint when target_words is set.
+            remaining_segments = total_segments - segment_number + 1
+            remaining_beats = remaining_segments * num_beats - beat_idx
             if config.target_words and num_beats > 0:
                 words_per_segment = config.target_words // total_segments
                 words_per_beat = words_per_segment // num_beats
+                words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
                 duration_instruction += (
                     f" Target approximately {words_per_beat} words for this beat."
                 )
+
+            # Append runtime budget status for the LLM.
+            budget_status = self._budget_status_for_prompt(
+                remaining_beats, total_steps=total_segments * num_beats,
+            )
+            if budget_status:
+                duration_instruction += f"\n{budget_status}"
 
             # Build beat-specific instruction.
             if beat_label == "full":

@@ -114,6 +114,8 @@ CONTEXT (what's happened so far):
 
 {director_note}
 
+{runtime_status}
+
 Remember: respond with ONLY a JSON array of utterance objects. Each host \
 should contribute naturally. The lead host drives the segment but others \
 react, interject, and build on points.

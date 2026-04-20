@@ -121,7 +121,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
-from vox_romana.core.duration import parse_duration_from_text
+from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
 from vox_romana.core.router import ShowRouter
 
 
@@ -341,6 +341,10 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     # --turns 50, that's what they get, regardless of what the AI
     # thought was appropriate.
     overrides = _resolve_duration(args, brief)
+    if "target_duration_minutes" in overrides:
+        overrides["target_words"] = estimate_total_words(
+            overrides["target_duration_minutes"], "debate",
+        )
     if args.turns is not None:
         overrides["target_turns"] = args.turns
     if args.tone is not None:
@@ -429,6 +433,10 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
 
     # ── Build overrides from CLI flags ───────────────────────────────
     overrides = _resolve_duration(args, brief)
+    if "target_duration_minutes" in overrides:
+        overrides["target_words"] = estimate_total_words(
+            overrides["target_duration_minutes"], "news",
+        )
     if args.segments is not None:
         overrides["target_segments"] = args.segments
     if args.tone is not None:
@@ -520,6 +528,12 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
 
     # ── Build overrides from CLI flags ───────────────────────────────
     overrides = _resolve_duration(args, brief)
+    target_words = None
+    if "target_duration_minutes" in overrides:
+        target_words = estimate_total_words(
+            overrides["target_duration_minutes"], "podcast",
+        )
+        overrides["target_words"] = target_words
     if args.tone is not None:
         overrides["tone"] = args.tone
     if args.max_retries is not None:
@@ -533,6 +547,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides=overrides,
         auto_research=False,
     )
+    if target_words is not None:
+        bootstrap_kwargs["target_words"] = target_words
 
     if args.research:
         bootstrap_kwargs["auto_research"] = True

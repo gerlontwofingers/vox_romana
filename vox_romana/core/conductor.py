@@ -276,6 +276,58 @@ class BaseConductor(ABC):
             f"({pct:.0f}%) ≈ {seconds_to_mmss(est_secs)}"
         )
 
+    def _budget_status_for_prompt(
+        self,
+        remaining_steps: int,
+        total_steps: int | None = None,
+    ) -> str:
+        """Runtime budget status block for injection into LLM prompts.
+
+        Returns an empty string when no target is set, so callers can
+        unconditionally embed it without conditional logic.
+
+        Args:
+            remaining_steps: How many generation steps remain (segments,
+                turns, beats, chapters — whatever the conductor uses).
+            total_steps:     Total steps in the run. When provided,
+                enables behind-pace detection.
+        """
+        if self._target_words is None:
+            return ""
+        remaining = self._remaining_words
+        pct = (self._words_generated / self._target_words) * 100
+        status = (
+            f"BUDGET STATUS: {self._words_generated:,} / {self._target_words:,} "
+            f"words generated ({pct:.0f}%). "
+            f"~{remaining:,} words remaining across {remaining_steps} step(s)."
+        )
+        # Warn if behind pace: expected fraction done vs actual.
+        if total_steps and total_steps > 0 and remaining_steps > 0:
+            steps_done = total_steps - remaining_steps
+            expected_pct = (steps_done / total_steps) * 100
+            if pct < expected_pct - 5:  # 5% grace margin
+                status += (
+                    "\n⚠ BEHIND PACE — write a LONGER response to stay on track."
+                )
+        return status
+
+    def _rebalanced_target(self, planned_words: int, remaining_steps: int) -> int:
+        """Redistribute unspent word budget across remaining steps.
+
+        When earlier steps run short, later steps need to compensate.
+        Returns ``planned_words`` unchanged when no target is set.
+
+        Args:
+            planned_words:   The originally planned word count for one step.
+            remaining_steps: How many steps remain (including the current one).
+        """
+        if self._target_words is None:
+            return planned_words
+        if remaining_steps <= 0:
+            return planned_words
+        fair_share = self._remaining_words // remaining_steps
+        return max(planned_words, fair_share)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

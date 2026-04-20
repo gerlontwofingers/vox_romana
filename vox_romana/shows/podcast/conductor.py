@@ -335,6 +335,13 @@ class PodcastConductor(BaseConductor):
                 target_words = DURATION_WORD_TARGETS.get(
                     segment.duration_hint, 400
                 )
+            remaining_segments = total_segments - seg_idx
+            target_words = self._rebalanced_target(target_words, remaining_segments)
+
+            # ── Runtime budget status for the LLM ────────────────────
+            runtime_status = self._budget_status_for_prompt(
+                remaining_segments, total_steps=total_segments,
+            )
 
             # ── Determine lead host ──────────────────────────────────
             lead_host = segment.lead_host
@@ -356,6 +363,7 @@ class PodcastConductor(BaseConductor):
                 type_overlay=type_overlay,
                 context_summary=context_summary or "(This is the first segment.)",
                 director_note=director_note_str,
+                runtime_status=runtime_status,
             )
 
             # ── Generate via AgentSession ────────────────────────────

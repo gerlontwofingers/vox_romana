@@ -574,11 +574,13 @@ class DebateConductor(BaseConductor):
                 )
 
             # ── Build context and generate ───────────────────────────
+            remaining_turns = max(0, target_turns - turn_number + 1)
             event_dict = self._generate_turn(
                 speaker_name=speaker_name,
                 speaker_role=speaker_role,
                 turn_number=turn_number,
                 wrapping_up=wrapping_up,
+                remaining_turns=remaining_turns,
             )
 
             raw_events.append(event_dict)
@@ -979,6 +981,7 @@ class DebateConductor(BaseConductor):
         speaker_role: str,
         turn_number: int,
         wrapping_up: bool,
+        remaining_turns: int = 0,
     ) -> dict:
         """Generate one speaking turn by calling the LLM via AgentSession.
 
@@ -992,6 +995,7 @@ class DebateConductor(BaseConductor):
             speaker_role=speaker_role,
             turn_number=turn_number,
             wrapping_up=wrapping_up,
+            remaining_turns=remaining_turns,
         )
 
         # ── Send via the speaker's AgentSession ─────────────────────
@@ -1031,10 +1035,11 @@ class DebateConductor(BaseConductor):
         speaker_role: str,
         turn_number: int,
         wrapping_up: bool,
+        remaining_turns: int = 0,
     ) -> str:
         """Build the user message for a speaking turn.
 
-        Assembles: director note + recent turns + turn instruction.
+        Assembles: director note + budget status + recent turns + turn instruction.
         The per-agent AgentSession handles long-range memory via its own
         sliding-window compression, so we no longer include the shared
         summary here.
@@ -1044,6 +1049,14 @@ class DebateConductor(BaseConductor):
         # ── Director's current mood note ─────────────────────────────
         if self._director_note:
             parts.append(f"DIRECTOR'S NOTE (mood/pacing guidance):\n{self._director_note}\n")
+
+        # ── Runtime budget status ────────────────────────────────────
+        total_turns = remaining_turns + turn_number - 1
+        budget_status = self._budget_status_for_prompt(
+            remaining_turns, total_steps=total_turns,
+        )
+        if budget_status:
+            parts.append(budget_status)
 
         # ── Recent verbatim turns ────────────────────────────────────
         recent = self._transcript[-DEFAULT_RECENT_WINDOW:]
