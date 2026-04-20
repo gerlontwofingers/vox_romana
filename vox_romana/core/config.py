@@ -100,6 +100,20 @@ class ContentConfig:
         estimated_duration_minutes:
                        Rough target length. The conductor uses this to decide
                        how many turns to generate before wrapping up.
+
+        target_duration_minutes:
+                       Precise target length in minutes used by the adaptive
+                       length system.  When set, the conductor estimates a
+                       word budget and enforces ±tolerance_percent.
+
+        tolerance_percent:
+                       How much deviation (in %) from the word budget is
+                       acceptable.  Default: 10.0 (±10%).
+
+        flexibility_score:
+                       0.0–1.0 hint to the conductor about how strictly to
+                       enforce the target.  0.0 = rigid (audiobooks), 1.0 =
+                       loose (podcasts).  Content-type configs override this.
     """
 
     content_type: str = "generic"
@@ -108,6 +122,10 @@ class ContentConfig:
     fact_check: FactCheckMode = "off"
     title: str | None = None
     estimated_duration_minutes: int | None = None
+    target_duration_minutes: float | None = None
+    target_words: int | None = None
+    tolerance_percent: float = 10.0
+    flexibility_score: float = 0.5
     max_retries: int = 3
 
     def validate(self) -> list[str]:

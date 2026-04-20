@@ -107,6 +107,7 @@ class SegmentConfig:
     tone: str | None = None
     duration_hint: str = "medium"
     segment_type: str = "anchor_read"
+    target_beats: int = 1  # How many beats to generate (lead, body, tag, etc.)
 
 
 @dataclass
@@ -162,6 +163,7 @@ class NewsConfig(ContentConfig):
     """
 
     content_type: str = "news"
+    flexibility_score: float = 0.5
     topic: str | None = None
     tone: str | None = None
     setting: str | None = None

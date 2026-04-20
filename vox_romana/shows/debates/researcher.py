@@ -261,7 +261,8 @@ class DebateResearcher:
             messages=[
                 {"role": "system", "content": QUERY_FORMULATOR_PROMPT},
                 {"role": "user", "content": brief},
-            ]
+            ],
+            temperature=0,
         )
 
         return self.parse_queries(raw)
@@ -354,7 +355,8 @@ class DebateResearcher:
             messages=[
                 {"role": "system", "content": "You are a factual research compiler."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
 
     def run_from_knowledge(self, brief: str) -> str:
@@ -377,5 +379,6 @@ class DebateResearcher:
             messages=[
                 {"role": "system", "content": "You are a factual research compiler."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )

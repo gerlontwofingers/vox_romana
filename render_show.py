@@ -75,6 +75,9 @@ USAGE:
     # Quiet mode (no progress output — good for scripting):
     python render_show.py output/show.json --quiet
 
+    # Disable WPM logging (for benchmarks or dry runs):
+    python render_show.py output/show.json --no-log-audio-duration
+
     # Full pipeline: generate a show then immediately render it.
     python run_show.py prompts/ubi_debate.txt --quiet | xargs python render_show.py
 
@@ -105,6 +108,54 @@ load_dotenv()
 
 from vox_romana.tts.engine import VoiceConfig
 from vox_romana.tts.renderer import TTSRenderer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Content-type detection from show JSON keys
+# ─────────────────────────────────────────────────────────────────────────────
+# Each show type stamps a unique ID field into its serialized JSON.
+# We inspect those fields to figure out what kind of show we rendered,
+# so the WPM observation lands in the right catalog bucket.
+
+_CONTENT_TYPE_KEYS: dict[str, str] = {
+    "debate_id": "debate",
+    "show_id": "news",
+    "podcast_id": "podcast",
+    "book_id": "audiobook",
+}
+
+
+def _detect_content_type(show_data: dict) -> str:
+    """Infer the content type from the show JSON's top-level keys.
+
+    Checks for known ID fields stamped by each serializer:
+        debate_id  → "debate"
+        show_id    → "news"
+        podcast_id → "podcast"
+        book_id    → "audiobook"
+
+    Returns:
+        A content type string, or "unknown" if no key matched.
+    """
+    for key, content_type in _CONTENT_TYPE_KEYS.items():
+        if key in show_data:
+            return content_type
+    return "unknown"
+
+
+def _count_event_words(show_data: dict) -> int:
+    """Count total spoken words across all events in the show JSON.
+
+    Events live under the "events" key. Each event has a "text" field
+    containing the spoken dialogue. We split on whitespace and count.
+
+    Returns:
+        Total word count across all events (0 if no events found).
+    """
+    return sum(
+        len(event.get("text", "").split())
+        for event in show_data.get("events", [])
+    )
 
 
 def make_engine(engine_name: str, **kwargs):
@@ -297,6 +348,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Suppress progress output. Just produce the audio file.",
     )
 
+    # ── Audio duration feedback ──────────────────────────────────────
+    # By default, after rendering we log the actual audio duration and
+    # word count to the catalog's wpm_stats table. This feeds the
+    # SpeechRateAdvisor's learning loop — future duration estimates
+    # improve as we accumulate real observations.
+    #
+    # Disable with --no-log-audio-duration for benchmarks, dry runs,
+    # or when you don't want to pollute the catalog.
+    #
+    # Examples:
+    #   # Normal render — WPM logged automatically:
+    #   python render_show.py output/text/debates/ubi.json
+    #
+    #   # Disable logging (dry run / benchmark):
+    #   python render_show.py output/show.json --no-log-audio-duration
+    parser.add_argument(
+        "--no-log-audio-duration",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable logging actual audio duration to the catalog. "
+            "By default, the renderer records WPM observations so "
+            "future duration estimates improve over time."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -393,13 +470,61 @@ def main(argv: list[str] | None = None) -> None:
     elapsed = time.time() - start_time
 
     # ── Report results ───────────────────────────────────────────────
+    duration_sec = result.duration_ms / 1000
+
     if not args.quiet:
-        duration_sec = result.duration_ms / 1000
         print(f"\n  Done!")
         print(f"  Audio:    {result.output_path}")
         print(f"  Duration: {duration_sec:.1f}s")
         print(f"  Events:   {result.rendered} rendered, {result.skipped} skipped")
         print(f"  Time:     {elapsed:.1f}s")
+
+    # ── Log actual audio duration to catalog ─────────────────────────
+    # This is the feedback loop that makes duration estimates smarter.
+    # After rendering, we know the REAL audio length (from the TTS
+    # engine) and the word count (from the script). Recording this
+    # observation lets the SpeechRateAdvisor improve its WPM estimates
+    # for future runs.
+    #
+    # Why this matters:
+    #   - Static WPM defaults (150 wpm for debate, 165 for news) are
+    #     just starting points.
+    #   - Real WPM varies by speaker pacing, engine, and content style.
+    #   - After a few logged renders, the advisor switches from static
+    #     defaults to running averages from the catalog.
+    #   - If the optional WPMModel (sklearn) is installed, it trains an
+    #     even more accurate predictor from the accumulated data.
+    if not args.no_log_audio_duration:
+        content_type = _detect_content_type(show_data)
+        word_count = _count_event_words(show_data)
+
+        if content_type != "unknown" and word_count > 0 and duration_sec > 0:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.core.duration import SpeechRateAdvisor
+
+                catalog = Catalog()
+                advisor = SpeechRateAdvisor(catalog)
+                advisor.log_observation(content_type, word_count, duration_sec)
+
+                actual_wpm = (word_count / duration_sec) * 60.0
+                if not args.quiet:
+                    print(f"  WPM logged: {actual_wpm:.0f} "
+                          f"({content_type}, {word_count} words, "
+                          f"{duration_sec:.1f}s)")
+            except Exception as e:
+                # Logging is best-effort — never crash the render pipeline.
+                if not args.quiet:
+                    print(f"  WPM logging skipped: {e}")
+        elif not args.quiet:
+            if content_type == "unknown":
+                print("  WPM logging skipped: unknown content type")
+            elif word_count == 0:
+                print("  WPM logging skipped: no words in events")
+    elif not args.quiet:
+        print("  WPM logging: disabled (--no-log-audio-duration)")
+
+    if not args.quiet:
         print()
 
 

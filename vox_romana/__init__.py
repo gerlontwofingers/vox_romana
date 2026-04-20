@@ -1,11 +1,11 @@
 """vox_romana — LLM-driven audio content generation.
 
-This package generates scripted audio content (debates, news shows, audiobooks)
-using LLM agents, then feeds the structured output into text-to-speech.
+This package generates scripted audio content (debates, news shows, audiobooks,
+podcasts) using LLM agents, then feeds the structured output into text-to-speech.
 
 Architecture:
     core/       — Generic LLM client, agent, base models, and shared config.
-    shows/      — Content-type implementations (debates, news, etc.).
+    shows/      — Content-type implementations (debates, news, audiobooks, podcasts).
     tts/        — Text-to-speech engines, mixer, and renderer.
 
 Quick start (debates):
@@ -95,6 +95,35 @@ from .shows.news import (
 # Users import show-specific ones from the subpackage when needed.
 from .shows.news.config import DirectorBrief as NewsDirectorBrief
 
+# ── Audiobooks (the third show type) ──────────────────────────────────────
+from .shows.audiobooks import (
+    AudiobookBootstrap,
+    AudiobookChapter,
+    AudiobookConductor,
+    AudiobookConductorResult,
+    AudiobookConfig,
+    AudiobookEvent,
+    AudiobookSerializer,
+    MergedAudiobook,
+    NarratorConfig,
+)
+from .shows.audiobooks.config import ChapterConfig as AudiobookChapterConfig
+from .shows.audiobooks.config import DirectorBrief as AudiobookDirectorBrief
+
+# ── Podcasts (the fourth show type) ───────────────────────────────────────
+from .shows.podcast import (
+    MergedPodcast,
+    PodcastConfig,
+    PodcastDirectorBrief,
+    PodcastEvent,
+    PodcastHostProfile,
+    PodcastSegment,
+    PodcastSegmentConfig,
+)
+from .shows.podcast.bootstrap import PodcastBootstrap
+from .shows.podcast.conductor import PodcastConductor, PodcastConductorResult
+from .shows.podcast.serializer import PodcastSerializer
+
 __all__ = [
     # Core
     "AgentResponse",
@@ -158,4 +187,28 @@ __all__ = [
     "NewsSegment",
     "NewsSerializer",
     "SegmentConfig",
+    # Audiobooks
+    "AudiobookBootstrap",
+    "AudiobookChapter",
+    "AudiobookChapterConfig",
+    "AudiobookConductor",
+    "AudiobookConductorResult",
+    "AudiobookConfig",
+    "AudiobookDirectorBrief",
+    "AudiobookEvent",
+    "AudiobookSerializer",
+    "MergedAudiobook",
+    "NarratorConfig",
+    # Podcasts
+    "MergedPodcast",
+    "PodcastBootstrap",
+    "PodcastConductor",
+    "PodcastConductorResult",
+    "PodcastConfig",
+    "PodcastDirectorBrief",
+    "PodcastEvent",
+    "PodcastHostProfile",
+    "PodcastSegment",
+    "PodcastSegmentConfig",
+    "PodcastSerializer",
 ]

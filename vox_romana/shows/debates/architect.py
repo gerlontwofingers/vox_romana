@@ -185,7 +185,8 @@ class DebateArchitect:
             messages=[
                 {"role": "system", "content": ARCHITECT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
-            ]
+            ],
+            temperature=0,
         )
 
         # ── Parse the JSON response into a DebateConfig ──────────────

@@ -206,7 +206,8 @@ class DebateProfileBuilder:
             messages=[
                 {"role": "system", "content": PROFILE_BUILDER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
-            ]
+            ],
+            temperature=0,
         )
 
         return self.parse_response(raw_response, stub=stub)

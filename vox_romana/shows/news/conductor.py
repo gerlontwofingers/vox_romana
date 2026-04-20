@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.session import AgentSession
 from .config import NewsConfig, AnchorConfig, SegmentConfig
 from .models import MergedNewsShow, NewsEvent, NewsSegment
 from .prompts import (
@@ -74,11 +75,13 @@ from .prompts import (
 # How many delivered segment transcripts to keep as verbatim context.
 DEFAULT_RECENT_WINDOW = 3
 
-# Duration hints map to approximate sentence counts for instruction.
+# Duration hints map to approximate sentence counts per beat.
+# "short" beats are quick hits, "long" beats are deep-dives.
+# Multi-beat segments use multiple beats to build longer coverage.
 DURATION_SENTENCES = {
-    "short": (2, 4),
-    "medium": (4, 7),
-    "long": (7, 12),
+    "short": (2, 5),
+    "medium": (5, 10),
+    "long": (10, 18),
 }
 
 
@@ -163,12 +166,13 @@ class NewsConductor(BaseConductor):
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
     ) -> None:
-        super().__init__(config)
-        self._client = client or DeepSeekClient(api_key=api_key)
+        resolved_client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(config, client=resolved_client)
 
         # Populated by _build_agents():
         self._anchor_prompts: dict[str, str] = {}
         self._host_prompt: str | None = None
+        self._anchor_sessions: dict[str, AgentSession] = {}
 
         # Runtime state:
         self._transcript: list[dict] = []
@@ -232,6 +236,14 @@ class NewsConductor(BaseConductor):
         if config.show_host:
             self._host_prompt = self._build_host_prompt()
 
+        # Create AgentSessions for anchors — each maintains its own
+        # sliding-window memory of past segment deliveries.
+        self._anchor_sessions = {}
+        for name, prompt in self._anchor_prompts.items():
+            self._anchor_sessions[name] = self._create_session(
+                prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            )
+
     def _run_turn_loop(self) -> list[dict]:
         """Run the segment-by-segment generation loop.
 
@@ -247,6 +259,22 @@ class NewsConductor(BaseConductor):
         global_order = 0
         segments = config.segments
         total_segments = len(segments)
+
+        # ── Auto-scale beats to hit target_words ─────────────────────
+        # If the user requested a word count, distribute beats across
+        # segments to approximately reach it. Each beat produces ~100-200
+        # words, so we estimate total beats needed and spread them.
+        if config.target_words and total_segments > 0:
+            # Estimate: ~150 words per beat (mid-range for medium duration).
+            words_per_beat = 150
+            total_beats_needed = max(total_segments, config.target_words // words_per_beat)
+            # Distribute extra beats proportionally by duration hint weight.
+            weight_map = {"short": 1, "medium": 2, "long": 3}
+            total_weight = sum(weight_map.get(s.duration_hint, 2) for s in segments)
+            for s in segments:
+                if s.target_beats <= 1:  # Only auto-scale if not already set
+                    w = weight_map.get(s.duration_hint, 2)
+                    s.target_beats = max(1, round(total_beats_needed * w / total_weight))
 
         # ── Show host intro ──────────────────────────────────────────
         if self._host_prompt:
@@ -301,6 +329,12 @@ class NewsConductor(BaseConductor):
                 all_events.append(evt)
                 self._transcript.append(evt)
                 global_order += 1
+                # ── Adaptive duration tracking ───────────────────────
+                self._record_words(evt.get("text", ""))
+
+            # ── Check if we've hit the budget ────────────────────────
+            if self._over_budget():
+                break
 
             # Director check-in at intervals.
             director_brief = config.director_brief
@@ -399,7 +433,7 @@ class NewsConductor(BaseConductor):
             config=config,
             events=raw_events,
             transcript=transcript_lines,
-            total_llm_calls=self._llm_calls,
+            total_llm_calls=self._total_session_calls + self._llm_calls,
             director_notes=[self._director_note] if self._director_note else [],
             news_events=news_events,
             news_segments=news_segments,
@@ -468,9 +502,13 @@ class NewsConductor(BaseConductor):
     ) -> list[dict]:
         """Generate audio events for one news segment.
 
-        The anchor gets the segment config (headline, facts, angle) and
-        delivers the story. For longer segments, we may generate multiple
-        beats (lead, body, tag).
+        The anchor delivers the story in one or more beats:
+          - 1 beat (default):  Single delivery — lead + body in one shot.
+          - 2 beats:           Lead (hook + setup) then body (detail + context).
+          - 3+ beats:          Lead → body sections → tag/wrap.
+
+        The number of beats is controlled by segment.target_beats (set by
+        the architect based on the segment's depth and the requested length).
         """
         config = self.config
         if not isinstance(config, NewsConfig):
@@ -492,54 +530,109 @@ class NewsConductor(BaseConductor):
                 f"REFERENCE MATERIAL (cite only from this):\n{config.reference_material}\n"
             )
 
-        # Duration instruction.
-        min_s, max_s = DURATION_SENTENCES.get(segment.duration_hint, (4, 7))
-        duration_instruction = f"Aim for {min_s}-{max_s} sentences."
+        num_beats = max(1, segment.target_beats)
+        events: list[dict] = []
 
-        # Build the user message.
-        user_message = SEGMENT_DELIVERY_PROMPT.format(
-            segment_number=segment_number,
-            total_segments=total_segments,
-            headline=segment.headline,
-            angle=segment.angle or "straight news delivery",
-            segment_tone=segment.tone or config.tone or "authoritative",
-            duration_hint=segment.duration_hint,
-            key_facts=key_facts_block,
-            reference_section=reference_section,
-            duration_instruction=duration_instruction,
-        )
+        # Define beat labels for multi-beat segments.
+        if num_beats == 1:
+            beat_labels = ["full"]
+        elif num_beats == 2:
+            beat_labels = ["lead", "body"]
+        else:
+            beat_labels = ["lead"] + [f"body_{i}" for i in range(1, num_beats - 1)] + ["tag"]
 
-        # Add context summary if we have one.
-        if self._summary:
-            user_message = f"BROADCAST SO FAR (summary):\n{self._summary}\n\n{user_message}"
+        for beat_idx, beat_label in enumerate(beat_labels):
+            # Duration per beat: distribute evenly across beats.
+            min_s, max_s = DURATION_SENTENCES.get(segment.duration_hint, (5, 10))
+            duration_instruction = f"Aim for {min_s}-{max_s} sentences."
 
-        # Add director note if present.
-        if self._director_note:
-            user_message = f"DIRECTOR'S NOTE:\n{self._director_note}\n\n{user_message}"
+            # Add word budget hint when target_words is set.
+            if config.target_words and num_beats > 0:
+                words_per_segment = config.target_words // total_segments
+                words_per_beat = words_per_segment // num_beats
+                duration_instruction += (
+                    f" Target approximately {words_per_beat} words for this beat."
+                )
 
-        # Call the LLM.
-        raw_response = self._client.chat(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ]
-        )
-        self._llm_calls += 1
+            # Build beat-specific instruction.
+            if beat_label == "full":
+                beat_instruction = (
+                    f"Deliver this news segment. Cover the key facts naturally, "
+                    f"following the angle provided. Match the tone to the story content. "
+                    f"{duration_instruction}"
+                )
+            elif beat_label == "lead":
+                beat_instruction = (
+                    f"Deliver the LEAD for this story — hook the listener, establish "
+                    f"the headline, and set up the key question or conflict. "
+                    f"{duration_instruction}"
+                )
+            elif beat_label == "tag":
+                beat_instruction = (
+                    f"Deliver the TAG for this story — wrap up the segment with "
+                    f"context, implications, or a forward-looking note. "
+                    f"{duration_instruction}"
+                )
+            else:
+                beat_instruction = (
+                    f"Continue the BODY of this story — go deeper into the facts, "
+                    f"provide context, examples, or expert perspectives. "
+                    f"Do NOT repeat what you already covered in earlier beats. "
+                    f"{duration_instruction}"
+                )
 
-        # Parse the response.
-        event_dict = self._parse_response(raw_response)
-        event_dict["speaker"] = anchor.name
-        event_dict["role"] = "anchor"
-        event_dict["event_kind"] = "utterance"
-        event_dict["segment_id"] = seg_id
-        event_dict["global_order"] = global_order_start
-        event_dict["local_order"] = 0
+            user_message = SEGMENT_DELIVERY_PROMPT.format(
+                segment_number=segment_number,
+                total_segments=total_segments,
+                headline=segment.headline,
+                angle=segment.angle or "straight news delivery",
+                segment_tone=segment.tone or config.tone or "authoritative",
+                duration_hint=segment.duration_hint,
+                key_facts=key_facts_block,
+                reference_section=reference_section,
+                duration_instruction=beat_instruction,
+            )
 
-        # Set segment-appropriate pauses.
-        event_dict.setdefault("pause_before", "short")
-        event_dict.setdefault("pause_after", "medium")
+            # Add director note if present.
+            if self._director_note:
+                user_message = f"DIRECTOR'S NOTE:\n{self._director_note}\n\n{user_message}"
 
-        return [event_dict]
+            # Send via the anchor's AgentSession.
+            session = self._anchor_sessions.get(anchor.name)
+            if session is not None:
+                raw_response = session.send(user_message)
+            else:
+                raw_response = self._client.chat(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ]
+                )
+                self._llm_calls += 1
+
+            event_dict = self._parse_response(raw_response)
+            event_dict["speaker"] = anchor.name
+            event_dict["role"] = "anchor"
+            event_dict["event_kind"] = "utterance"
+            event_dict["segment_id"] = seg_id
+            event_dict["global_order"] = global_order_start + beat_idx
+            event_dict["local_order"] = beat_idx
+            event_dict["beat_label"] = beat_label
+
+            # Pauses: short between beats, medium around the full segment.
+            if beat_idx == 0:
+                event_dict.setdefault("pause_before", "short")
+            else:
+                event_dict.setdefault("pause_before", "none")
+
+            if beat_idx == num_beats - 1:
+                event_dict.setdefault("pause_after", "medium")
+            else:
+                event_dict.setdefault("pause_after", "short")
+
+            events.append(event_dict)
+
+        return events
 
     def _generate_host_event(self, *, beat: str, context_hint: str) -> dict:
         """Generate one narration event from the show host."""
@@ -633,7 +726,8 @@ class NewsConductor(BaseConductor):
             messages=[
                 {"role": "system", "content": "You are a concise summarizer."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
         self._llm_calls += 1
 
@@ -677,7 +771,8 @@ class NewsConductor(BaseConductor):
             messages=[
                 {"role": "system", "content": "You are a broadcast director. Respond with JSON only."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
         self._llm_calls += 1
 

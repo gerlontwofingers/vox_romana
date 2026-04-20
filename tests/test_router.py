@@ -38,9 +38,13 @@ class TestRouterResult:
         r2 = RouterResult("debate", 0.9, "fictional", needs_research=False)
         assert r2.needs_research is False
 
+    def test_valid_podcast(self):
+        r = RouterResult("podcast", 0.85, "multi-host conversation")
+        assert r.show_type == "podcast"
+
     def test_unknown_type_raises(self):
         with pytest.raises(ValueError, match="Unknown show type"):
-            RouterResult("podcast", 0.9, "nope")
+            RouterResult("interview", 0.9, "nope")
 
     def test_confidence_clamped_high(self):
         r = RouterResult("debate", 1.5, "over")
@@ -132,8 +136,13 @@ class TestParseRouterResponse:
         with pytest.raises((json.JSONDecodeError, ValueError)):
             parse_router_response("not json at all")
 
+    def test_podcast_type_valid(self):
+        raw = '{"show_type": "podcast", "confidence": 0.9, "reasoning": "multi-host"}'
+        result = parse_router_response(raw)
+        assert result.show_type == "podcast"
+
     def test_unknown_type_raises(self):
-        raw = '{"show_type": "podcast", "confidence": 0.9, "reasoning": "?"}'
+        raw = '{"show_type": "interview", "confidence": 0.9, "reasoning": "?"}'
         with pytest.raises(ValueError, match="Unknown show type"):
             parse_router_response(raw)
 

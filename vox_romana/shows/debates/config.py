@@ -249,6 +249,7 @@ class DebateConfig(ContentConfig):
 
     # ── Override the content_type from the base class ──────────────────────
     content_type: str = "debate"
+    flexibility_score: float = 0.5
 
     # ── Debate-specific fields ─────────────────────────────────────────────
     topic: str | None = None

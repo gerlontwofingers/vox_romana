@@ -49,7 +49,7 @@ text outside the JSON block.
   "topic": "string — the broadcast theme (e.g., 'This week in AI')",
   "tone": "string — overall broadcast tone (e.g., 'authoritative', 'conversational')",
   "setting": "string — where the broadcast happens (e.g., 'modern news studio')",
-  "target_segments": "integer — how many segments/stories (3-8 typical)",
+  "target_segments": "integer — how many segments/stories to cover (scale to match brief)",
   "anchors": [
     {
       "name": "string — anchor's full name",
@@ -63,7 +63,8 @@ text outside the JSON block.
       "key_facts": ["array of verified fact strings for this story"],
       "tone": "string — segment-specific tone (e.g., 'somber', 'upbeat')",
       "duration_hint": "string — 'short', 'medium', or 'long'",
-      "segment_type": "string — 'anchor_read' (default), 'package', 'breaking'"
+      "segment_type": "string — 'anchor_read' (default), 'package', 'breaking'",
+      "target_beats": "integer — how many beats (1=simple read, 2=lead+body, 3+=deep dive). Default 1."
     }
   ],
   "show_host": {
@@ -76,7 +77,11 @@ text outside the JSON block.
 RULES:
 - Usually 1-2 anchors. Solo anchor is most common.
 - Order segments by editorial priority: lead story first, kicker last.
-- Include 3-8 segments depending on the brief.
+- Scale segment count to match the brief: a quick roundup might be 3-5
+  segments, a deep-dive show could be 10-20+, a full-hour broadcast
+  might be 15-30. There is NO hard cap — use as many segments as the
+  content warrants. If the user specifies a word count or duration,
+  plan enough segments to fill it.
 - The lead story should be "medium" or "long". Kicker should be "short".
 - show_host wraps the broadcast in narrative structure. ALWAYS include one.
 - If given reference material, extract key_facts from it for each segment.
@@ -161,6 +166,7 @@ class NewsBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        target_words: int | None = None,
     ) -> NewsConfig:
         """Run the full bootstrap chain: brief → fully populated NewsConfig.
 
@@ -191,7 +197,7 @@ class NewsBootstrap:
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
-        config = self._run_architect(brief, reference_material, fact_check)
+        config = self._run_architect(brief, reference_material, fact_check, target_words=target_words)
 
         # ── Stage 2: Anchor profiling ────────────────────────────────
         for i, anchor in enumerate(config.anchors):
@@ -223,17 +229,28 @@ class NewsBootstrap:
         brief: str,
         reference_material: str | None,
         fact_check: str,
+        *,
+        target_words: int | None = None,
     ) -> NewsConfig:
         """Call the Architect LLM to produce a skeleton NewsConfig."""
         user_parts = [f"BRIEF:\n{brief}"]
         if reference_material:
             user_parts.append(f"\nREFERENCE MATERIAL:\n{reference_material}")
+        if target_words:
+            user_parts.append(
+                f"\nTARGET LENGTH: {target_words:,} words. "
+                f"Plan enough segments and beats to fill this — a typical "
+                f"segment produces ~100-200 words per beat. For a {target_words:,}-word "
+                f"show, plan roughly {max(3, target_words // 150)} segments with "
+                f"multiple beats for the longer ones."
+            )
 
         raw = self._client.chat(
             messages=[
                 {"role": "system", "content": NEWS_ARCHITECT_PROMPT},
                 {"role": "user", "content": "\n".join(user_parts)},
-            ]
+            ],
+            temperature=0,
         )
 
         return self._parse_architect_response(
@@ -280,6 +297,7 @@ class NewsBootstrap:
                 tone=s.get("tone"),
                 duration_hint=s.get("duration_hint", "medium"),
                 segment_type=s.get("segment_type", "anchor_read"),
+                target_beats=s.get("target_beats", 1),
             ))
 
         # Build show host.
@@ -325,7 +343,8 @@ class NewsBootstrap:
             messages=[
                 {"role": "system", "content": "You produce JSON voice profiles."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
 
         cleaned = raw.strip()
@@ -354,7 +373,8 @@ class NewsBootstrap:
             messages=[
                 {"role": "system", "content": "You produce JSON voice profiles."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
 
         cleaned = raw.strip()
@@ -386,7 +406,8 @@ class NewsBootstrap:
             messages=[
                 {"role": "system", "content": NEWS_DIRECTOR_PROMPT},
                 {"role": "user", "content": user_message},
-            ]
+            ],
+            temperature=0,
         )
 
         return self._parse_director_response(raw)

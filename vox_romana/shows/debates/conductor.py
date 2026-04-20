@@ -94,6 +94,7 @@ from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.session import AgentSession
 from .bootstrap import DebateBootstrap
 from .config import DebateConfig, ParticipantProfile
 from .models import DebateChunk, DebateEvent, MergedDebate
@@ -291,16 +292,14 @@ class DebateConductor(BaseConductor):
             client:  An existing DeepSeekClient to use (for testing: inject a mock).
             api_key: API key for DeepSeekClient. Only used if client is None.
         """
-        super().__init__(config)
-
-        # We take the client as a parameter (dependency injection) so tests
-        # can pass in a mock. In production, it creates its own.
-        self._client = client or DeepSeekClient(api_key=api_key)
+        resolved_client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(config, client=resolved_client)
 
         # These get populated by _build_agents():
         self._participant_prompts: dict[str, str] = {}
         self._moderator_prompt: str | None = None
         self._host_prompt: str | None = None
+        self._agent_sessions: dict[str, "AgentSession"] = {}
 
         # Runtime state (reset each run):
         self._transcript: list[dict] = []  # [{speaker, text, ...}, ...]
@@ -378,6 +377,20 @@ class DebateConductor(BaseConductor):
         # built from ShowHostConfig data + the host role instructions.
         if config.show_host and config.show_host.name:
             self._host_prompt = self._build_host_prompt()
+
+        # ── Create AgentSessions for persistent agents ───────────────
+        # Each participant and moderator gets their own session with
+        # sliding-window compression. This replaces the manual
+        # _compress_context() approach — sessions auto-compress.
+        self._agent_sessions = {}
+        for name, prompt in self._participant_prompts.items():
+            self._agent_sessions[name] = self._create_session(
+                prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            )
+        if self._moderator_prompt and config.moderator:
+            self._agent_sessions[config.moderator.name] = self._create_session(
+                self._moderator_prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            )
 
         # ── Reset runtime state ──────────────────────────────────────
         self._transcript = []
@@ -472,8 +485,12 @@ class DebateConductor(BaseConductor):
             # ── Should we stop? ───────────────────────────────────────
             if turn_number > target_turns and not wrapping_up:
                 wrapping_up = True
+            if not wrapping_up and self._should_wrap_up():
+                wrapping_up = True
             if turn_number > target_turns + 6:
                 break  # Hard cap: don't let closing statements go on forever.
+            if self._over_budget():
+                break  # Hard cap: word budget exceeded.
 
             # ── All closings done? ───────────────────────────────────
             # Once every participant (and moderator if present) has given
@@ -567,28 +584,27 @@ class DebateConductor(BaseConductor):
             raw_events.append(event_dict)
 
             # ── Record in transcript ─────────────────────────────────
+            text = event_dict.get("text", "")
             self._transcript.append({
                 "speaker": speaker_name,
                 "role": speaker_role,
-                "text": event_dict.get("text", ""),
+                "text": text,
                 "turn": turn_number,
             })
+
+            # ── Adaptive duration tracking ───────────────────────────
+            self._record_words(text)
 
             # ── Track closing statements ─────────────────────────────
             if wrapping_up:
                 closing_speakers.add(speaker_name)
 
-            # ── Compress context periodically ────────────────────────
-            if (
-                turn_number > DEFAULT_RECENT_WINDOW
-                and turn_number % DEFAULT_COMPRESS_INTERVAL == 0
-            ):
-                self._compress_context()
-
             # ── Check for end conditions ─────────────────────────────
             # (Handled by the all_closed check at the top of the loop.
             # The old moderator-last-word check is no longer needed since
-            # closing_speakers tracking handles all configurations.)
+            # closing_speakers tracking handles all configurations.
+            # Context compression is handled automatically by each agent's
+            # AgentSession — no manual _compress_context() needed.)
 
         # ── POST-DEBATE: Show host outro ─────────────────────────────
         # The host signs off AFTER the debate wraps. This is the closing
@@ -660,7 +676,7 @@ class DebateConductor(BaseConductor):
             config=config,
             events=raw_events,
             transcript=transcript_lines,
-            total_llm_calls=self._llm_calls,
+            total_llm_calls=self._total_session_calls + self._llm_calls,
             director_notes=[self._director_note] if self._director_note else [],
             debate_events=debate_events,
             debate_id=self._debate_id,
@@ -964,17 +980,12 @@ class DebateConductor(BaseConductor):
         turn_number: int,
         wrapping_up: bool,
     ) -> dict:
-        """Generate one speaking turn by calling the LLM.
+        """Generate one speaking turn by calling the LLM via AgentSession.
 
-        Builds the full message list (system prompt + context + turn prompt),
-        calls the LLM, parses the JSON response, and returns the event dict.
+        Builds the context message (director note + recent turns + instruction),
+        sends it through the speaker's session (which manages its own history
+        and compression), and parses the JSON response.
         """
-        # ── Select the right system prompt ───────────────────────────
-        if speaker_role == "moderator":
-            system_prompt = self._moderator_prompt
-        else:
-            system_prompt = self._participant_prompts.get(speaker_name, "")
-
         # ── Build the user message (context + turn prompt) ───────────
         user_message = self._build_turn_context(
             speaker_name=speaker_name,
@@ -983,14 +994,25 @@ class DebateConductor(BaseConductor):
             wrapping_up=wrapping_up,
         )
 
-        # ── Call the LLM ─────────────────────────────────────────────
-        raw_response = self._client.chat(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ]
-        )
-        self._llm_calls += 1
+        # ── Send via the speaker's AgentSession ─────────────────────
+        session = self._agent_sessions.get(speaker_name)
+        if session is not None:
+            raw_response = session.send(user_message)
+        else:
+            # Fallback for agents without sessions (shouldn't happen in
+            # normal flow, but keeps backward compat).
+            system_prompt = (
+                self._moderator_prompt
+                if speaker_role == "moderator"
+                else self._participant_prompts.get(speaker_name, "")
+            )
+            raw_response = self._client.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ]
+            )
+            self._llm_calls += 1
 
         # ── Parse the JSON response ──────────────────────────────────
         event_dict = self._parse_turn_response(raw_response)
@@ -1012,14 +1034,12 @@ class DebateConductor(BaseConductor):
     ) -> str:
         """Build the user message for a speaking turn.
 
-        Assembles: summary + director note + recent turns + turn instruction.
-        This is what the agent sees as "what's happened so far."
+        Assembles: director note + recent turns + turn instruction.
+        The per-agent AgentSession handles long-range memory via its own
+        sliding-window compression, so we no longer include the shared
+        summary here.
         """
         parts = []
-
-        # ── Compressed summary of older turns ────────────────────────
-        if self._summary:
-            parts.append(f"DEBATE SO FAR (summary):\n{self._summary}\n")
 
         # ── Director's current mood note ─────────────────────────────
         if self._director_note:
@@ -1142,7 +1162,8 @@ class DebateConductor(BaseConductor):
             messages=[
                 {"role": "system", "content": "You are a concise summarizer."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
         self._llm_calls += 1
 
@@ -1197,15 +1218,14 @@ class DebateConductor(BaseConductor):
             f"Turn {t['turn']} [{t['speaker']}]: {t['text']}" for t in recent
         )
 
-        # ── Extract arguments already made from the summary ──────────
-        # The enhanced context summary includes an "ARGUMENTS USED:" section.
-        # Pass it through so the director can flag recycled points.
-        arguments_used = ""
-        if self._summary and "ARGUMENTS USED:" in self._summary:
-            args_start = self._summary.index("ARGUMENTS USED:")
-            arguments_used = self._summary[args_start:]
-        elif self._summary:
-            arguments_used = "(see narrative summary for context)"
+        # ── Extract arguments already made from the transcript ────────
+        # Build a compact list of what each speaker has argued so the
+        # director can flag recycled points.
+        older_turns = self._transcript[:-DEFAULT_RECENT_WINDOW]
+        if older_turns:
+            arguments_used = "ARGUMENTS USED:\n" + "\n".join(
+                f"  [{t['speaker']}]: {t['text'][:100]}" for t in older_turns[-20:]
+            )
         else:
             arguments_used = "(debate just started — no arguments yet)"
 
@@ -1225,7 +1245,8 @@ class DebateConductor(BaseConductor):
             messages=[
                 {"role": "system", "content": "You are a debate director. Respond with JSON only."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            temperature=0,
         )
         self._llm_calls += 1
 

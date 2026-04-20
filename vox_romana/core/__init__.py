@@ -18,7 +18,7 @@ Architecture at a glance:
     search.py        — BaseSearchProvider + GoogleSearchProvider.
     data_researcher.py — DataResearcher: grounded statistical analysis.
     models.py        — AudioEvent, AgentResponse, FactCard.
-    archive.py       — NoteArchive + OutlineArchive (JSONL persistence).
+    "archive.py"       — NoteArchive + AgentNoteStore + OutlineArchive (JSONL).
     librarian.py     — Librarian: ephemeral search agent for the archive.
     editing/         — ChunkEditor, DirectorOutline, RetryLoop (quality gating).
     planner.py       — ContentPlanner (placeholder for episodic splitting).
@@ -29,12 +29,23 @@ All public symbols are re-exported here for convenience:
 """
 
 from .agent import DeepSeekAgent
-from .archive import EditorNote, NoteArchive, OutlineArchive, OutlineRecord
+from .archive import AgentNote, AgentNoteStore, EditorNote, NoteArchive, OutlineArchive, OutlineRecord
 from .catalog import Catalog, RunRecord, StudyRecord
 from .client import DeepSeekClient
 from .conductor import BaseConductor, ConductorResult
 from .config import ContentConfig, FactCheckMode, ParticipantProfile, ShowHostConfig
 from .data_researcher import DataResearcher, StudyResult
+from .duration import (
+    SpeechRateAdvisor,
+    WPM_DEFAULTS,
+    estimate_total_words,
+    get_wpm,
+    parse_duration_from_text,
+    seconds_to_mmss,
+    seconds_to_words,
+    tolerance_window,
+    words_to_seconds,
+)
 from .editing import (
     EDITOR_SYSTEM_PROMPT,
     ChunkEditor,
@@ -45,6 +56,7 @@ from .editing import (
     OutlineSnapshot,
     RetryLoop,
 )
+from .json_retry import JsonParseError, json_retry, parse_json_response
 from .librarian import Librarian, LibrarianResult
 from .models import AgentResponse, AudioEvent, FactCard
 from .router import RouterResult, ShowRouter, parse_router_response
@@ -52,6 +64,8 @@ from .search import BaseSearchProvider, GoogleSearchProvider, SearchResult
 from .session import AgentSession
 
 __all__ = [
+    "AgentNote",
+    "AgentNoteStore",
     "AgentResponse",
     "AgentSession",
     "AudioEvent",
@@ -72,6 +86,7 @@ __all__ = [
     "FactCard",
     "FactCheckMode",
     "GoogleSearchProvider",
+    "JsonParseError",
     "Librarian",
     "LibrarianResult",
     "NoteArchive",
@@ -88,5 +103,16 @@ __all__ = [
     "ShowHostConfig",
     "StudyRecord",
     "StudyResult",
+    "SpeechRateAdvisor",
+    "WPM_DEFAULTS",
+    "estimate_total_words",
+    "get_wpm",
+    "json_retry",
+    "parse_duration_from_text",
+    "parse_json_response",
     "parse_router_response",
+    "seconds_to_mmss",
+    "seconds_to_words",
+    "tolerance_window",
+    "words_to_seconds",
 ]

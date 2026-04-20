@@ -182,6 +182,17 @@ class Catalog:
 
                 CREATE INDEX IF NOT EXISTS idx_studies_type ON studies(content_type);
                 CREATE INDEX IF NOT EXISTS idx_studies_kind ON studies(kind);
+
+                CREATE TABLE IF NOT EXISTS wpm_stats (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_type TEXT NOT NULL,
+                    word_count   INTEGER NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    wpm          REAL NOT NULL,
+                    created_at   TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_wpm_type ON wpm_stats(content_type);
             """)
 
             # FTS5 virtual table for full-text search across runs.
@@ -476,6 +487,55 @@ class Catalog:
         ).fetchone()
         current = row[0] if row and row[0] is not None else 0
         return current + 1
+
+    # ═══════════════════════════════════════════════════════════════════
+    # WPM STATS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def log_wpm_stat(
+        self,
+        *,
+        content_type: str,
+        word_count: int,
+        duration_seconds: float,
+        wpm: float,
+    ) -> None:
+        """Record a WPM observation for adaptive duration learning."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO wpm_stats
+                   (content_type, word_count, duration_seconds, wpm, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (content_type, word_count, duration_seconds, wpm, now),
+            )
+
+    def get_wpm_stats(self, content_type: str) -> dict[str, Any] | None:
+        """Get aggregate WPM statistics for a content type.
+
+        Returns:
+            Dict with keys ``count``, ``avg_wpm``, ``min_wpm``, ``max_wpm``,
+            or None if no data exists for this type.
+        """
+        row = self._conn.execute(
+            """SELECT COUNT(*) as cnt,
+                      AVG(wpm) as avg_wpm,
+                      MIN(wpm) as min_wpm,
+                      MAX(wpm) as max_wpm
+               FROM wpm_stats
+               WHERE content_type = ?""",
+            (content_type,),
+        ).fetchone()
+
+        if not row or row["cnt"] == 0:
+            return None
+
+        return {
+            "count": row["cnt"],
+            "avg_wpm": row["avg_wpm"],
+            "min_wpm": row["min_wpm"],
+            "max_wpm": row["max_wpm"],
+        }
 
     # ═══════════════════════════════════════════════════════════════════
     # INTERNALS

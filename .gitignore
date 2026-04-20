@@ -210,3 +210,6 @@ __marimo__/
 data/
 output/
 prompts/
+
+# ignore output folder todo: creae a whole external place for all this
+/output/

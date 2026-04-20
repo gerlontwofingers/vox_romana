@@ -50,6 +50,7 @@ USAGE:
     # Force a show type (bypass the router):
     python run_show.py prompts/ambiguous_topic.txt --type debate
     python run_show.py prompts/ambiguous_topic.txt --type news
+    python run_show.py prompts/podcast/soccer.txt --type podcast
 
     # Enable web research (Google if keys are set, LLM fallback otherwise):
     python run_show.py prompts/ubi_debate.txt --research
@@ -120,6 +121,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
+from vox_romana.core.duration import parse_duration_from_text
 from vox_romana.core.router import ShowRouter
 
 
@@ -151,6 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "\n"
             "  # Force show type:\n"
             "  python run_show.py prompts/ambiguous.txt --type debate\n"
+            "  python run_show.py prompts/podcast/soccer.txt --type podcast\n"
             "\n"
             "  # With research and overrides:\n"
             "  python run_show.py prompts/ubi_debate.txt --research --turns 50\n"
@@ -177,7 +180,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news"],
+        choices=["debate", "news", "podcast"],
         dest="show_type",
         help="Force a show type (skip the router).",
     )
@@ -254,6 +257,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override number of news segments (default: ~5).",
     )
 
+    # ── Duration control ─────────────────────────────────────────────
+    duration_group = parser.add_argument_group("duration control")
+    duration_group.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help=(
+            "Target duration in minutes.  Overrides any duration mentioned "
+            "in the prompt file.  The conductor will aim within ±tolerance%%."
+        ),
+    )
+    duration_group.add_argument(
+        "--tolerance",
+        type=float,
+        default=None,
+        help=(
+            "Acceptable deviation from target duration, in %% (default: 10). "
+            "E.g. --tolerance 5 means ±5%%."
+        ),
+    )
+
     # ── Editing pipeline ─────────────────────────────────────────────
     # The editor reviews each generated chunk and can request retakes.
     # max_retries controls how persistent the editor is. Setting it to 0
@@ -280,6 +304,19 @@ def log(msg: str, *, quiet: bool = False) -> None:
         print(f"  {msg}", flush=True)
 
 
+def _resolve_duration(args: argparse.Namespace, brief: str) -> dict:
+    """Return duration-related overrides.  Priority: CLI > brief > nothing."""
+    overrides: dict = {}
+    duration = args.duration
+    if duration is None:
+        duration = parse_duration_from_text(brief)
+    if duration is not None:
+        overrides["target_duration_minutes"] = duration
+    if args.tolerance is not None:
+        overrides["tolerance_percent"] = args.tolerance
+    return overrides
+
+
 def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
     """Run the debate pipeline, return the output path.
 
@@ -303,7 +340,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     # These stomp whatever the Architect decided. If the user said
     # --turns 50, that's what they get, regardless of what the AI
     # thought was appropriate.
-    overrides = {}
+    overrides = _resolve_duration(args, brief)
     if args.turns is not None:
         overrides["target_turns"] = args.turns
     if args.tone is not None:
@@ -391,7 +428,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     from vox_romana.shows.news.serializer import NewsSerializer
 
     # ── Build overrides from CLI flags ───────────────────────────────
-    overrides = {}
+    overrides = _resolve_duration(args, brief)
     if args.segments is not None:
         overrides["target_segments"] = args.segments
     if args.tone is not None:
@@ -459,10 +496,102 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     return output_path
 
 
+def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
+    """Run the podcast pipeline, return the output path.
+
+    Podcast studio floor. The brief has been classified as a podcast by
+    the router — this function handles bootstrap → conductor → serializer.
+
+    Podcast generation uses segment-level generation: one LLM call
+    produces a full multi-speaker segment (3-15 utterances), unlike
+    debates which generate one turn at a time.
+
+    Args:
+        brief:  The full text of the user's prompt file.
+        client: Shared DeepSeek API client.
+        args:   Parsed CLI arguments (overrides, research, tag, etc.).
+
+    Returns:
+        Path to the saved JSON output file.
+    """
+    from vox_romana.shows.podcast.bootstrap import PodcastBootstrap
+    from vox_romana.shows.podcast.conductor import PodcastConductor
+    from vox_romana.shows.podcast.serializer import PodcastSerializer
+
+    # ── Build overrides from CLI flags ───────────────────────────────
+    overrides = _resolve_duration(args, brief)
+    if args.tone is not None:
+        overrides["tone"] = args.tone
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
+
+    # ── Bootstrap ────────────────────────────────────────────────────
+    log("Phase 2: Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
+    t0 = time.time()
+
+    bootstrap_kwargs = dict(
+        overrides=overrides,
+        auto_research=False,
+    )
+
+    if args.research:
+        bootstrap_kwargs["auto_research"] = True
+        try:
+            from vox_romana.core.search import GoogleSearchProvider
+            search_provider = GoogleSearchProvider()
+            bootstrap_kwargs["search_provider"] = search_provider
+            log("  Research mode ON (Google)", quiet=args.quiet)
+        except (ValueError, ImportError):
+            log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+
+    bootstrap = PodcastBootstrap(client=client)
+    config = bootstrap.from_brief(brief, **bootstrap_kwargs)
+
+    t1 = time.time()
+    log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
+    log(f"  Title: {config.title}", quiet=args.quiet)
+    log(f"  Show:  {config.show_name}", quiet=args.quiet)
+    host_names = ", ".join(h.name for h in config.hosts)
+    log(f"  Hosts: {host_names}", quiet=args.quiet)
+    log(f"  Segments: {len(config.segments)} | Tone: {config.tone}", quiet=args.quiet)
+    print()
+
+    # ── Conductor ────────────────────────────────────────────────────
+    log("Phase 3: Conductor (generating the episode)...", quiet=args.quiet)
+    t2 = time.time()
+
+    conductor = PodcastConductor(config, client=client)
+    result = conductor.run()
+
+    t3 = time.time()
+    log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
+    log(f"  Generated {len(result.podcast_events)} events across {len(result.podcast_segments)} segments", quiet=args.quiet)
+    print()
+
+    # ── Serialize ────────────────────────────────────────────────────
+    log("Phase 4: Saving output...", quiet=args.quiet)
+
+    merged = result.to_merged_podcast()
+    serializer = PodcastSerializer()
+
+    stem = args.prompt.stem
+    tag_part = f"_{args.tag}" if args.tag else ""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{stem}{tag_part}_{timestamp}.json"
+    # Podcasts go to output/text/podcasts/ alongside debates/ and news/.
+    podcast_dir = args.output / "text" / "podcasts"
+    podcast_dir.mkdir(parents=True, exist_ok=True)
+    output_path = podcast_dir / filename
+
+    serializer.save(merged, output_path)
+    return output_path
+
+
 # ── Dispatch table ───────────────────────────────────────────────────────
 _RUNNERS = {
     "debate": _run_debate,
     "news": _run_news,
+    "podcast": _run_podcast,
 }
 
 
@@ -506,6 +635,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.tag:
         log(f"Tag:    {args.tag}", quiet=args.quiet)
     log(f"Brief:  {brief[:80]}{'...' if len(brief) > 80 else ''}", quiet=args.quiet)
+
+    # ── Resolve duration ──────────────────────────────────────────────
+    duration_overrides = _resolve_duration(args, brief)
+    if "target_duration_minutes" in duration_overrides:
+        dur = duration_overrides["target_duration_minutes"]
+        src = "CLI" if args.duration is not None else "brief"
+        log(f"Duration: {dur:.1f} min (source: {src})", quiet=args.quiet)
+    if "tolerance_percent" in duration_overrides:
+        log(f"Tolerance: ±{duration_overrides['tolerance_percent']:.0f}%", quiet=args.quiet)
+
     print()
 
     if args.show_type:

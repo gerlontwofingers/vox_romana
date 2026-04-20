@@ -24,7 +24,7 @@ import re
 from .client import DeepSeekClient
 
 # ── Known show types ─────────────────────────────────────────────────────
-SHOW_TYPES = ("debate", "news")
+SHOW_TYPES = ("debate", "news", "audiobook", "podcast")
 
 # ── System prompt ────────────────────────────────────────────────────────
 ROUTER_SYSTEM_PROMPT = """\
@@ -42,6 +42,16 @@ Available show types:
   - "news": A news broadcast, newscast, or bulletin. Anchors present
     segments covering current events, topics, or stories. Includes
     breaking news, weekly roundups, and magazine-style shows.
+  - "audiobook": A narrated audiobook, story, essay, lecture, or documentary.
+    A single narrator (or small cast) reads through structured content
+    chapter by chapter. Includes fiction, non-fiction, self-help, history,
+    science explainers, and any long-form narrated audio.
+  - "podcast": A multi-host conversational podcast. Two or more hosts discuss
+    topics in a casual, personality-driven format. Includes talk shows,
+    roundtable discussions, interview pods, comedy panels, and any
+    multi-host audio where the tone is conversational rather than
+    adversarial. Key difference from debate: podcasts are collaborative
+    conversations, not structured arguments.
 
 Research detection — set needs_research to true when the brief:
   - Asks for real statistics, data, facts, evidence, or citations.
@@ -58,7 +68,7 @@ Research detection — set needs_research to true when the brief:
 
 Respond with ONLY a JSON object:
 {
-  "show_type": "<debate|news>",
+  "show_type": "<debate|news|audiobook|podcast>",
   "confidence": <0.0-1.0>,
   "needs_research": <true|false>,
   "reasoning": "<one sentence explaining both decisions>"
@@ -69,8 +79,17 @@ Rules:
   "pro/con", or multiple named participants taking sides, choose "debate".
 - If it mentions "news", "headlines", "breaking", "anchor", "broadcast",
   "bulletin", "report", "coverage", or "roundup", choose "news".
+- If it mentions "audiobook", "story", "narrate", "novel", "chapter",
+  "essay", "lecture", "documentary", "read aloud", or describes a
+  single-narrator long-form narrative, choose "audiobook".
+- If it mentions "podcast", "pod", "show", "hosts", "episode", "panel
+  discussion" (casual), "talk show", "roundtable" (conversational),
+  or describes multiple hosts having a casual conversation, choose
+  "podcast".
 - When ambiguous, lean toward "debate" if the brief emphasizes opposing
-  viewpoints, or "news" if it emphasizes information delivery.
+  viewpoints, "news" if it emphasizes information delivery, "audiobook"
+  if it emphasizes narration or storytelling, or "podcast" if it
+  emphasizes casual multi-host conversation.
 - When in doubt about research, lean toward true — it's better to have
   facts and not need them than to wing it without preparation.
 - Always respond with valid JSON. Nothing else.
@@ -154,5 +173,5 @@ class ShowRouter:
             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
             {"role": "user", "content": ROUTER_USER_TEMPLATE.format(brief=brief)},
         ]
-        raw = self._client.chat(messages)
+        raw = self._client.chat(messages, temperature=0)
         return parse_router_response(raw)
