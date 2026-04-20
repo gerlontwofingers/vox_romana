@@ -180,6 +180,7 @@ class PodcastConductor(BaseConductor):
         *,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        **base_kwargs,
     ) -> None:
         """Initialize the conductor.
 
@@ -187,9 +188,11 @@ class PodcastConductor(BaseConductor):
             config:  A fully populated PodcastConfig (from bootstrap or manual).
             client:  An existing DeepSeekClient (for testing: inject a mock).
             api_key: API key for DeepSeekClient. Only used if client is None.
+            **base_kwargs: Forwarded to BaseConductor (checkpoint_renderer,
+                           budget_tracker, notes_dir, recent_window).
         """
         resolved_client = client or DeepSeekClient(api_key=api_key)
-        super().__init__(config, client=resolved_client)
+        super().__init__(config, client=resolved_client, **base_kwargs)
 
         # Populated by _build_agents():
         self._system_prompt: str = ""
@@ -355,11 +358,12 @@ class PodcastConductor(BaseConductor):
             )
 
             # ── Build the segment prompt ─────────────────────────────
+            length_contract = self._length_contract_block(target_words)
             user_message = SEGMENT_PROMPT.format(
                 segment_type=segment.segment_type.upper(),
                 segment_topic=segment.topic,
                 lead_host=lead_host or "any host",
-                target_words=target_words,
+                length_contract=length_contract,
                 type_overlay=type_overlay,
                 context_summary=context_summary or "(This is the first segment.)",
                 director_note=director_note_str,
@@ -387,6 +391,31 @@ class PodcastConductor(BaseConductor):
                 lead_host=lead_host or "",
                 global_order_start=global_order,
             )
+
+            # ── Length contract validation (Phase 1+2) ──────────────
+            actual_words = sum(
+                len((evt.get("text") or "").split()) for evt in segment_events
+            )
+            warning = self._validate_word_count(
+                declared=None,
+                actual=actual_words,
+                target_words=target_words,
+            )
+            if warning:
+                # Stash on the conductor for downstream visibility; do NOT
+                # inject as a fake event (would skew counts and renders).
+                self._length_warnings.append(
+                    f"[segment {seg_idx + 1}/{total_segments}] {warning}"
+                )
+
+            # ── Checkpoint render to measure actual TTS duration ────
+            # The combined text of all utterances in this segment is what
+            # will eventually be spoken. Measuring it gives the budget
+            # tracker real numbers to rebalance against.
+            segment_text = " ".join(
+                (e.get("text") or "").strip() for e in segment_events
+            ).strip()
+            self._checkpoint_segment(seg_idx, segment_text)
 
             # ── Record events ────────────────────────────────────────
             for evt in segment_events:
@@ -424,6 +453,77 @@ class PodcastConductor(BaseConductor):
                 self._director_check(seg_idx + 1, total_segments)
 
         return all_events
+
+    # ═══════════════════════════════════════════════════════════════════
+    # EXPANSION PASS (Phase 7)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _expansion_pass(
+        self,
+        *,
+        deficit_words: int,
+        deficit_seconds: float,
+    ) -> list[dict]:
+        """Generate one bonus segment to close a length deficit.
+
+        Reuses the existing segment prompt machinery — produces an extra
+        ``deep_dive`` segment continuing the existing topic. Returns the
+        new events for the conductor to splice in.
+        """
+        if self._session is None:
+            return []
+        config = self.config
+        if not isinstance(config, PodcastConfig):
+            return []
+
+        # Pick a topic continuation from the last segment, if any.
+        last_topic = ""
+        if config.segments:
+            last_topic = config.segments[-1].topic or ""
+        host_names = [h.name for h in config.hosts]
+        lead_host = host_names[0] if host_names else ""
+        seg_id = f"seg_bonus_{len(config.segments):03d}"
+
+        length_contract = self._length_contract_block(deficit_words)
+        user_message = SEGMENT_PROMPT.format(
+            segment_type="DEEP_DIVE",
+            segment_topic=(
+                f"BONUS — extend the conversation. Previous topic: {last_topic}. "
+                "Pick up where you left off and add new substance: a fresh "
+                "angle, a counterpoint, a real-world example. Do NOT recap."
+            ),
+            lead_host=lead_host or "any host",
+            length_contract=length_contract,
+            type_overlay=SEGMENT_TYPE_OVERLAYS.get("deep_dive", ""),
+            context_summary=self._build_context_summary() or "(see prior segments)",
+            director_note=(
+                "DIRECTOR'S NOTE: We need extra runtime — give this segment "
+                "real substance, not filler. Hosts should genuinely engage."
+            ),
+            runtime_status=(
+                f"BONUS SEGMENT — episode is short by ~{deficit_seconds:.0f}s. "
+                f"Target ~{deficit_words} additional words."
+            ),
+        )
+
+        try:
+            raw_response = self._session.send(user_message)
+        except Exception as exc:  # noqa: BLE001
+            self._length_warnings.append(
+                f"[expansion] LLM call failed: {exc!r}"
+            )
+            return []
+
+        new_events = self._parse_segment_response(
+            raw_response,
+            segment_id=seg_id,
+            segment_type="deep_dive",
+            lead_host=lead_host or "",
+            global_order_start=0,  # Order is appended; absolute index reset.
+        )
+        for evt in new_events:
+            self._record_words(evt.get("text", ""))
+        return new_events
 
     def _package_result(self, raw_events: list[dict]) -> PodcastConductorResult:
         """Convert raw event dicts into a typed PodcastConductorResult.

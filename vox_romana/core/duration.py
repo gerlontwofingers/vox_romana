@@ -43,13 +43,15 @@ if TYPE_CHECKING:
 # These are calibrated from broadcast/podcast standards:
 #   - Debates & podcasts: conversational pace, ~150 wpm
 #   - News: anchor reads are faster and tighter, ~165 wpm
-#   - Audiobooks: slower, deliberate narration, ~140 wpm
+#   - Audiobooks: deliberate narration, ~155 wpm
+#     (Was 140 — too slow in practice, caused chronic over-shooting of
+#      target word counts because we asked the LLM for too many words.)
 
 WPM_DEFAULTS: dict[str, int] = {
     "debate": 150,
     "news": 165,
     "podcast": 150,
-    "audiobook": 140,
+    "audiobook": 155,
 }
 
 # Fallback for unknown content types.

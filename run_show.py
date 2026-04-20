@@ -277,6 +277,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "E.g. --tolerance 5 means ±5%%."
         ),
     )
+    # ── Checkpoint rendering (Phase 6) ────────────────────────────
+    # When enabled, the conductor renders each segment's text through
+    # TTS as it's generated, measures the actual audio duration, and
+    # rebalances remaining-segment word targets in real time.
+    duration_group.add_argument(
+        "--checkpoint",
+        action="store_true",
+        default=None,
+        dest="checkpoint",
+        help=(
+            "Force-enable checkpoint rendering (real-time TTS measurement "
+            "for each segment). Auto-enabled for runs >= 20 min or "
+            "audiobook content. Requires the configured TTS engine."
+        ),
+    )
+    duration_group.add_argument(
+        "--no-checkpoint",
+        action="store_false",
+        dest="checkpoint",
+        help="Disable checkpoint rendering even when it would auto-enable.",
+    )
 
     # ── Editing pipeline ─────────────────────────────────────────────
     # The editor reviews each generated chunk and can request retakes.
@@ -302,6 +323,87 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(f"  {msg}", flush=True)
+
+
+# ── Checkpoint plumbing (Phase 6) ─────────────────────────────────
+
+
+def _should_use_checkpoint(args: argparse.Namespace, content_type: str,
+                           target_minutes: float | None) -> bool:
+    """Decide whether to enable checkpoint rendering for this run.
+
+    Rules (in order):
+      * --no-checkpoint always wins (user override OFF).
+      * --checkpoint always wins (user override ON).
+      * Audiobooks: ON by default.
+      * target_duration_minutes >= 20: ON by default.
+      * Otherwise: OFF.
+    """
+    if args.checkpoint is False:
+        return False
+    if args.checkpoint is True:
+        return True
+    if content_type == "audiobook":
+        return True
+    if target_minutes is not None and target_minutes >= 20.0:
+        return True
+    return False
+
+
+def _build_checkpoint_kwargs(
+    args: argparse.Namespace,
+    content_type: str,
+    *,
+    target_minutes: float | None,
+    num_segments: int,
+    quiet: bool = False,
+) -> dict:
+    """Build kwargs to pass into a Conductor for checkpoint + tracker.
+
+    Returns an empty dict when checkpointing is disabled. The conductor
+    accepts ``checkpoint_renderer=`` and ``budget_tracker=`` keyword args.
+
+    Imports the TTS engine lazily so users without TTS installed aren't
+    forced to depend on it for non-checkpoint runs.
+    """
+    if not _should_use_checkpoint(args, content_type, target_minutes):
+        return {}
+
+    if num_segments <= 0 or target_minutes is None:
+        log(
+            "  Checkpoint requested but no target duration / segments — skipping.",
+            quiet=quiet,
+        )
+        return {}
+
+    try:
+        from vox_romana.core.budget_tracker import BudgetTracker
+        from vox_romana.tts.checkpoint import CheckpointRenderer
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+    except ImportError as exc:
+        log(f"  Checkpoint disabled (TTS unavailable: {exc!r})", quiet=quiet)
+        return {}
+
+    try:
+        engine = PiperEngine()
+    except Exception as exc:  # noqa: BLE001
+        log(f"  Checkpoint disabled (engine init failed: {exc!r})", quiet=quiet)
+        return {}
+
+    renderer = CheckpointRenderer(engine)
+    tracker = BudgetTracker(
+        total_target_seconds=target_minutes * 60.0,
+        num_segments=num_segments,
+    )
+    log(
+        f"  Checkpoint ON — measuring {num_segments} segments against "
+        f"{target_minutes:.1f} min budget.",
+        quiet=quiet,
+    )
+    return {
+        "checkpoint_renderer": renderer,
+        "budget_tracker": tracker,
+    }
 
 
 def _resolve_duration(args: argparse.Namespace, brief: str) -> dict:
@@ -389,7 +491,13 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log("Phase 3: Conductor (running the debate)...", quiet=args.quiet)
     t2 = time.time()
 
-    conductor = DebateConductor(config, client=client)
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "debate",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=config.target_turns or 0,
+        quiet=args.quiet,
+    )
+    conductor = DebateConductor(config, client=client, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -480,7 +588,13 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log("Phase 3: Conductor (generating the broadcast)...", quiet=args.quiet)
     t2 = time.time()
 
-    conductor = NewsConductor(config, client=client)
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "news",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.segments),
+        quiet=args.quiet,
+    )
+    conductor = NewsConductor(config, client=client, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -576,7 +690,13 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Phase 3: Conductor (generating the episode)...", quiet=args.quiet)
     t2 = time.time()
 
-    conductor = PodcastConductor(config, client=client)
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "podcast",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.segments),
+        quiet=args.quiet,
+    )
+    conductor = PodcastConductor(config, client=client, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()

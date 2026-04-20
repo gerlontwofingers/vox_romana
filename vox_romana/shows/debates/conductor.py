@@ -284,6 +284,7 @@ class DebateConductor(BaseConductor):
         *,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        **base_kwargs,
     ) -> None:
         """Initialize the conductor.
 
@@ -291,9 +292,11 @@ class DebateConductor(BaseConductor):
             config:  A fully populated DebateConfig (from bootstrap or manual).
             client:  An existing DeepSeekClient to use (for testing: inject a mock).
             api_key: API key for DeepSeekClient. Only used if client is None.
+            **base_kwargs: Forwarded to BaseConductor (checkpoint_renderer,
+                           budget_tracker, notes_dir, recent_window).
         """
         resolved_client = client or DeepSeekClient(api_key=api_key)
-        super().__init__(config, client=resolved_client)
+        super().__init__(config, client=resolved_client, **base_kwargs)
 
         # These get populated by _build_agents():
         self._participant_prompts: dict[str, str] = {}
@@ -989,6 +992,15 @@ class DebateConductor(BaseConductor):
         sends it through the speaker's session (which manages its own history
         and compression), and parses the JSON response.
         """
+        # ── Compute per-turn word target (Phase 1+2) ────────────────
+        # Total budget / remaining turns gives a fair share that auto-
+        # compensates for prior turns running short or long.
+        per_turn_target = 0
+        if self._target_words is not None and remaining_turns > 0:
+            per_turn_target = max(
+                30, self._remaining_words // max(remaining_turns, 1)
+            )
+
         # ── Build the user message (context + turn prompt) ───────────
         user_message = self._build_turn_context(
             speaker_name=speaker_name,
@@ -996,6 +1008,7 @@ class DebateConductor(BaseConductor):
             turn_number=turn_number,
             wrapping_up=wrapping_up,
             remaining_turns=remaining_turns,
+            target_words=per_turn_target,
         )
 
         # ── Send via the speaker's AgentSession ─────────────────────
@@ -1021,6 +1034,26 @@ class DebateConductor(BaseConductor):
         # ── Parse the JSON response ──────────────────────────────────
         event_dict = self._parse_turn_response(raw_response)
 
+        # ── Length contract validation (Phase 1+2) ──────────────────
+        if per_turn_target > 0:
+            actual = len((event_dict.get("text") or "").split())
+            warning = self._validate_word_count(
+                declared=event_dict.get("word_count"),
+                actual=actual,
+                target_words=per_turn_target,
+                tolerance_pct=15.0,
+            )
+            if warning:
+                self._length_warnings.append(
+                    f"[turn {turn_number} {speaker_name}] {warning}"
+                )
+
+        # ── Checkpoint render: measure THIS turn's audio length ─────
+        # Use turn_number-1 as the zero-based index (matches BudgetTracker).
+        self._checkpoint_segment(
+            turn_number - 1, event_dict.get("text") or "",
+        )
+
         # Attach metadata that the agent doesn't produce.
         event_dict["speaker"] = speaker_name
         event_dict["role"] = speaker_role
@@ -1036,6 +1069,7 @@ class DebateConductor(BaseConductor):
         turn_number: int,
         wrapping_up: bool,
         remaining_turns: int = 0,
+        target_words: int = 0,
     ) -> str:
         """Build the user message for a speaking turn.
 
@@ -1057,6 +1091,16 @@ class DebateConductor(BaseConductor):
         )
         if budget_status:
             parts.append(budget_status)
+
+        # ── Hard length contract for THIS turn (Phase 1+2) ───────────
+        # Wrap-up turns and the moderator's opening get a shorter target.
+        turn_target = target_words
+        if wrapping_up:
+            turn_target = max(20, target_words // 2) if target_words else 0
+        if turn_target > 0:
+            parts.append(
+                self._length_contract_block(turn_target, tolerance_pct=15.0)
+            )
 
         # ── Recent verbatim turns ────────────────────────────────────
         recent = self._transcript[-DEFAULT_RECENT_WINDOW:]

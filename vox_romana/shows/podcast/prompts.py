@@ -105,7 +105,8 @@ Generate the next podcast segment.
 SEGMENT TYPE: {segment_type}
 TOPIC: {segment_topic}
 LEAD HOST: {lead_host}
-TARGET LENGTH: ~{target_words} words
+
+{length_contract}
 
 {type_overlay}
 

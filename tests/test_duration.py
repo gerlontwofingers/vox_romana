@@ -24,7 +24,7 @@ class TestGetWpm:
         assert get_wpm("debate") == 150
         assert get_wpm("news") == 165
         assert get_wpm("podcast") == 150
-        assert get_wpm("audiobook") == 140
+        assert get_wpm("audiobook") == 155
 
     def test_unknown_falls_back(self):
         assert get_wpm("unknown_type") == 150
@@ -238,3 +238,97 @@ class TestRebalancedTarget:
         cond = _make_conductor(target_words=5000, words_generated=4500)
         # remaining=500, 5 steps → fair share=100. planned=400 wins.
         assert cond._rebalanced_target(400, 5) == 400
+
+
+# ── Hard length contract helpers (Phase 1+2) ─────────────────────
+
+
+class TestLengthContractBlock:
+    def test_empty_when_target_zero(self):
+        assert BaseConductor._length_contract_block(0) == ""
+
+    def test_empty_when_target_negative(self):
+        assert BaseConductor._length_contract_block(-10) == ""
+
+    def test_includes_hard_range(self):
+        block = BaseConductor._length_contract_block(100, tolerance_pct=10.0)
+        assert "between 90 and 110 words" in block
+        assert "target: 100" in block
+        assert "HARD" in block.upper()
+
+    def test_default_includes_word_count_clause(self):
+        block = BaseConductor._length_contract_block(100)
+        assert "word_count" in block
+
+    def test_word_count_clause_optional(self):
+        block = BaseConductor._length_contract_block(
+            100, require_word_count=False,
+        )
+        assert "word_count" not in block
+
+    def test_tolerance_pct_widens_range(self):
+        block = BaseConductor._length_contract_block(100, tolerance_pct=20.0)
+        assert "between 80 and 120 words" in block
+
+    def test_tiny_target_still_yields_at_least_one_margin(self):
+        block = BaseConductor._length_contract_block(5, tolerance_pct=10.0)
+        # 5 * 0.1 = 0.5 → margin floored to 1 → range [4, 6]
+        assert "between 4 and 6 words" in block
+
+
+class TestValidateWordCount:
+    def test_returns_none_when_in_range(self):
+        result = BaseConductor._validate_word_count(
+            declared=100, actual=100, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is None
+
+    def test_returns_none_when_at_lower_bound(self):
+        result = BaseConductor._validate_word_count(
+            declared=90, actual=90, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is None
+
+    def test_returns_none_when_at_upper_bound(self):
+        result = BaseConductor._validate_word_count(
+            declared=110, actual=110, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is None
+
+    def test_returns_warning_when_below(self):
+        result = BaseConductor._validate_word_count(
+            declared=80, actual=80, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is not None
+        assert "actual=80" in result
+        assert "target=100" in result
+
+    def test_returns_warning_when_above(self):
+        result = BaseConductor._validate_word_count(
+            declared=120, actual=120, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is not None
+        assert "120" in result
+
+    def test_flags_declared_vs_actual_mismatch(self):
+        # Model lied about its word_count
+        result = BaseConductor._validate_word_count(
+            declared=100, actual=60, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is not None
+        assert "declared word_count=100" in result
+        assert "actual=60" in result
+
+    def test_returns_none_when_target_zero(self):
+        result = BaseConductor._validate_word_count(
+            declared=100, actual=100, target_words=0,
+        )
+        assert result is None
+
+    def test_handles_none_declared(self):
+        result = BaseConductor._validate_word_count(
+            declared=None, actual=80, target_words=100, tolerance_pct=10.0,
+        )
+        assert result is not None
+        assert "declared" not in result  # No declared/actual annotation
+

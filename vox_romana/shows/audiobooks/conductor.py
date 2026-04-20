@@ -149,9 +149,10 @@ class AudiobookConductor(BaseConductor):
         *,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        **base_kwargs,
     ) -> None:
         resolved_client = client or DeepSeekClient(api_key=api_key)
-        super().__init__(config, client=resolved_client)
+        super().__init__(config, client=resolved_client, **base_kwargs)
 
         # Populated by _build_agents():
         self._narrator_prompt: str = ""
@@ -278,6 +279,79 @@ class AudiobookConductor(BaseConductor):
                 self._director_check(ch_num, total_chapters)
 
         return all_events
+
+    # ═══════════════════════════════════════════════════════════════════
+    # EXPANSION PASS (Phase 7+8) — narrative continuation, not meta
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _expansion_pass(
+        self,
+        *,
+        deficit_words: int,
+        deficit_seconds: float,
+    ) -> list[dict]:
+        """Add narrative continuation to close a length deficit.
+
+        For audiobooks the bonus content MUST be in-fiction prose — not a
+        meta "and that's the end of chapter X" recap. We extend the final
+        chapter with a continuation beat that picks up where the narrator
+        left off, in the same voice, same tense, same scene logic.
+        """
+        if self._narrator_session is None:
+            return []
+        config = self.config
+        if not isinstance(config, AudiobookConfig):
+            return []
+        if not config.chapters:
+            return []
+
+        last_chapter = config.chapters[-1]
+        ch_id = f"ch_bonus_{len(config.chapters):03d}"
+
+        length_contract = self._length_contract_block(
+            deficit_words, tolerance_pct=10.0,
+        )
+        beat_instruction = (
+            "Continue the narrative from exactly where the previous chapter "
+            "left off. This is NOT a recap, summary, or epilogue — write the "
+            "next stretch of the story/argument in the same voice, same "
+            "tense, same diegetic register. Stay in-world. Add specific "
+            "imagery, dialogue, or detail. End at a natural breath point."
+            f"\n\n{length_contract}"
+        )
+
+        user_message = CHAPTER_DELIVERY_PROMPT.format(
+            chapter_number=len(config.chapters) + 1,
+            total_chapters=len(config.chapters) + 1,
+            title=f"{last_chapter.title} — continued",
+            synopsis=last_chapter.synopsis or "(continue the prior chapter)",
+            key_points="(continue the prior beats; do not restart)",
+            chapter_tone=last_chapter.tone or config.tone or "engaging",
+            reference_section="",
+            beat_instruction=beat_instruction,
+        )
+
+        try:
+            raw_response = self._narrator_session.send(user_message)
+        except Exception as exc:  # noqa: BLE001
+            self._length_warnings.append(
+                f"[expansion ch_bonus] LLM call failed: {exc!r}"
+            )
+            return []
+
+        event_dict = self._parse_response(raw_response)
+        narrator_name = (
+            config.narrator.name if config.narrator else "Narrator"
+        )
+        event_dict["speaker"] = narrator_name
+        event_dict["role"] = "narrator"
+        event_dict["event_kind"] = "narration"
+        event_dict["chapter_id"] = ch_id
+        event_dict["beat_label"] = "continuation"
+        event_dict.setdefault("pause_before", "long")
+        event_dict.setdefault("pause_after", "long")
+        self._record_words(event_dict.get("text", ""))
+        return [event_dict]
 
     def _package_result(self, raw_events: list[dict]) -> AudiobookConductorResult:
         """Convert raw events into a typed AudiobookConductorResult."""
@@ -437,12 +511,13 @@ class AudiobookConductor(BaseConductor):
             # Add word budget hint when target_words is set.
             remaining_chapters = total_chapters - chapter_number + 1
             remaining_beats = remaining_chapters * num_beats - beat_idx
+            words_per_beat = 0
             if config.target_words and num_beats > 0:
                 words_per_chapter = config.target_words // total_chapters
                 words_per_beat = words_per_chapter // num_beats
                 words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
-                duration_instruction += (
-                    f" Target approximately {words_per_beat} words for this beat."
+                duration_instruction += "\n" + self._length_contract_block(
+                    words_per_beat, tolerance_pct=10.0,
                 )
 
             # Append runtime budget status for the LLM.
@@ -524,6 +599,27 @@ class AudiobookConductor(BaseConductor):
             event_dict["global_order"] = global_order_start + beat_idx
             event_dict["local_order"] = beat_idx
             event_dict["beat_label"] = beat_label
+
+            # ── Length contract validation (Phase 1+2) ──────────────
+            if words_per_beat > 0:
+                actual = len((event_dict.get("text") or "").split())
+                warning = self._validate_word_count(
+                    declared=event_dict.get("word_count"),
+                    actual=actual,
+                    target_words=words_per_beat,
+                    tolerance_pct=10.0,
+                )
+                if warning:
+                    self._length_warnings.append(
+                        f"[ch {chapter_number}/{total_chapters} "
+                        f"beat {beat_label}] {warning}"
+                    )
+
+            # ── Checkpoint render: measure THIS beat's audio length ──
+            beat_global_index = global_order_start + beat_idx
+            self._checkpoint_segment(
+                beat_global_index, event_dict.get("text") or "",
+            )
 
             # Pauses: longer between chapters, shorter between beats.
             if beat_idx == 0:

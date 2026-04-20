@@ -165,9 +165,10 @@ class NewsConductor(BaseConductor):
         *,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        **base_kwargs,
     ) -> None:
         resolved_client = client or DeepSeekClient(api_key=api_key)
-        super().__init__(config, client=resolved_client)
+        super().__init__(config, client=resolved_client, **base_kwargs)
 
         # Populated by _build_agents():
         self._anchor_prompts: dict[str, str] = {}
@@ -549,12 +550,13 @@ class NewsConductor(BaseConductor):
             # Add word budget hint when target_words is set.
             remaining_segments = total_segments - segment_number + 1
             remaining_beats = remaining_segments * num_beats - beat_idx
+            words_per_beat = 0
             if config.target_words and num_beats > 0:
                 words_per_segment = config.target_words // total_segments
                 words_per_beat = words_per_segment // num_beats
                 words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
-                duration_instruction += (
-                    f" Target approximately {words_per_beat} words for this beat."
+                duration_instruction += "\n" + self._length_contract_block(
+                    words_per_beat, tolerance_pct=12.0,
                 )
 
             # Append runtime budget status for the LLM.
@@ -628,6 +630,29 @@ class NewsConductor(BaseConductor):
             event_dict["global_order"] = global_order_start + beat_idx
             event_dict["local_order"] = beat_idx
             event_dict["beat_label"] = beat_label
+
+            # ── Length contract validation (Phase 1+2) ──────────────
+            if words_per_beat > 0:
+                actual = len((event_dict.get("text") or "").split())
+                warning = self._validate_word_count(
+                    declared=event_dict.get("word_count"),
+                    actual=actual,
+                    target_words=words_per_beat,
+                    tolerance_pct=12.0,
+                )
+                if warning:
+                    self._length_warnings.append(
+                        f"[seg {segment_number}/{total_segments} "
+                        f"beat {beat_label}] {warning}"
+                    )
+
+            # ── Checkpoint render: measure THIS beat's audio length ──
+            # Beats are individual TTS units, so each one has a clear
+            # global index in the budget tracker.
+            beat_global_index = global_order_start + beat_idx
+            self._checkpoint_segment(
+                beat_global_index, event_dict.get("text") or "",
+            )
 
             # Pauses: short between beats, medium around the full segment.
             if beat_idx == 0:

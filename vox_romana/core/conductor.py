@@ -38,6 +38,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .archive import AgentNote, AgentNoteStore
 from .client import DeepSeekClient
@@ -51,6 +52,10 @@ from .duration import (
     words_to_seconds,
 )
 from .session import AgentSession
+
+if TYPE_CHECKING:
+    from .budget_tracker import BudgetTracker
+    from ..tts.checkpoint import CheckpointRenderer
 
 
 @dataclass
@@ -104,6 +109,8 @@ class BaseConductor(ABC):
         client: DeepSeekClient | None = None,
         notes_dir: str | Path | None = None,
         recent_window: int = 10,
+        checkpoint_renderer: "CheckpointRenderer | None" = None,
+        budget_tracker: "BudgetTracker | None" = None,
     ) -> None:
         self.config = config
         self._client = client
@@ -116,6 +123,19 @@ class BaseConductor(ABC):
         self._target_words: int | None = None
         self._word_lo: int | None = None
         self._word_hi: int | None = None
+
+        # ── Length-contract telemetry (Phase 1+2) ────────────────────
+        # Diagnostic strings, one per segment whose actual word count
+        # fell outside the target window. Inspected by the renderer/CLI.
+        self._length_warnings: list[str] = []
+
+        # ── Checkpoint rendering + budget tracking (Phase 5) ─────────
+        # Both are opt-in. When a CheckpointRenderer is provided, each
+        # segment's text can be measured for actual TTS duration. When a
+        # BudgetTracker is also provided, those measurements feed back
+        # into per-segment time targets for dynamic rebalancing.
+        self._checkpoint_renderer = checkpoint_renderer
+        self._budget_tracker = budget_tracker
 
         self._init_duration_targets()
 
@@ -328,6 +348,128 @@ class BaseConductor(ABC):
         fair_share = self._remaining_words // remaining_steps
         return max(planned_words, fair_share)
 
+    # ── Hard length contract helpers (Phase 1+2) ───────────────────
+
+    @staticmethod
+    def _length_contract_block(
+        target_words: int,
+        *,
+        tolerance_pct: float = 12.0,
+        require_word_count: bool = True,
+    ) -> str:
+        """Build the strict length-contract text for injection into prompts.
+
+        This replaces soft language ("aim for ~X words") with a hard range
+        ("MUST be between MIN and MAX words") and instructs the model to
+        return its declared word count for accountability.
+
+        Args:
+            target_words:       The midpoint of the desired word range.
+            tolerance_pct:      Acceptable +/- percentage around target.
+            require_word_count: When True, instructs the model to include
+                                a 'word_count' field in its JSON response.
+
+        Returns:
+            A formatted block of text ready to splice into the prompt.
+            Empty string when target_words <= 0.
+        """
+        if target_words <= 0:
+            return ""
+        margin = max(1, int(target_words * (tolerance_pct / 100.0)))
+        lo = max(1, target_words - margin)
+        hi = target_words + margin
+        lines = [
+            f"LENGTH REQUIREMENT (HARD): your response MUST be between "
+            f"{lo} and {hi} words (target: {target_words}). "
+            "This is a hard constraint — pad with detail, examples, or "
+            "follow-up beats if you finish your point early. Do NOT cut "
+            "short. Do NOT exceed the upper bound."
+        ]
+        if require_word_count:
+            lines.append(
+                "Your response JSON MUST include a numeric 'word_count' "
+                "field counting the words in the spoken text. The system "
+                "will validate this — under-count and you will be retried."
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _validate_word_count(
+        declared: int | None,
+        actual: int,
+        *,
+        target_words: int,
+        tolerance_pct: float = 12.0,
+    ) -> str | None:
+        """Return a length-warning message if the response misses target.
+
+        Returns None when the response is within tolerance.
+        """
+        if target_words <= 0:
+            return None
+        margin = max(1, int(target_words * (tolerance_pct / 100.0)))
+        lo = max(1, target_words - margin)
+        hi = target_words + margin
+        if not (lo <= actual <= hi):
+            tag = ""
+            if declared is not None and abs(declared - actual) > 5:
+                tag = f" (declared word_count={declared}, actual={actual})"
+            return (
+                f"length out of range: actual={actual} target={target_words} "
+                f"window=[{lo},{hi}]{tag}"
+            )
+        return None
+
+    # ── Checkpoint rendering (Phase 5) ─────────────────────────────
+
+    def _checkpoint_segment(
+        self,
+        segment_index: int,
+        text: str,
+        *,
+        voice: str | None = None,
+    ) -> float | None:
+        """Measure the actual TTS duration of a freshly-generated segment.
+
+        Records the result with the BudgetTracker (when one is attached)
+        so that subsequent segments can rebalance against the real drift.
+
+        Returns:
+            The measured duration in seconds, or None when no
+            CheckpointRenderer is configured (caller should fall back to
+            word-count estimation).
+        """
+        if self._checkpoint_renderer is None:
+            return None
+        if not text or not text.strip():
+            actual_seconds = 0.0
+        else:
+            try:
+                actual_seconds = self._checkpoint_renderer.measure(
+                    text, voice=voice,
+                )
+            except Exception as exc:  # noqa: BLE001 — TTS is fragile
+                # We never want a checkpoint failure to abort generation.
+                self._length_warnings.append(
+                    f"[checkpoint segment {segment_index}] "
+                    f"measurement failed: {exc!r}"
+                )
+                return None
+
+        if self._budget_tracker is not None:
+            try:
+                self._budget_tracker.record_segment(
+                    segment_index, actual_seconds=actual_seconds,
+                )
+            except (IndexError, ValueError) as exc:
+                # Out-of-range index = our caller miscounted; warn but keep going.
+                self._length_warnings.append(
+                    f"[checkpoint segment {segment_index}] "
+                    f"tracker rejected: {exc!r}"
+                )
+
+        return actual_seconds
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -340,7 +482,72 @@ class BaseConductor(ABC):
         """
         self._build_agents()
         raw = self._run_turn_loop()
+        # ── Expansion pass (Phase 7) ───────────────────────────────
+        # If we finished short of target, give the conductor one chance
+        # to extend the content. Subclasses opt-in by overriding
+        # ``_expansion_pass()``; the default does nothing.
+        extra = self._maybe_expand(raw)
+        if extra:
+            raw.extend(extra)
         return self._package_result(raw)
+
+    def _maybe_expand(self, raw_events: list[dict]) -> list[dict]:
+        """Decide whether to call ``_expansion_pass`` and run it if so.
+
+        Returns the list of additional events produced (possibly empty).
+        Driven by the BudgetTracker when present, otherwise by the word
+        counter.
+        """
+        # Decide based on time when we have a tracker, else words.
+        deficit_seconds: float = 0.0
+        deficit_words: int = 0
+
+        if self._budget_tracker is not None and self._budget_tracker.records:
+            tolerance_s = max(15.0, self._budget_tracker.total_target_seconds * 0.05)
+            if self._budget_tracker.is_short_by(tolerance_s):
+                deficit_seconds = -self._budget_tracker.cumulative_delta()
+                # Convert to words via the conductor's wpm estimate.
+                deficit_words = max(20, int(deficit_seconds / 60.0 * self._wpm))
+        elif self._target_words is not None and self._word_lo is not None:
+            if self._words_generated < self._word_lo:
+                deficit_words = self._word_lo - self._words_generated
+                deficit_seconds = deficit_words / max(self._wpm, 1) * 60.0
+
+        if deficit_words <= 0:
+            return []
+
+        try:
+            return self._expansion_pass(
+                deficit_words=deficit_words,
+                deficit_seconds=deficit_seconds,
+            ) or []
+        except Exception as exc:  # noqa: BLE001
+            self._length_warnings.append(
+                f"[expansion] failed: {exc!r} — proceeding without extension."
+            )
+            return []
+
+    def _expansion_pass(
+        self,
+        *,
+        deficit_words: int,
+        deficit_seconds: float,
+    ) -> list[dict]:
+        """Hook: produce additional events to close a length deficit.
+
+        The default implementation is a no-op. Subclasses override this
+        to add content that fits their format (e.g. a debate gets one
+        more exchange round, an audiobook gets a narrative continuation).
+
+        Args:
+            deficit_words:   Words needed to reach the lower length bound.
+            deficit_seconds: Seconds of audio needed (estimated).
+
+        Returns:
+            A list of new event dicts to append. May be empty if the
+            subclass declines or cannot extend further.
+        """
+        return []
 
     @abstractmethod
     def _build_agents(self) -> None:
