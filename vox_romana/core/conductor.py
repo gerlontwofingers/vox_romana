@@ -1,0 +1,577 @@
+"""Base conductor — the abstract contract for reactive multi-agent generation.
+
+A conductor is the runtime engine that turns a config into content. It
+orchestrates multiple LLM agents in conversation with each other, managing
+turn order, context windows, and dramatic pacing.
+
+THE TWO GENERATION PATTERNS:
+
+    1. REACTIVE (BaseConductor): Multi-agent turn loop. Each agent responds
+       to what the previous agent said. Used for debates, interviews, talk
+       shows, news panels, podcast conversations — anything where the
+       content emerges from the interaction.
+
+    2. SCRIPTED (BaseRenderer — future): Pre-planned sequential rendering.
+       A single agent generates from an outline. Used for audiobooks, news
+       anchor reads, narrated docs, monologues.
+
+    Some shows are hybrids: news = scripted anchoring + reactive panel.
+    Both patterns produce the same Event objects → same pipeline → same TTS.
+
+This file defines BaseConductor. Content-type implementations (DebateConductor,
+InterviewConductor, etc.) subclass it and fill in the specifics.
+
+WHY AN ABSTRACT BASE?
+    Because every reactive show follows the same lifecycle:
+        1. Build agents from config (system prompts + personalities)
+        2. Run the turn loop (decide who speaks, generate, record)
+        3. Compress context periodically (keep token budget flat)
+        4. Check in with a director for pacing (optional)
+        5. Package the output
+
+    The specifics — WHO speaks, WHAT the prompts say, HOW turns are routed —
+    differ by content type. The lifecycle doesn't.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .archive import AgentNote, AgentNoteStore
+from .client import DeepSeekClient
+from .config import ContentConfig
+from .duration import (
+    SpeechRateAdvisor,
+    estimate_total_words,
+    get_wpm,
+    seconds_to_mmss,
+    tolerance_window,
+    words_to_seconds,
+)
+from .session import AgentSession
+
+if TYPE_CHECKING:
+    from .budget_tracker import BudgetTracker
+    from ..tts.checkpoint import CheckpointRenderer
+
+
+@dataclass
+class ConductorResult:
+    """The output of a conductor run.
+
+    This is a generic container. Content-type conductors attach their own
+    domain-specific data (e.g., DebateEvent objects) and provide convenience
+    methods to convert into their pipeline's expected format.
+
+    Attributes:
+        config:         The config that was used for this run.
+        events:         List of event dicts. Each content type defines its
+                        own event structure. Stored as dicts here for
+                        generality; subclasses cast to typed objects.
+        transcript:     The full human-readable transcript (for debugging).
+        total_llm_calls: How many LLM API calls were made.
+        director_notes: Stage directions issued during the run.
+    """
+
+    config: ContentConfig
+    events: list[dict] = field(default_factory=list)
+    transcript: list[str] = field(default_factory=list)
+    total_llm_calls: int = 0
+    director_notes: list[str] = field(default_factory=list)
+
+
+class BaseConductor(ABC):
+    """Abstract base class for reactive multi-agent content generation.
+
+    Subclasses must implement:
+        _build_agents()     — Create LLM agents from the config.
+        _run_turn_loop()    — The main generation loop.
+        _package_result()   — Convert raw output into a ConductorResult.
+
+    The public interface is just `run()`, which calls these in order.
+
+    Optional infrastructure (available to subclasses):
+        _create_session()   — Build an AgentSession with sliding-window
+                              compression. Tracked internally for LLM call
+                              accounting.
+        _note_store         — AgentNoteStore for inter-agent communication
+                              (set via notes_dir constructor parameter).
+        _write_note()       — Convenience for appending an AgentNote.
+    """
+
+    def __init__(
+        self,
+        config: ContentConfig,
+        *,
+        client: DeepSeekClient | None = None,
+        notes_dir: str | Path | None = None,
+        recent_window: int = 10,
+        checkpoint_renderer: "CheckpointRenderer | None" = None,
+        budget_tracker: "BudgetTracker | None" = None,
+    ) -> None:
+        self.config = config
+        self._client = client
+        self._recent_window = recent_window
+        self._sessions: list[AgentSession] = []
+
+        # ── Adaptive duration tracking ───────────────────────────────
+        self._wpm: int = get_wpm(config.content_type)
+        self._words_generated: int = 0
+        self._target_words: int | None = None
+        self._word_lo: int | None = None
+        self._word_hi: int | None = None
+
+        # ── Length-contract telemetry (Phase 1+2) ────────────────────
+        # Diagnostic strings, one per segment whose actual word count
+        # fell outside the target window. Inspected by the renderer/CLI.
+        self._length_warnings: list[str] = []
+
+        # ── Checkpoint rendering + budget tracking (Phase 5) ─────────
+        # Both are opt-in. When a CheckpointRenderer is provided, each
+        # segment's text can be measured for actual TTS duration. When a
+        # BudgetTracker is also provided, those measurements feed back
+        # into per-segment time targets for dynamic rebalancing.
+        self._checkpoint_renderer = checkpoint_renderer
+        self._budget_tracker = budget_tracker
+
+        self._init_duration_targets()
+
+        if notes_dir is not None:
+            path = Path(notes_dir) / "agent_notes.jsonl"
+            self._note_store: AgentNoteStore | None = AgentNoteStore(path)
+        else:
+            self._note_store = None
+
+    # ------------------------------------------------------------------
+    # Session helpers
+    # ------------------------------------------------------------------
+
+    def _create_session(
+        self,
+        system_prompt: str,
+        *,
+        client: DeepSeekClient | None = None,
+        recent_window: int | None = None,
+    ) -> AgentSession:
+        """Create a tracked AgentSession.
+
+        The session is registered internally so that `_total_llm_calls`
+        can aggregate call counts from all sessions.
+        """
+        c = client or self._client
+        if c is None:
+            raise RuntimeError(
+                "No DeepSeekClient available. Pass client= to the conductor "
+                "or to _create_session()."
+            )
+        session = AgentSession(
+            client=c,
+            system_prompt=system_prompt,
+            recent_window=recent_window or self._recent_window,
+        )
+        self._sessions.append(session)
+        return session
+
+    @property
+    def _total_session_calls(self) -> int:
+        """Total LLM calls across all tracked sessions."""
+        return sum(s.total_calls for s in self._sessions)
+
+    # ------------------------------------------------------------------
+    # Note helpers
+    # ------------------------------------------------------------------
+
+    def _write_note(
+        self,
+        *,
+        run_id: str,
+        agent: str,
+        note_type: str,
+        key: str,
+        value: str,
+    ) -> None:
+        """Write an inter-agent note if a note store is configured."""
+        if self._note_store is None:
+            return
+        self._note_store.append(
+            AgentNote(
+                run_id=run_id,
+                agent=agent,
+                note_type=note_type,
+                key=key,
+                value=value,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Duration / adaptive length helpers
+    # ------------------------------------------------------------------
+
+    def _init_duration_targets(self) -> None:
+        """Compute word-count targets from the config's duration fields.
+
+        Priority:
+            1. config.target_words  (explicit word count)
+            2. config.target_duration_minutes  (converted via WPM)
+            3. config.estimated_duration_minutes  (legacy field, same calc)
+            4. None — no enforcement (subclass decides loop length itself)
+        """
+        cfg = self.config
+
+        if cfg.target_words is not None:
+            self._target_words = cfg.target_words
+        elif cfg.target_duration_minutes is not None:
+            self._target_words = estimate_total_words(
+                cfg.target_duration_minutes,
+                cfg.content_type,
+                wpm=self._wpm,
+            )
+        elif cfg.estimated_duration_minutes is not None:
+            self._target_words = estimate_total_words(
+                float(cfg.estimated_duration_minutes),
+                cfg.content_type,
+                wpm=self._wpm,
+            )
+
+        if self._target_words is not None:
+            self._word_lo, self._word_hi = tolerance_window(
+                self._target_words,
+                cfg.tolerance_percent,
+            )
+
+    def _record_words(self, text: str) -> None:
+        """Track words generated so far."""
+        self._words_generated += len(text.split())
+
+    @property
+    def _remaining_words(self) -> int | None:
+        """Words left before the target.  None if no target set."""
+        if self._target_words is None:
+            return None
+        return max(0, self._target_words - self._words_generated)
+
+    @property
+    def _progress_fraction(self) -> float | None:
+        """Fraction of target words generated (0.0–1.0+). None if no target."""
+        if self._target_words is None or self._target_words == 0:
+            return None
+        return self._words_generated / self._target_words
+
+    def _in_tolerance(self) -> bool | None:
+        """True if current word count is within the tolerance window.
+
+        Returns None when no target is set.
+        """
+        if self._word_lo is None or self._word_hi is None:
+            return None
+        return self._word_lo <= self._words_generated <= self._word_hi
+
+    def _should_wrap_up(self) -> bool:
+        """True when the conductor should start wrapping up.
+
+        Uses 90% of the target as the trigger point so the closing
+        sequence doesn't overshoot.  Returns False if no target is set.
+        """
+        if self._target_words is None:
+            return False
+        return self._words_generated >= self._target_words * 0.90
+
+    def _over_budget(self) -> bool:
+        """True when the word count has exceeded the upper tolerance bound."""
+        if self._word_hi is None:
+            return False
+        return self._words_generated > self._word_hi
+
+    def _progress_summary(self) -> str:
+        """Human-readable progress string for logging."""
+        if self._target_words is None:
+            return f"{self._words_generated:,} words (no target)"
+        pct = (self._words_generated / self._target_words) * 100
+        est_secs = words_to_seconds(self._words_generated, wpm=self._wpm)
+        return (
+            f"{self._words_generated:,}/{self._target_words:,} words "
+            f"({pct:.0f}%) ≈ {seconds_to_mmss(est_secs)}"
+        )
+
+    def _budget_status_for_prompt(
+        self,
+        remaining_steps: int,
+        total_steps: int | None = None,
+    ) -> str:
+        """Runtime budget status block for injection into LLM prompts.
+
+        Returns an empty string when no target is set, so callers can
+        unconditionally embed it without conditional logic.
+
+        Args:
+            remaining_steps: How many generation steps remain (segments,
+                turns, beats, chapters — whatever the conductor uses).
+            total_steps:     Total steps in the run. When provided,
+                enables behind-pace detection.
+        """
+        if self._target_words is None:
+            return ""
+        remaining = self._remaining_words
+        pct = (self._words_generated / self._target_words) * 100
+        status = (
+            f"BUDGET STATUS: {self._words_generated:,} / {self._target_words:,} "
+            f"words generated ({pct:.0f}%). "
+            f"~{remaining:,} words remaining across {remaining_steps} step(s)."
+        )
+        # Warn if behind pace: expected fraction done vs actual.
+        if total_steps and total_steps > 0 and remaining_steps > 0:
+            steps_done = total_steps - remaining_steps
+            expected_pct = (steps_done / total_steps) * 100
+            if pct < expected_pct - 5:  # 5% grace margin
+                status += (
+                    "\n⚠ BEHIND PACE — write a LONGER response to stay on track."
+                )
+        return status
+
+    def _rebalanced_target(self, planned_words: int, remaining_steps: int) -> int:
+        """Redistribute unspent word budget across remaining steps.
+
+        When earlier steps run short, later steps need to compensate.
+        Returns ``planned_words`` unchanged when no target is set.
+
+        Args:
+            planned_words:   The originally planned word count for one step.
+            remaining_steps: How many steps remain (including the current one).
+        """
+        if self._target_words is None:
+            return planned_words
+        if remaining_steps <= 0:
+            return planned_words
+        fair_share = self._remaining_words // remaining_steps
+        return max(planned_words, fair_share)
+
+    # ── Hard length contract helpers (Phase 1+2) ───────────────────
+
+    @staticmethod
+    def _length_contract_block(
+        target_words: int,
+        *,
+        tolerance_pct: float = 12.0,
+        require_word_count: bool = True,
+    ) -> str:
+        """Build the strict length-contract text for injection into prompts.
+
+        This replaces soft language ("aim for ~X words") with a hard range
+        ("MUST be between MIN and MAX words") and instructs the model to
+        return its declared word count for accountability.
+
+        Args:
+            target_words:       The midpoint of the desired word range.
+            tolerance_pct:      Acceptable +/- percentage around target.
+            require_word_count: When True, instructs the model to include
+                                a 'word_count' field in its JSON response.
+
+        Returns:
+            A formatted block of text ready to splice into the prompt.
+            Empty string when target_words <= 0.
+        """
+        if target_words <= 0:
+            return ""
+        margin = max(1, int(target_words * (tolerance_pct / 100.0)))
+        lo = max(1, target_words - margin)
+        hi = target_words + margin
+        lines = [
+            f"LENGTH REQUIREMENT (HARD): your response MUST be between "
+            f"{lo} and {hi} words (target: {target_words}). "
+            "This is a hard constraint — pad with detail, examples, or "
+            "follow-up beats if you finish your point early. Do NOT cut "
+            "short. Do NOT exceed the upper bound."
+        ]
+        if require_word_count:
+            lines.append(
+                "Your response JSON MUST include a numeric 'word_count' "
+                "field counting the words in the spoken text. The system "
+                "will validate this — under-count and you will be retried."
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _validate_word_count(
+        declared: int | None,
+        actual: int,
+        *,
+        target_words: int,
+        tolerance_pct: float = 12.0,
+    ) -> str | None:
+        """Return a length-warning message if the response misses target.
+
+        Returns None when the response is within tolerance.
+        """
+        if target_words <= 0:
+            return None
+        margin = max(1, int(target_words * (tolerance_pct / 100.0)))
+        lo = max(1, target_words - margin)
+        hi = target_words + margin
+        if not (lo <= actual <= hi):
+            tag = ""
+            if declared is not None and abs(declared - actual) > 5:
+                tag = f" (declared word_count={declared}, actual={actual})"
+            return (
+                f"length out of range: actual={actual} target={target_words} "
+                f"window=[{lo},{hi}]{tag}"
+            )
+        return None
+
+    # ── Checkpoint rendering (Phase 5) ─────────────────────────────
+
+    def _checkpoint_segment(
+        self,
+        segment_index: int,
+        text: str,
+        *,
+        voice: str | None = None,
+    ) -> float | None:
+        """Measure the actual TTS duration of a freshly-generated segment.
+
+        Records the result with the BudgetTracker (when one is attached)
+        so that subsequent segments can rebalance against the real drift.
+
+        Returns:
+            The measured duration in seconds, or None when no
+            CheckpointRenderer is configured (caller should fall back to
+            word-count estimation).
+        """
+        if self._checkpoint_renderer is None:
+            return None
+        if not text or not text.strip():
+            actual_seconds = 0.0
+        else:
+            try:
+                actual_seconds = self._checkpoint_renderer.measure(
+                    text, voice=voice,
+                )
+            except Exception as exc:  # noqa: BLE001 — TTS is fragile
+                # We never want a checkpoint failure to abort generation.
+                self._length_warnings.append(
+                    f"[checkpoint segment {segment_index}] "
+                    f"measurement failed: {exc!r}"
+                )
+                return None
+
+        if self._budget_tracker is not None:
+            try:
+                self._budget_tracker.record_segment(
+                    segment_index, actual_seconds=actual_seconds,
+                )
+            except (IndexError, ValueError) as exc:
+                # Out-of-range index = our caller miscounted; warn but keep going.
+                self._length_warnings.append(
+                    f"[checkpoint segment {segment_index}] "
+                    f"tracker rejected: {exc!r}"
+                )
+
+        return actual_seconds
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def run(self) -> ConductorResult:
+        """Execute the full generation pipeline.
+
+        Returns:
+            A ConductorResult with all generated events.
+        """
+        self._build_agents()
+        raw = self._run_turn_loop()
+        # ── Expansion pass (Phase 7) ───────────────────────────────
+        # If we finished short of target, give the conductor one chance
+        # to extend the content. Subclasses opt-in by overriding
+        # ``_expansion_pass()``; the default does nothing.
+        extra = self._maybe_expand(raw)
+        if extra:
+            raw.extend(extra)
+        return self._package_result(raw)
+
+    def _maybe_expand(self, raw_events: list[dict]) -> list[dict]:
+        """Decide whether to call ``_expansion_pass`` and run it if so.
+
+        Returns the list of additional events produced (possibly empty).
+        Driven by the BudgetTracker when present, otherwise by the word
+        counter.
+        """
+        # Decide based on time when we have a tracker, else words.
+        deficit_seconds: float = 0.0
+        deficit_words: int = 0
+
+        if self._budget_tracker is not None and self._budget_tracker.records:
+            tolerance_s = max(15.0, self._budget_tracker.total_target_seconds * 0.05)
+            if self._budget_tracker.is_short_by(tolerance_s):
+                deficit_seconds = -self._budget_tracker.cumulative_delta()
+                # Convert to words via the conductor's wpm estimate.
+                deficit_words = max(20, int(deficit_seconds / 60.0 * self._wpm))
+        elif self._target_words is not None and self._word_lo is not None:
+            if self._words_generated < self._word_lo:
+                deficit_words = self._word_lo - self._words_generated
+                deficit_seconds = deficit_words / max(self._wpm, 1) * 60.0
+
+        if deficit_words <= 0:
+            return []
+
+        try:
+            return self._expansion_pass(
+                deficit_words=deficit_words,
+                deficit_seconds=deficit_seconds,
+            ) or []
+        except Exception as exc:  # noqa: BLE001
+            self._length_warnings.append(
+                f"[expansion] failed: {exc!r} — proceeding without extension."
+            )
+            return []
+
+    def _expansion_pass(
+        self,
+        *,
+        deficit_words: int,
+        deficit_seconds: float,
+    ) -> list[dict]:
+        """Hook: produce additional events to close a length deficit.
+
+        The default implementation is a no-op. Subclasses override this
+        to add content that fits their format (e.g. a debate gets one
+        more exchange round, an audiobook gets a narrative continuation).
+
+        Args:
+            deficit_words:   Words needed to reach the lower length bound.
+            deficit_seconds: Seconds of audio needed (estimated).
+
+        Returns:
+            A list of new event dicts to append. May be empty if the
+            subclass declines or cannot extend further.
+        """
+        return []
+
+    @abstractmethod
+    def _build_agents(self) -> None:
+        """Create and configure LLM agents from self.config.
+
+        Called once before the turn loop starts. Implementations should
+        store the agents as instance attributes.
+        """
+
+    @abstractmethod
+    def _run_turn_loop(self) -> list[dict]:
+        """Run the main generation loop.
+
+        Returns:
+            A list of raw event dicts (one per speaking turn).
+        """
+
+    @abstractmethod
+    def _package_result(self, raw_events: list[dict]) -> ConductorResult:
+        """Convert raw events into a typed ConductorResult.
+
+        Args:
+            raw_events: The list of event dicts from _run_turn_loop().
+
+        Returns:
+            A ConductorResult ready for downstream consumption.
+        """

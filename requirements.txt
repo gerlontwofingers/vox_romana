@@ -1,0 +1,19 @@
+# Direct dependencies for vox_romana
+# Pinned from .venv on 2026-04-03 (Python 3.12.10)
+# Updated 2026-04-06 — all packages pinned to exact versions.
+
+openai==2.30.0
+python-dotenv==1.2.2
+
+# TTS pipeline
+pydub==0.25.1
+piper-tts==1.4.2
+
+# Kokoro TTS (Apple Silicon only) — comment out on non-Apple platforms
+mlx==0.31.1
+mlx-audio==0.4.2
+misaki[en]==0.9.4
+num2words==0.5.14
+phonemizer==3.3.0
+spacy==3.8.14
+espeakng_loader==0.2.4

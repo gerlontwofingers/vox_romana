@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Vox Romana local data (catalog DB, generated assets)
+data/
+output/
+prompts/
+
+# ignore output folder todo: creae a whole external place for all this
+/output/
