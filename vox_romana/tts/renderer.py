@@ -138,6 +138,30 @@ def strip_stage_directions(text: str) -> str:
     return cleaned.strip()
 
 
+# Matches Markdown emphasis markers: *word*, **word**, _word_, __word__
+# These are written by the LLM for emphasis but have no meaning in TTS —
+# the asterisks/underscores are read aloud literally by the speech engine.
+_MD_EMPHASIS_RE = re.compile(r'(\*{1,2}|_{1,2})(.+?)\1')
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    """Remove Markdown emphasis markers from TTS text, keeping the inner word.
+
+    Strips *word*, **word**, _word_, and __word__ patterns, leaving the
+    emphasised text intact without the surrounding markers.
+
+    Examples::
+
+        >>> strip_markdown_emphasis("anything still works to come back *to*")
+        'anything still works to come back to'
+        >>> strip_markdown_emphasis("a *critiquing* son")
+        'a critiquing son'
+        >>> strip_markdown_emphasis("Plain text unchanged.")
+        'Plain text unchanged.'
+    """
+    return _MD_EMPHASIS_RE.sub(r'\2', text)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # RENDER RESULT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -279,6 +303,11 @@ class TTSRenderer:
             # consists *only* of a direction (e.g. "(pause)") is also skipped.
             if self._strip_directions:
                 text = strip_stage_directions(text)
+
+            # Always strip Markdown emphasis markers (*word*, _word_, etc.).
+            # TTS engines have no concept of Markdown — the asterisks are read
+            # aloud literally.  The inner word is preserved.
+            text = strip_markdown_emphasis(text)
 
             if not text or not text.strip() or event_kind not in SPOKEN_EVENT_KINDS:
                 skipped += 1

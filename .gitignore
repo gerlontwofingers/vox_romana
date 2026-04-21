@@ -213,3 +213,6 @@ prompts/
 
 # ignore output folder todo: creae a whole external place for all this
 /output/
+
+# ignore voices folder, which contains generated audio files that are large and can be regenerated
+/voices/

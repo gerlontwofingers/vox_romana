@@ -1176,7 +1176,7 @@ class TestTtsStylePassthrough:
 # 9. STAGE DIRECTION STRIPPING
 # ═══════════════════════════════════════════════════════════════════════════
 
-from vox_romana.tts.renderer import strip_stage_directions
+from vox_romana.tts.renderer import strip_markdown_emphasis, strip_stage_directions
 
 
 class TestStripStageDirections:
@@ -1233,6 +1233,50 @@ class TestStripStageDirections:
         result = strip_stage_directions(text)
         assert not result.startswith("(")
         assert "Welcome, listeners" in result
+
+
+class TestStripMarkdownEmphasis:
+    """Unit tests for the strip_markdown_emphasis() helper."""
+
+    def test_single_asterisk_stripped(self):
+        """*word* markers are removed, word kept."""
+        assert strip_markdown_emphasis("come back *to*") == "come back to"
+
+    def test_double_asterisk_stripped(self):
+        """**word** bold markers are removed, word kept."""
+        assert strip_markdown_emphasis("a **critiquing** son") == "a critiquing son"
+
+    def test_single_underscore_stripped(self):
+        """_word_ markers are removed, word kept."""
+        assert strip_markdown_emphasis("the _only_ way") == "the only way"
+
+    def test_double_underscore_stripped(self):
+        """__word__ markers are removed, word kept."""
+        assert strip_markdown_emphasis("__Save what remains.__") == "Save what remains."
+
+    def test_multiple_markers_all_stripped(self):
+        """Multiple emphasis spans in one string are all stripped."""
+        result = strip_markdown_emphasis("the *enemy* _is_ the **gates**")
+        assert result == "the enemy is the gates"
+
+    def test_plain_text_unchanged(self):
+        """Text with no markers passes through unchanged."""
+        text = "Just plain dialogue."
+        assert strip_markdown_emphasis(text) == text
+
+    def test_empty_string(self):
+        """Empty input returns empty output."""
+        assert strip_markdown_emphasis("") == ""
+
+    def test_real_script_sample_cost(self):
+        """Real sample: 'what did it *cost*?' → asterisks removed."""
+        result = strip_markdown_emphasis("But what did it *cost*?")
+        assert result == "But what did it cost?"
+
+    def test_real_script_sample_save(self):
+        """Real sample: '*Save what remains.*' → asterisks removed."""
+        result = strip_markdown_emphasis("*Save what remains.*")
+        assert result == "Save what remains."
 
 
 class TestRendererStripDirections:
@@ -1343,3 +1387,25 @@ class TestRendererStripDirections:
         renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
         # The original dict must be untouched.
         assert data["events"][0]["text"] == original_text
+
+    def test_markdown_emphasis_always_stripped(self, tmp_path):
+        """Markdown emphasis markers are stripped regardless of strip_directions."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine)  # strip_directions=False (default)
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "anything still works to come back *to*",
+                "tone": [],
+                "pace": "medium",
+                "volume": "normal",
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        assert engine.calls[0]["text"] == "anything still works to come back to"
