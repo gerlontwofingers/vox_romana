@@ -215,4 +215,4 @@ prompts/
 /output/
 
 # ignore voices folder, which contains generated audio files that are large and can be regenerated
-/voices/
+/piper-voices/
