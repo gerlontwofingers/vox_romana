@@ -832,6 +832,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.quiet:
         print(output_path)
 
+    return output_path
+
 
 if __name__ == "__main__":
     main()

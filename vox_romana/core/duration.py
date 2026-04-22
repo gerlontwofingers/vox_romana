@@ -134,15 +134,55 @@ def tolerance_window(
     return (round(target_words - margin), round(target_words + margin))
 
 
+# ── Word-form number normalisation ───────────────────────────────────────────
+# Maps English word-form integers to their digit equivalents so that
+# parse_duration_from_text() can handle "three hour podcast" etc.
+# Range covers one–twelve — enough for any realistic episode length.
+
+_WORD_NUMBERS: dict[str, str] = {
+    "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8",
+    "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+    "fifteen": "15", "twenty": "20", "thirty": "30",
+    "forty": "40", "forty-five": "45", "fifty": "50", "sixty": "60",
+    "ninety": "90",
+}
+
+# Pre-compile once: matches any of the word-form numbers at a word boundary.
+_WORD_NUMBER_RE = re.compile(
+    r"\b(" + "|".join(_WORD_NUMBERS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_word_numbers(text: str) -> str:
+    """Replace English word-form numbers with digits.
+
+    "three hour podcast" → "3 hour podcast"
+    "a twelve minute segment" → "a 12 minute segment"
+
+    Only handles one–twelve (sufficient for any realistic duration).
+    Case-insensitive; preserves the rest of the string unchanged.
+    """
+    return _WORD_NUMBER_RE.sub(
+        lambda m: _WORD_NUMBERS[m.group(1).lower()], text
+    )
+
+
 def parse_duration_from_text(text: str) -> float | None:
     """Extract a duration in minutes from natural language.
 
-    Looks for patterns like "30 minute podcast", "1 hour debate",
-    "45-minute show", "a 20 min episode", "1.5 hour audiobook".
+    Handles both digit and word-form numbers:
+      "30 minute podcast", "1 hour debate", "45-minute show",
+      "a 20 min episode", "1.5 hour audiobook",
+      "three hour podcast", "a twelve minute segment".
 
     Returns:
         Duration in minutes, or None if nothing found.
     """
+    # Normalise word-form numbers before the digit regexes run.
+    text = _normalize_word_numbers(text)
+
     # Try "N hour(s)" first (may also have minutes after it)
     hour_pat = re.compile(
         r"(\d+(?:\.\d+)?)\s*[-–]?\s*hours?\b",

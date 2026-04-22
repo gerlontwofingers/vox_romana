@@ -120,9 +120,7 @@ OUTPUT:
 from __future__ import annotations
 
 import argparse
-import io
 import sys
-from contextlib import redirect_stdout
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -426,9 +424,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _build_generate_argv(args: argparse.Namespace) -> list[str]:
     """Build an argv list for run_show.main().
 
-    Always includes --quiet so we can reliably parse the output path
-    from stdout.  run.py provides its own user-facing progress
-    messages ("Step 1/2", "Step 2/2").
+    Forwards all generation-related flags to run_show.main(). Only passes
+    --quiet when the user explicitly asked for quiet mode — otherwise
+    run_show.py streams its own progress output (Phase 1-4 logs) directly
+    to the terminal so the user can see what's happening.
 
     Args:
         args: Parsed namespace from our parse_args().
@@ -436,7 +435,11 @@ def _build_generate_argv(args: argparse.Namespace) -> list[str]:
     Returns:
         List of string arguments suitable for run_show.main(argv).
     """
-    argv = [str(args.prompt), "--quiet"]
+    argv = [str(args.prompt)]
+
+    # Only suppress run_show output when the user wants quiet mode.
+    if args.quiet:
+        argv.append("--quiet")
 
     if args.show_type:
         argv += ["--type", args.show_type]
@@ -513,8 +516,9 @@ def _build_render_argv(
 def _mode_generate(args: argparse.Namespace) -> Path:
     """Run generate mode: prompt → JSON.
 
-    Calls run_show.main() with --quiet to capture the output path.
-    The JSON path is printed to stdout by run_show.py when in quiet mode.
+    Calls run_show.main() and uses its return value (the output Path).
+    run_show.py streams its own Phase 1-4 progress logs directly to
+    stdout unless the user passed --quiet.
 
     Args:
         args: Parsed namespace from parse_args().
@@ -525,15 +529,8 @@ def _mode_generate(args: argparse.Namespace) -> Path:
     import run_show
 
     argv = _build_generate_argv(args)
-
-    # run_show.py in --quiet mode prints just the output path to stdout.
-    # Capture it so we can return the path for the full-mode pipeline.
-    captured = io.StringIO()
-    with redirect_stdout(captured):
-        run_show.main(argv)
-
-    json_path = captured.getvalue().strip().splitlines()[-1]
-    return Path(json_path)
+    output_path = run_show.main(argv)
+    return output_path
 
 
 def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
@@ -621,14 +618,14 @@ def main(argv: list[str] | None = None) -> None:
 
     elif args.mode == "full":
         # Full pipeline — generate then render.
-        if not args.quiet:
-            print("  Step 1/2: Generating show script...\n")
-
+        # run_show.py streams its own Phase 1-4 banner + progress.
+        # We just print a separator before the render step.
         json_path = _mode_generate(args)
 
         if not args.quiet:
-            print(f"  Script: {json_path}")
-            print(f"\n  Step 2/2: Rendering audio...\n")
+            print(f"\n{'─' * 60}")
+            print(f"  Step 2/2: Rendering audio...")
+            print(f"{'─' * 60}\n")
 
         _mode_render(json_path, args)
 

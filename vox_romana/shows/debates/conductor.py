@@ -566,6 +566,12 @@ class DebateConductor(BaseConductor):
                 target_turns=target_turns,
             )
 
+            # ── Progress ─────────────────────────────────────────────
+            print(
+                f"  [turn {turn_number}/{target_turns}] {speaker_name}",
+                flush=True,
+            )
+
             if speaker_role == "moderator":
                 turns_since_moderator = 0
             else:

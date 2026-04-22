@@ -156,11 +156,15 @@ class TestBuildArgv:
     """Verify the argv builder helpers."""
 
     def test_generate_argv_minimal(self, tmp_prompt):
-        """Minimal generate argv should include prompt and --quiet."""
+        """Minimal generate argv should contain the prompt but NOT --quiet.
+
+        --quiet is only forwarded when the user explicitly passes --quiet;
+        run_show.py should stream its own progress output by default.
+        """
         args = parse_args([str(tmp_prompt)])
         argv = _build_generate_argv(args)
         assert str(tmp_prompt) in argv
-        assert "--quiet" in argv
+        assert "--quiet" not in argv
 
     def test_generate_argv_with_overrides(self, tmp_prompt):
         """All overrides should appear in the generated argv."""
@@ -285,8 +289,10 @@ class TestModeExecution:
     @patch("run_show.main")
     def test_full_mode_calls_both(self, mock_gen, mock_render, tmp_prompt, capsys):
         """full mode should call run_show then render_show."""
+        from pathlib import Path
         fake_json = "/fake/output.json"
-        mock_gen.side_effect = lambda argv: print(fake_json)
+        # run_show.main() now returns a Path rather than printing to stdout.
+        mock_gen.return_value = Path(fake_json)
         mock_render.return_value = None
 
         run_master.main([str(tmp_prompt), "--mode", "full", "--quiet"])
@@ -295,7 +301,7 @@ class TestModeExecution:
         mock_gen.assert_called_once()
         mock_render.assert_called_once()
 
-        # render_show should receive the JSON path from run_show's output.
+        # render_show should receive the JSON path from run_show's return value.
         render_argv = mock_render.call_args[0][0]
         assert fake_json in render_argv
 
@@ -303,7 +309,8 @@ class TestModeExecution:
     @patch("run_show.main")
     def test_no_log_forwarded_in_full_mode(self, mock_gen, mock_render, tmp_prompt):
         """--no-log-audio-duration should be forwarded to render in full mode."""
-        mock_gen.side_effect = lambda argv: print("/fake/output.json")
+        from pathlib import Path
+        mock_gen.return_value = Path("/fake/output.json")
         mock_render.return_value = None
 
         run_master.main([

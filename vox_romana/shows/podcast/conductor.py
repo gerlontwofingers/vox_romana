@@ -320,6 +320,13 @@ class PodcastConductor(BaseConductor):
         for seg_idx, segment in enumerate(segments):
             seg_id = f"seg_{seg_idx:03d}"
 
+            # ── Progress ─────────────────────────────────────────────
+            topic_preview = (segment.topic or "")[:60]
+            print(
+                f"  [segment {seg_idx + 1}/{total_segments}] {topic_preview}",
+                flush=True,
+            )
+
             # ── Build context summary ────────────────────────────────
             context_summary = self._build_context_summary()
 
