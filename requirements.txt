@@ -8,6 +8,9 @@ python-dotenv==1.2.2
 # TTS pipeline
 pydub==0.25.1
 piper-tts==1.4.2
+# NOTE: piper voice models are managed via git-lfs, not pip.
+# Clone models with:  git clone https://huggingface.co/rhasspy/piper-voices piper-voices
+# git-lfs is a system dependency: brew install git-lfs && git lfs install
 
 # Kokoro TTS (Apple Silicon only) — comment out on non-Apple platforms
 mlx==0.31.1

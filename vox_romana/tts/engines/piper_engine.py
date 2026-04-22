@@ -66,7 +66,7 @@ SETUP:
 EXAMPLE:
     from vox_romana.tts.engines.piper import PiperEngine
 
-    engine = PiperEngine(model_dir="models/piper")
+    engine = PiperEngine(model_dir="piper-voices")
     result = engine.synthesize("Hello, world!", voice="en_US-lessac-medium")
     # result.audio is WAV bytes, result.sample_rate is 22050
 """
@@ -99,7 +99,7 @@ class PiperEngine(BaseTTSEngine):
 
     def __init__(
         self,
-        model_dir: str | Path = "models/piper",
+        model_dir: str | Path = "piper-voices",
     ) -> None:
         """Initialize the Piper engine.
 
@@ -180,13 +180,13 @@ class PiperEngine(BaseTTSEngine):
         )
 
     def available_voices(self) -> list[str]:
-        """List voice models found in the model directory.
+        """List voice models found in the model directory (recursive).
 
-        Scans model_dir for .onnx files and returns their stems as
-        voice IDs. For example, if the directory contains:
-            en_US-lessac-medium.onnx
-            en_US-amy-medium.onnx
-        This returns: ["en_US-lessac-medium", "en_US-amy-medium"]
+        Recursively scans model_dir for .onnx files and returns their
+        stems as voice IDs. Works with both flat directories and the
+        nested structure of the piper-voices git clone:
+            piper-voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+            → voice ID: "en_US-lessac-medium"
 
         Returns:
             List of voice ID strings (sorted alphabetically).
@@ -194,11 +194,10 @@ class PiperEngine(BaseTTSEngine):
         if not self._model_dir.exists():
             return []
 
-        # Find all .onnx files (voice models).
-        # Each voice is a .onnx file (the config is .onnx.json).
+        # Recursively find all .onnx files (voice models).
+        # Each voice is a .onnx file; the config is .onnx.json — filter those out.
         voices = sorted(
-            p.stem for p in self._model_dir.glob("*.onnx")
-            # Filter out any .onnx.json files that glob might catch.
+            p.stem for p in self._model_dir.rglob("*.onnx")
             if not p.name.endswith(".onnx.json")
         )
         return voices
@@ -232,13 +231,18 @@ class PiperEngine(BaseTTSEngine):
         if voice_id in self._voices:
             return self._voices[voice_id]
 
-        # Load the model.
+        # Load the model — search recursively to support nested piper-voices/ layout.
+        # First try a flat path (fast), then fall back to recursive search.
         model_path = self._model_dir / f"{voice_id}.onnx"
         if not model_path.exists():
-            raise FileNotFoundError(
-                f"Piper voice model not found: {model_path}\n"
-                f"Available models: {self.available_voices()}"
-            )
+            found = list(self._model_dir.rglob(f"{voice_id}.onnx"))
+            if not found:
+                raise FileNotFoundError(
+                    f"Piper voice model not found: {voice_id}.onnx\n"
+                    f"Searched in: {self._model_dir}\n"
+                    f"Available models: {self.available_voices()[:10]}..."
+                )
+            model_path = found[0]
 
         from piper import PiperVoice
 

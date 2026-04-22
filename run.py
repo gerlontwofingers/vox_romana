@@ -373,8 +373,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render_group.add_argument(
         "--model-dir",
         type=str,
-        default="models/piper",
-        help="Piper model directory (default: models/piper).",
+        default="piper-voices",
+        help="Piper model directory (default: piper-voices).",
     )
 
     render_group.add_argument(
@@ -490,7 +490,7 @@ def _build_render_argv(
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
         argv += ["--voice-policy", args.voice_policy]
-    if args.model_dir != "models/piper":
+    if args.model_dir != "piper-voices":
         argv += ["--model-dir", args.model_dir]
     if args.model:
         argv += ["--model", args.model]

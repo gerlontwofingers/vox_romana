@@ -371,6 +371,235 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# PIPER VOICE CATALOG
+# ═══════════════════════════════════════════════════════════════════════════
+# Voice IDs match the .onnx stem in the piper-voices/ git clone:
+#   piper-voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+#   → voice_id: "en_US-lessac-medium"
+#
+# Quality preference: high > medium > low (only best quality per speaker).
+# Multi-speaker models (arctic, libritts, vctk, etc.) are excluded here
+# because they require a numeric speaker_id to be useful.
+#
+# Gender/age annotations are based on voice name provenance and listening.
+
+PIPER_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
+
+    # ── American English Female ──────────────────────────────────────
+
+    "en_US-lessac-high": VoiceDescriptor(
+        voice_id="en_US-lessac-high",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="clear, neutral, professional",
+        best_for="narration, news delivery, professional characters",
+        tags=("clear", "neutral", "professional", "narration",
+              "smooth", "crisp", "natural", "anchor"),
+    ),
+    "en_US-amy-medium": VoiceDescriptor(
+        voice_id="en_US-amy-medium",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="warm, conversational, approachable",
+        best_for="interviews, dialogue, relatable characters",
+        tags=("warm", "conversational", "approachable", "friendly",
+              "natural", "everyday", "relatable", "casual"),
+    ),
+    "en_US-kathleen-low": VoiceDescriptor(
+        voice_id="en_US-kathleen-low",
+        gender="female",
+        accent="american",
+        age="mature",
+        tone="measured, steady, composed",
+        best_for="authority figures, formal narration, older characters",
+        tags=("measured", "steady", "composed", "authoritative",
+              "formal", "mature", "deliberate", "grounded"),
+    ),
+    "en_US-kristin-medium": VoiceDescriptor(
+        voice_id="en_US-kristin-medium",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="bright, articulate, energetic",
+        best_for="debate, discussion, animated dialogue",
+        tags=("bright", "articulate", "energetic", "animated",
+              "expressive", "lively", "confident", "debate"),
+    ),
+    "en_US-hfc_female-medium": VoiceDescriptor(
+        voice_id="en_US-hfc_female-medium",
+        gender="female",
+        accent="american",
+        age="young",
+        tone="light, youthful, clear",
+        best_for="younger characters, casual speech, modern content",
+        tags=("light", "youthful", "clear", "young", "modern",
+              "casual", "fresh", "accessible"),
+    ),
+    "en_US-ljspeech-high": VoiceDescriptor(
+        voice_id="en_US-ljspeech-high",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="crisp, precise, broadcast-quality",
+        best_for="audiobook narration, clear exposition, formal delivery",
+        tags=("crisp", "precise", "broadcast", "audiobook",
+              "narrator", "formal", "polished", "clear"),
+    ),
+
+    # ── American English Male ────────────────────────────────────────
+
+    "en_US-ryan-high": VoiceDescriptor(
+        voice_id="en_US-ryan-high",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="warm, authoritative, confident",
+        best_for="debate lead, narration, authority figures",
+        tags=("warm", "authoritative", "confident", "strong",
+              "leader", "narration", "debate", "commanding"),
+    ),
+    "en_US-joe-medium": VoiceDescriptor(
+        voice_id="en_US-joe-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="casual, conversational, friendly",
+        best_for="casual dialogue, interviews, everyday characters",
+        tags=("casual", "conversational", "friendly", "approachable",
+              "natural", "everyday", "relatable", "easygoing"),
+    ),
+    "en_US-danny-low": VoiceDescriptor(
+        voice_id="en_US-danny-low",
+        gender="male",
+        accent="american",
+        age="young",
+        tone="energetic, youthful, direct",
+        best_for="passionate arguments, younger characters, dynamic roles",
+        tags=("energetic", "youthful", "direct", "passionate",
+              "dynamic", "animated", "spirited", "young"),
+    ),
+    "en_US-norman-medium": VoiceDescriptor(
+        voice_id="en_US-norman-medium",
+        gender="male",
+        accent="american",
+        age="mature",
+        tone="deep, deliberate, gravitas",
+        best_for="serious authority, elder characters, gravitas",
+        tags=("deep", "deliberate", "gravitas", "serious",
+              "elder", "authoritative", "mature", "weighty"),
+    ),
+    "en_US-bryce-medium": VoiceDescriptor(
+        voice_id="en_US-bryce-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="smooth, professional, clear",
+        best_for="news anchor, exposition, versatile roles",
+        tags=("smooth", "professional", "clear", "versatile",
+              "anchor", "polished", "measured", "reliable"),
+    ),
+    "en_US-john-medium": VoiceDescriptor(
+        voice_id="en_US-john-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="steady, measured, balanced",
+        best_for="narration, analytical roles, moderator",
+        tags=("steady", "measured", "balanced", "analytical",
+              "narrator", "moderator", "calm", "intellectual"),
+    ),
+    "en_US-hfc_male-medium": VoiceDescriptor(
+        voice_id="en_US-hfc_male-medium",
+        gender="male",
+        accent="american",
+        age="young",
+        tone="clear, crisp, modern",
+        best_for="tech-forward content, younger characters, accessible delivery",
+        tags=("clear", "crisp", "modern", "young", "contemporary",
+              "fresh", "accessible", "tech"),
+    ),
+    "en_US-sam-medium": VoiceDescriptor(
+        voice_id="en_US-sam-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="robust, expressive, resonant",
+        best_for="storytelling, character-driven dialogue, debate",
+        tags=("robust", "expressive", "resonant", "storytelling",
+              "character", "debate", "dynamic", "rich"),
+    ),
+
+    # ── British English Female ───────────────────────────────────────
+
+    "en_GB-alba-medium": VoiceDescriptor(
+        voice_id="en_GB-alba-medium",
+        gender="female",
+        accent="british",
+        age="middle",
+        tone="warm, articulate, natural",
+        best_for="narration, dialogue, approachable British characters",
+        tags=("warm", "articulate", "natural", "british", "approachable",
+              "narrator", "friendly", "clear"),
+    ),
+    "en_GB-cori-high": VoiceDescriptor(
+        voice_id="en_GB-cori-high",
+        gender="female",
+        accent="british",
+        age="middle",
+        tone="polished, refined, authoritative",
+        best_for="BBC-style delivery, formal characters, professional roles",
+        tags=("polished", "refined", "authoritative", "british", "bbc",
+              "formal", "professional", "composed"),
+    ),
+    "en_GB-jenny_dioco-medium": VoiceDescriptor(
+        voice_id="en_GB-jenny_dioco-medium",
+        gender="female",
+        accent="british",
+        age="young",
+        tone="bright, personable, engaging",
+        best_for="interviews, lighter content, younger British characters",
+        tags=("bright", "personable", "engaging", "british", "youthful",
+              "accessible", "friendly", "lively"),
+    ),
+    "en_GB-southern_english_female-low": VoiceDescriptor(
+        voice_id="en_GB-southern_english_female-low",
+        gender="female",
+        accent="british",
+        age="mature",
+        tone="measured, elegant, composed",
+        best_for="formal narration, elder characters, distinguished roles",
+        tags=("measured", "elegant", "composed", "british", "formal",
+              "mature", "distinguished", "posh"),
+    ),
+
+    # ── British English Male ─────────────────────────────────────────
+
+    "en_GB-alan-medium": VoiceDescriptor(
+        voice_id="en_GB-alan-medium",
+        gender="male",
+        accent="british",
+        age="middle",
+        tone="warm, authoritative, clear",
+        best_for="narration, authority figures, debate moderation",
+        tags=("warm", "authoritative", "clear", "british", "narrator",
+              "moderator", "confident", "professional"),
+    ),
+    "en_GB-northern_english_male-medium": VoiceDescriptor(
+        voice_id="en_GB-northern_english_male-medium",
+        gender="male",
+        accent="british",
+        age="middle",
+        tone="gruff, direct, salt-of-the-earth",
+        best_for="working-class characters, straight-talking roles, contrast",
+        tags=("gruff", "direct", "northern", "british", "blunt",
+              "earthy", "working-class", "salt-of-the-earth"),
+    ),
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CATALOG QUERY HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 

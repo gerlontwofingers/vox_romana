@@ -481,6 +481,18 @@ class TTSRenderer:
         hints = voice_hints or {}
         result: dict[str, str] = {}
 
+        # Detect which engine is active and pick the right catalog.
+        from .engine import BaseTTSEngine
+        from .voice_catalog import KOKORO_VOICE_CATALOG, PIPER_VOICE_CATALOG
+
+        try:
+            from .engines.piper_engine import PiperEngine
+            _is_piper = isinstance(self._engine, PiperEngine)
+        except Exception:
+            _is_piper = False
+
+        active_catalog = PIPER_VOICE_CATALOG if _is_piper else KOKORO_VOICE_CATALOG
+
         # ── Manual overrides first ────────────────────────────────────
         for name in speaker_names:
             if name in self._voice_map:
@@ -502,17 +514,39 @@ class TTSRenderer:
                 cast_info[name] = info
 
             # Catalog assigns unique voices for the entire cast.
-            catalog_map = match_voices_for_cast(cast_info)
+            catalog_map = match_voices_for_cast(cast_info, catalog=active_catalog)
             for name, voice_id in catalog_map.items():
                 if voice_id and name not in result:
                     result[name] = voice_id
 
         # ── Gender-only fallback for any still-unassigned speakers ────
-        # Partition voices by gender using the Kokoro naming convention:
-        #   af_* / bf_* = female voices
-        #   am_* / bm_* = male voices
-        male_voices = [v for v in available if v[:2] in ("am", "bm")]
-        female_voices = [v for v in available if v[:2] in ("af", "bf")]
+        # For Piper voices, the naming convention is:
+        #   en_US-lessac-high, en_US-ryan-high, en_GB-cori-high, etc.
+        # We use the catalog to split by gender; fall back to keyword
+        # heuristics for voices not in the catalog.
+        if _is_piper:
+            male_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "male"
+                or (v not in active_catalog and any(
+                    kw in v for kw in ("ryan", "joe", "danny", "norman", "bryce",
+                                       "john", "hfc_male", "sam", "alan",
+                                       "northern_english_male")
+                ))
+            ]
+            female_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "female"
+                or (v not in active_catalog and any(
+                    kw in v for kw in ("lessac", "amy", "kathleen", "kristin",
+                                       "hfc_female", "ljspeech", "alba", "cori",
+                                       "jenny_dioco", "southern_english_female")
+                ))
+            ]
+        else:
+            # Kokoro naming convention: af_* / bf_* = female; am_* / bm_* = male
+            male_voices = [v for v in available if v[:2] in ("am", "bm")]
+            female_voices = [v for v in available if v[:2] in ("af", "bf")]
         male_idx = 0
         female_idx = 0
         fallback_idx = 0

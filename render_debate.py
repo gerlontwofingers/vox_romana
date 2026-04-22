@@ -107,7 +107,7 @@ def make_engine(engine_name: str, **kwargs):
 
     elif engine_name == "piper":
         from vox_romana.tts.engines.piper_engine import PiperEngine
-        model_dir = kwargs.get("model_dir", "models/piper")
+        model_dir = kwargs.get("model_dir", "piper-voices")
         return PiperEngine(model_dir=model_dir)
 
     else:
@@ -206,8 +206,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="models/piper",
-        help="Piper model directory (default: models/piper). Ignored for Kokoro.",
+        default="piper-voices",
+        help="Piper model directory (default: piper-voices). Ignored for Kokoro.",
     )
 
     parser.add_argument(

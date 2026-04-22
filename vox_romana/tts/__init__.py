@@ -32,6 +32,7 @@ from .renderer import TTSRenderer, RenderResult
 from .voice_catalog import (
     VoiceDescriptor,
     KOKORO_VOICE_CATALOG,
+    PIPER_VOICE_CATALOG,
     match_voice,
     match_voices_for_cast,
     get_voices_by_gender,
@@ -54,6 +55,7 @@ __all__ = [
     # Voice catalog
     "VoiceDescriptor",
     "KOKORO_VOICE_CATALOG",
+    "PIPER_VOICE_CATALOG",
     "match_voice",
     "match_voices_for_cast",
     "get_voices_by_gender",
