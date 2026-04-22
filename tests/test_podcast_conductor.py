@@ -131,19 +131,32 @@ def make_test_config(
 def make_segment_response(speakers: list[str], num_turns: int = 4) -> str:
     """Build a canned JSON array response for a segment.
 
+    Each turn contains enough words (~80) to comfortably clear the
+    podcast conductor's segment-retry threshold (currently 70% of the
+    segment target_words) for typical test segment targets of 200-300.
+
     Returns a JSON string like:
     [
-      {"speaker_name": "Host A", "text": "Line 1", "tone": "warm", ...},
-      {"speaker_name": "Host B", "text": "Line 2", "tone": "playful", ...},
+      {"speaker_name": "Host A", "text": "Line 1 ...", "tone": "warm", ...},
       ...
     ]
     """
+    # ~80 words of filler per turn keeps these tests focused on event
+    # count / wiring instead of accidentally stress-testing retry logic.
+    filler = (
+        " Quite frankly the deeper we dig into this story the more nuance "
+        "appears, and the easier it becomes to mistake confidence for clarity. "
+        "Listeners deserve the full picture, not just the convenient half, so "
+        "let's keep unpacking the layers underneath the headline numbers and "
+        "see whether the trend really tells the story everyone seems to think "
+        "it does, before we hand out any verdicts on the matter today."
+    )
     turns = []
     for i in range(num_turns):
         speaker = speakers[i % len(speakers)]
         turns.append({
             "speaker_name": speaker,
-            "text": f"This is line {i + 1} from {speaker}.",
+            "text": f"This is line {i + 1} from {speaker}.{filler}",
             "tone": "warm" if i % 2 == 0 else "playful",
             "volume": "moderate",
             "pace": "medium",

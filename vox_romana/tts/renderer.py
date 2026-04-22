@@ -483,7 +483,11 @@ class TTSRenderer:
 
         # Detect which engine is active and pick the right catalog.
         from .engine import BaseTTSEngine
-        from .voice_catalog import KOKORO_VOICE_CATALOG, PIPER_VOICE_CATALOG
+        from .voice_catalog import (
+            KOKORO_VOICE_CATALOG,
+            PIPER_VOICE_CATALOG,
+            UNIFIED_VOICE_CATALOG,
+        )
 
         try:
             from .engines.piper_engine import PiperEngine
@@ -491,7 +495,20 @@ class TTSRenderer:
         except Exception:
             _is_piper = False
 
-        active_catalog = PIPER_VOICE_CATALOG if _is_piper else KOKORO_VOICE_CATALOG
+        try:
+            from .engines.multi_engine import MultiEngine
+            _is_multi = isinstance(self._engine, MultiEngine)
+        except Exception:
+            _is_multi = False
+
+        if _is_multi:
+            # Both Kokoro + Piper voices are valid candidates; the engine
+            # will route synthesis to the right backend based on voice_id.
+            active_catalog = UNIFIED_VOICE_CATALOG
+        elif _is_piper:
+            active_catalog = PIPER_VOICE_CATALOG
+        else:
+            active_catalog = KOKORO_VOICE_CATALOG
 
         # ── Manual overrides first ────────────────────────────────────
         for name in speaker_names:
@@ -524,7 +541,18 @@ class TTSRenderer:
         #   en_US-lessac-high, en_US-ryan-high, en_GB-cori-high, etc.
         # We use the catalog to split by gender; fall back to keyword
         # heuristics for voices not in the catalog.
-        if _is_piper:
+        if _is_multi:
+            # Drive purely off the catalog — it covers every voice in
+            # both Kokoro and Piper, so no keyword heuristics needed.
+            male_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "male"
+            ]
+            female_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "female"
+            ]
+        elif _is_piper:
             male_voices = [
                 v for v in available
                 if v in active_catalog and active_catalog[v].gender == "male"

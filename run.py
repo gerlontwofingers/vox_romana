@@ -334,6 +334,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Acceptable deviation from target, in %% (default: 10).",
     )
 
+    dur_group.add_argument(
+        "--checkpoint",
+        action="store_true",
+        default=None,
+        dest="checkpoint",
+        help=(
+            "Force-enable checkpoint rendering (real-time TTS measurement "
+            "per segment for accurate duration tracking). Auto-enabled for "
+            "runs >= 20 min. Forwarded to run_show.py."
+        ),
+    )
+    dur_group.add_argument(
+        "--no-checkpoint",
+        action="store_false",
+        dest="checkpoint",
+        help="Disable checkpoint rendering even when it would auto-enable.",
+    )
+
     # ── Render flags (forwarded to render_show.py) ───────────────────
     render_group = parser.add_argument_group("rendering (forwarded to render_show.py)")
 
@@ -341,8 +359,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--engine", "-e",
         type=str,
         default="kokoro",
-        choices=["kokoro", "piper"],
-        help="TTS engine (default: kokoro).",
+        choices=["kokoro", "piper", "both"],
+        help="TTS engine (default: kokoro). 'both' mixes Kokoro + Piper voices.",
     )
 
     render_group.add_argument(
@@ -465,6 +483,13 @@ def _build_generate_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--duration", str(args.duration)]
     if args.tolerance is not None:
         argv += ["--tolerance", str(args.tolerance)]
+    if args.checkpoint is True:
+        argv.append("--checkpoint")
+    elif args.checkpoint is False:
+        argv.append("--no-checkpoint")
+    # Forward the TTS engine choice so word-budget math uses per-engine WPM.
+    if args.engine:
+        argv += ["--engine", args.engine]
 
     return argv
 

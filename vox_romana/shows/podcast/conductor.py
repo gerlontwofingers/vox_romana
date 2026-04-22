@@ -79,11 +79,27 @@ from .prompts import (
 DEFAULT_RECENT_WINDOW = 6
 
 # Fallback word targets by duration_hint when no target_words is set.
+# These are also used as ceilings when the architect omits a target —
+# tuned to match the architect's per-segment budget (~1,100 words medium).
 DURATION_WORD_TARGETS = {
-    "short": 200,
-    "medium": 400,
-    "long": 800,
+    "short": 600,
+    "medium": 1100,
+    "long": 1600,
 }
+
+# When a segment comes back below this fraction of its word target,
+# the conductor sends one continuation request to bring it up to spec.
+SEGMENT_RETRY_THRESHOLD = 0.70
+
+# Continuation prompt sent when a segment came back too short. The {actual},
+# {target}, and {deficit} placeholders are filled by ``_run_turn_loop``.
+_SEGMENT_RETRY_TEMPLATE = (
+    "Your previous response was only {actual} words but the target was "
+    "{target}. Continue the conversation from EXACTLY where you left off "
+    "— add roughly {deficit} more words of substantive new content (more "
+    "detail, a counterpoint, an example, a quick anecdote). Do NOT recap. "
+    "Do NOT start over. Stay in the same JSON format."
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -204,6 +220,9 @@ class PodcastConductor(BaseConductor):
         self._director_note: str = ""
         self._llm_calls: int = 0
         self._podcast_id: str = ""
+        # Counter that lets _expansion_pass rotate through the original
+        # outline rather than fixating on the last segment's topic.
+        self._expansion_idx: int = 0
 
     @classmethod
     def from_brief(
@@ -284,6 +303,7 @@ class PodcastConductor(BaseConductor):
         self._director_note = ""
         self._llm_calls = 0
         self._podcast_id = str(uuid.uuid4())[:8]
+        self._expansion_idx = 0
 
     def _run_turn_loop(self) -> list[dict]:
         """The main segment-by-segment generation loop.
@@ -403,6 +423,46 @@ class PodcastConductor(BaseConductor):
             actual_words = sum(
                 len((evt.get("text") or "").split()) for evt in segment_events
             )
+            # ── Retry once if the segment came back too short ────────
+            # The model often under-shoots the LENGTH REQUIREMENT block.
+            # One follow-up that explicitly cites the deficit reliably
+            # adds 60-90% of the missing content without altering tone.
+            if (
+                self._session is not None
+                and target_words > 0
+                and actual_words < target_words * SEGMENT_RETRY_THRESHOLD
+            ):
+                deficit = max(50, target_words - actual_words)
+                retry_msg = _SEGMENT_RETRY_TEMPLATE.format(
+                    actual=actual_words,
+                    target=target_words,
+                    deficit=deficit,
+                )
+                print(
+                    f"  [segment {seg_idx + 1}/{total_segments}] retry "
+                    f"(was {actual_words}, target {target_words})",
+                    flush=True,
+                )
+                try:
+                    retry_raw = self._session.send(retry_msg)
+                except Exception as exc:  # noqa: BLE001
+                    self._length_warnings.append(
+                        f"[segment {seg_idx + 1}] retry LLM call failed: {exc!r}"
+                    )
+                    retry_raw = ""
+                if retry_raw:
+                    extra_events = self._parse_segment_response(
+                        retry_raw,
+                        segment_id=seg_id,
+                        segment_type=segment.segment_type,
+                        lead_host=lead_host or "",
+                        global_order_start=global_order + len(segment_events),
+                    )
+                    segment_events.extend(extra_events)
+                    actual_words = sum(
+                        len((evt.get("text") or "").split())
+                        for evt in segment_events
+                    )
             warning = self._validate_word_count(
                 declared=None,
                 actual=actual_words,
@@ -483,13 +543,16 @@ class PodcastConductor(BaseConductor):
         if not isinstance(config, PodcastConfig):
             return []
 
-        # Pick a topic continuation from the last segment, if any.
+        # Pick a topic continuation — rotate through the original outline
+        # so that multi-pass expansions don't keep extending the same beat.
         last_topic = ""
         if config.segments:
-            last_topic = config.segments[-1].topic or ""
+            idx = self._expansion_idx % len(config.segments)
+            last_topic = config.segments[idx].topic or ""
+            self._expansion_idx += 1
         host_names = [h.name for h in config.hosts]
-        lead_host = host_names[0] if host_names else ""
-        seg_id = f"seg_bonus_{len(config.segments):03d}"
+        lead_host = host_names[self._expansion_idx % len(host_names)] if host_names else ""
+        seg_id = f"seg_bonus_{self._expansion_idx:03d}"
 
         length_contract = self._length_contract_block(deficit_words)
         user_message = SEGMENT_PROMPT.format(

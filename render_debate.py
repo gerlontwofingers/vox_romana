@@ -110,10 +110,20 @@ def make_engine(engine_name: str, **kwargs):
         model_dir = kwargs.get("model_dir", "piper-voices")
         return PiperEngine(model_dir=model_dir)
 
+    elif engine_name == "both":
+        from vox_romana.tts.engines.multi_engine import MultiEngine
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model = kwargs.get("model", None)
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        kokoro = KokoroEngine(model=model) if model else KokoroEngine()
+        piper = PiperEngine(model_dir=model_dir)
+        return MultiEngine([kokoro, piper])
+
     else:
         raise ValueError(
             f"Unknown engine: {engine_name!r}. "
-            f"Available engines: kokoro, piper"
+            f"Available engines: kokoro, piper, both"
         )
 
 
@@ -162,7 +172,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--engine", "-e",
         type=str,
         default="kokoro",
-        choices=["kokoro", "piper"],
+        choices=["kokoro", "piper", "both"],
         help=(
             "Which TTS engine to use. "
             "kokoro = Apple Silicon GPU (best quality, default). "

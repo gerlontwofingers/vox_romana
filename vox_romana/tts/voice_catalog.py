@@ -92,6 +92,9 @@ class VoiceDescriptor:
         tags:      Flat list of searchable keywords. These are the primary
                    matching surface when scoring a voice against a character
                    hint string. Keep them honest and descriptive.
+        engine:    Which TTS engine owns this voice — "kokoro" or "piper".
+                   Used by the MultiEngine wrapper to dispatch synthesis to
+                   the right engine when both are loaded.
     """
 
     voice_id: str
@@ -101,6 +104,7 @@ class VoiceDescriptor:
     tone: str
     best_for: str
     tags: tuple[str, ...] = ()
+    engine: str = "kokoro"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -596,6 +600,38 @@ PIPER_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
         tags=("gruff", "direct", "northern", "british", "blunt",
               "earthy", "working-class", "salt-of-the-earth"),
     ),
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENGINE TAGGING + UNIFIED CATALOG
+# ═══════════════════════════════════════════════════════════════════════════
+# VoiceDescriptor.engine defaults to "kokoro", which is correct for every
+# entry in KOKORO_VOICE_CATALOG. We re-stamp PIPER_VOICE_CATALOG entries
+# with engine="piper" via dataclasses.replace (descriptors are frozen).
+# UNIFIED_VOICE_CATALOG merges both for the MultiEngine wrapper.
+
+from dataclasses import replace as _replace
+
+PIPER_VOICE_CATALOG = {
+    vid: _replace(desc, engine="piper")
+    for vid, desc in PIPER_VOICE_CATALOG.items()
+}
+
+# Sanity check at import time: no voice_id may appear in both catalogs.
+# A collision would mean the MultiEngine couldn't unambiguously route a
+# synthesis call. If you hit this, rename one of the conflicting voices.
+_collisions = set(KOKORO_VOICE_CATALOG) & set(PIPER_VOICE_CATALOG)
+if _collisions:
+    raise RuntimeError(
+        "Voice ID collision between KOKORO and PIPER catalogs: "
+        f"{sorted(_collisions)}. Each voice_id must be unique across "
+        "engines so MultiEngine can route synthesis correctly."
+    )
+
+UNIFIED_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
+    **KOKORO_VOICE_CATALOG,
+    **PIPER_VOICE_CATALOG,
 }
 
 

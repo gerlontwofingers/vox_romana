@@ -84,7 +84,10 @@ class TestWordDrivenExpansion:
         cond = _make(target_words=1000, words_generated=800,
                      expansion_events=[{"text": "extra"}])
         result = cond.run()
-        assert len(cond.expansion_calls) == 1
+        # Expansion now loops until deficit closes or cap is hit. The stub
+        # only adds one word per pass, so we'll hit the cap; assert it ran
+        # at least once and recorded the right opening deficit.
+        assert len(cond.expansion_calls) >= 1
         deficit_words, _ = cond.expansion_calls[0]
         # 1000 * (1 - 0.10) = 900 → deficit at least 100
         assert deficit_words >= 100
@@ -105,7 +108,7 @@ class TestTrackerDrivenExpansion:
                      tracker=tracker,
                      expansion_events=[{"text": "extra"}])
         cond.run()
-        assert len(cond.expansion_calls) == 1
+        assert len(cond.expansion_calls) >= 1
         _, deficit_seconds = cond.expansion_calls[0]
         assert deficit_seconds == pytest.approx(90.0, abs=1.0)
 

@@ -54,6 +54,18 @@ WPM_DEFAULTS: dict[str, int] = {
     "audiobook": 155,
 }
 
+# Per-engine WPM calibration. When the renderer engine is known at
+# planning time, these override the content-type WPM for word-budget
+# math. Calibrated from listening tests:
+#   - Kokoro: natural conversational pace, ~150 wpm
+#   - Piper:  slightly faster delivery on the same text, ~165 wpm
+#   - both:   midpoint, used when --engine both mixes the two
+WPM_BY_ENGINE: dict[str, int] = {
+    "kokoro": 150,
+    "piper": 165,
+    "both": 158,
+}
+
 # Fallback for unknown content types.
 _WPM_FALLBACK = 150
 
@@ -102,6 +114,8 @@ def estimate_total_words(
     duration_minutes: float,
     content_type: str = "debate",
     wpm: int | None = None,
+    *,
+    engine: str | None = None,
 ) -> int:
     """Estimate how many words are needed for a target duration.
 
@@ -109,11 +123,20 @@ def estimate_total_words(
         duration_minutes: Target show length in minutes.
         content_type:     Genre (selects default WPM).
         wpm:              Explicit WPM override.
+        engine:           When provided and ``wpm`` is not set, looks up
+                          a per-engine WPM (Piper runs faster than Kokoro)
+                          and overrides the content-type default. Pass
+                          ``"kokoro"``, ``"piper"``, or ``"both"``.
 
     Returns:
         Estimated word count (rounded to nearest integer).
     """
-    effective_wpm = wpm or get_wpm(content_type)
+    if wpm is not None:
+        effective_wpm = wpm
+    elif engine and engine in WPM_BY_ENGINE:
+        effective_wpm = WPM_BY_ENGINE[engine]
+    else:
+        effective_wpm = get_wpm(content_type)
     return round(duration_minutes * effective_wpm)
 
 

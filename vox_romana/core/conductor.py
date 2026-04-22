@@ -58,6 +58,14 @@ if TYPE_CHECKING:
     from ..tts.checkpoint import CheckpointRenderer
 
 
+# Maximum number of expansion passes BaseConductor.run() will attempt
+# when the content is short of target. Each pass adds at most one bonus
+# segment / turn worth of content (~1,000–1,500 words). For a 3-hour
+# podcast (27k words) finishing at 7k words, we need ~17–20 passes to
+# close the gap. 30 gives headroom without runaway cost.
+MAX_EXPANSION_PASSES = 30
+
+
 @dataclass
 class ConductorResult:
     """The output of a conductor run.
@@ -482,13 +490,41 @@ class BaseConductor(ABC):
         """
         self._build_agents()
         raw = self._run_turn_loop()
-        # ── Expansion pass (Phase 7) ───────────────────────────────
-        # If we finished short of target, give the conductor one chance
-        # to extend the content. Subclasses opt-in by overriding
-        # ``_expansion_pass()``; the default does nothing.
-        extra = self._maybe_expand(raw)
-        if extra:
+        # ── Expansion loop (Phase 7+) ──────────────────────────────
+        # If we finished short of target, give the conductor multiple
+        # chances to extend the content. Each pass recalculates the
+        # remaining deficit from fresh state. Subclasses opt in by
+        # overriding ``_expansion_pass()``; the default does nothing.
+        max_passes = MAX_EXPANSION_PASSES
+        pass_count = 0
+        while pass_count < max_passes:
+            extra = self._maybe_expand(raw)
+            if not extra:
+                break
             raw.extend(extra)
+            # Update word counter so the next pass's deficit calculation
+            # reflects the events we just appended. Without this the loop
+            # would keep firing until it hit the cap even when expansion
+            # did real work.
+            for ev in extra:
+                text = ""
+                if isinstance(ev, dict):
+                    text = ev.get("text", "") or ""
+                else:
+                    text = getattr(ev, "text", "") or ""
+                if text:
+                    self._words_generated += len(text.split())
+            pass_count += 1
+        if pass_count >= max_passes:
+            self._length_warnings.append(
+                f"[expansion] hit max-pass cap ({max_passes}) — "
+                f"final word count {self._words_generated:,} may still be short."
+            )
+        elif pass_count > 0:
+            self._length_warnings.append(
+                f"[expansion] closed deficit in {pass_count} pass(es) — "
+                f"final word count {self._words_generated:,}."
+            )
         return self._package_result(raw)
 
     def _maybe_expand(self, raw_events: list[dict]) -> list[dict]:

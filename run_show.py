@@ -298,6 +298,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="checkpoint",
         help="Disable checkpoint rendering even when it would auto-enable.",
     )
+    # Optional engine hint for word-budget calibration. When the run.py
+    # full pipeline forwards this, ``estimate_total_words`` uses a per-
+    # engine WPM (Piper runs faster than Kokoro) so target_words better
+    # matches the actual delivery speed.
+    duration_group.add_argument(
+        "--engine",
+        type=str,
+        default=None,
+        choices=["kokoro", "piper", "both"],
+        help=(
+            "TTS engine hint for duration math (forwarded by run.py). "
+            "Adjusts word-budget targets to the engine's typical pace."
+        ),
+    )
 
     # ── Editing pipeline ─────────────────────────────────────────────
     # The editor reviews each generated chunk and can request retakes.
@@ -323,6 +337,68 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(f"  {msg}", flush=True)
+
+
+# ── Word/duration accounting helpers ───────────────────────────
+
+
+def _count_words_in_events(events) -> int:
+    """Sum the words across a list of event dicts or typed event objects."""
+    total = 0
+    for evt in events:
+        text = getattr(evt, "text", None)
+        if text is None and hasattr(evt, "get"):
+            text = evt.get("text", "")
+        if text:
+            total += len(text.split())
+    return total
+
+
+def _log_length_summary(
+    *,
+    actual_words: int,
+    target_words: int | None,
+    target_minutes: float | None,
+    content_type: str,
+    length_warnings: list[str] | None = None,
+    quiet: bool = False,
+) -> None:
+    """Emit a one-line summary of generated word count vs target.
+
+    Always shows actual words + estimated duration. When a target is
+    set, also shows the target and the percentage achieved. Length
+    warnings (from the conductor) are surfaced afterwards.
+    """
+    from vox_romana.core.duration import get_wpm, words_to_seconds
+
+    wpm = get_wpm(content_type)
+    est_seconds = words_to_seconds(actual_words, wpm=wpm)
+    est_minutes = est_seconds / 60.0
+
+    if target_words is not None and target_words > 0:
+        pct = (actual_words / target_words) * 100
+        target_min_str = (
+            f" / {target_minutes:.0f} min" if target_minutes else ""
+        )
+        log(
+            f"  {actual_words:,} words ≈ {est_minutes:.0f} min "
+            f"(target {target_words:,} words{target_min_str}, {pct:.0f}%)",
+            quiet=quiet,
+        )
+    else:
+        log(
+            f"  {actual_words:,} words ≈ {est_minutes:.0f} min (no target)",
+            quiet=quiet,
+        )
+
+    if length_warnings:
+        for w in length_warnings[:5]:  # cap noise
+            log(f"  ⚠ {w}", quiet=quiet)
+        if len(length_warnings) > 5:
+            log(
+                f"  ⚠ … and {len(length_warnings) - 5} more length warning(s)",
+                quiet=quiet,
+            )
 
 
 # ── Checkpoint plumbing (Phase 6) ─────────────────────────────────
@@ -446,6 +522,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     if "target_duration_minutes" in overrides:
         overrides["target_words"] = estimate_total_words(
             overrides["target_duration_minutes"], "debate",
+            engine=args.engine,
         )
     if args.turns is not None:
         overrides["target_turns"] = args.turns
@@ -503,6 +580,14 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     t3 = time.time()
     log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
     log(f"  Generated {len(result.debate_events)} events", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.debate_events),
+        target_words=overrides.get("target_words"),
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="debate",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+    )
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
@@ -544,6 +629,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     if "target_duration_minutes" in overrides:
         overrides["target_words"] = estimate_total_words(
             overrides["target_duration_minutes"], "news",
+            engine=args.engine,
         )
     if args.segments is not None:
         overrides["target_segments"] = args.segments
@@ -600,6 +686,14 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     t3 = time.time()
     log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
     log(f"  Generated {len(result.news_events)} events across {len(result.news_segments)} segments", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.news_events),
+        target_words=overrides.get("target_words"),
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="news",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+    )
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
@@ -646,6 +740,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     if "target_duration_minutes" in overrides:
         target_words = estimate_total_words(
             overrides["target_duration_minutes"], "podcast",
+            engine=args.engine,
         )
         overrides["target_words"] = target_words
     if args.tone is not None:
@@ -702,6 +797,14 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     t3 = time.time()
     log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
     log(f"  Generated {len(result.podcast_events)} events across {len(result.podcast_segments)} segments", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.podcast_events),
+        target_words=overrides.get("target_words") or target_words,
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="podcast",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+    )
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
