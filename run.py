@@ -26,6 +26,29 @@ THE PRODUCTION STUDIO ANALOGY:
 
 MODES:
 
+    publish:
+        Render an existing show JSON into a formatted human-readable
+        document (TXT and/or PDF).  No LLM required; the output is
+        fully deterministic.  Supported layouts:
+
+            debate   → stage-play script (ALL CAPS speakers, dialogue
+                        indented, parenthetical stage directions).
+            news     → broadcast rundown (SLUG headers, role cues).
+            podcast  → Rev/Otter transcript (Speaker: + paragraphs).
+            audiobook→ book chapters with chapter headings.
+
+        python run.py --mode publish \\
+            --script-input output/text/debates/ubi.json
+        python run.py --mode publish \\
+            --script-input output/text/debates/ubi.json \\
+            --publish-format both \\
+            --publish-output ~/Desktop
+
+        Add --publish to any other mode to auto-publish after generation:
+
+        python run.py prompts/ubi_debate.txt --mode generate --publish
+        python run.py prompts/ubi_debate.txt --publish --publish-format pdf
+
     full (default):
         Generate the show script AND render it to audio in one shot.
         This is the batteries-included experience. After rendering,
@@ -105,6 +128,25 @@ USAGE:
     python run.py prompts/podcast/soccer.txt --type podcast --duration 30
     python run.py prompts/podcast/soccer.txt --mode generate --type podcast
     python run.py --mode render --script-input output/text/podcasts/soccer.json
+
+    # === PUBLISH MODE (human-readable document from JSON) ===========
+
+    # Render an existing JSON to a formatted TXT document:
+    python run.py --mode publish --script-input output/text/debates/ubi.json
+
+    # Both TXT and PDF:
+    python run.py --mode publish \\
+        --script-input output/text/debates/ubi.json \\
+        --publish-format both
+
+    # Custom output directory:
+    python run.py --mode publish \\
+        --script-input output/text/news/tech.json \\
+        --publish-format txt --publish-output ~/Desktop
+
+    # Auto-publish after generation (adds the document step to generate/full):
+    python run.py prompts/ubi_debate.txt --mode generate --publish
+    python run.py prompts/ubi_debate.txt --publish --publish-format both
 
     # === INGEST MODE (build the knowledge base) ======================
     #
@@ -199,6 +241,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  # Render only (audio from existing JSON):\n"
             "  python run.py --mode render --script-input output/text/debates/ubi.json\n"
             "\n"
+            "  # Publish (human-readable document from existing JSON):\n"
+            "  python run.py --mode publish --script-input output/text/debates/ubi.json\n"
+            "  python run.py --mode publish --script-input output/text/debates/ubi.json --publish-format both\n"
+            "  python run.py prompts/ubi_debate.txt --mode generate --publish\n"
+            "\n"
             "  # Full with overrides:\n"
             "  python run.py prompts/ubi_debate.txt --turns 50 --duration 20 \\\n"
             "      --tag v3 --engine kokoro --format wav\n"
@@ -227,16 +274,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest"],
+        choices=["generate", "render", "full", "ingest", "publish"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
             "'render' = audio only (from existing JSON). "
             "'full' = generate + render (default). "
             "'ingest' = feed documents into the knowledge store. "
-            "Run 'python run.py --mode ingest --ingest-path docs/' to build "
-            "the local knowledge base; future --research runs will query it "
-            "first (free, fast, domain-tuned) before calling Google. "
+            "'publish' = format an existing show JSON as a human-readable "
+            "document (TXT/PDF). "
             "See the USAGE block above for full examples."
         ),
     )
@@ -528,6 +574,60 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="TAG",
         help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
     )
+    # ── Publish flags (--mode publish or --publish add-on) ───────────
+    pub_group = parser.add_argument_group(
+        "publishing (--mode publish  /  --publish add-on)"
+    )
+    pub_group.add_argument(
+        "--publish",
+        dest="publish",
+        action="store_true",
+        default=False,
+        help=(
+            "After generating (or rendering) a show, also produce a "
+            "formatted human-readable document.  Equivalent to running "
+            "--mode publish on the output JSON.  Works with --mode generate "
+            "and --mode full."
+        ),
+    )
+    pub_group.add_argument(
+        "--publish-format",
+        dest="publish_format",
+        type=str,
+        default="txt",
+        choices=["txt", "pdf", "both"],
+        metavar="{txt,pdf,both}",
+        help=(
+            "Output format(s) for publish mode.  "
+            "'txt' (default) — plain UTF-8 text, always works.  "
+            "'pdf' — requires weasyprint + jinja2 (pip install weasyprint jinja2).  "
+            "'both' — TXT and PDF."
+        ),
+    )
+    pub_group.add_argument(
+        "--publish-output",
+        dest="publish_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory where published documents are written.  "
+            "Defaults to the same directory as the show JSON."
+        ),
+    )
+    pub_group.add_argument(
+        "--no-polish",
+        dest="no_polish",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the optional LLM polish pass when publishing.  "
+            "The polish agent rewrites spoken-style phrasing into written "
+            "prose.  Disabled by default (polisher not yet implemented); "
+            "this flag is a no-op today but is reserved for Shot 3."
+        ),
+    )
+
     # ── Shared flags ─────────────────────────────────────────────────
     parser.add_argument(
         "--quiet", "-q",
@@ -783,6 +883,51 @@ def _mode_ingest(args: argparse.Namespace) -> None:
             logger.warning("Failed to update vector index: %s", exc)
 
 
+def _mode_publish(
+    json_path: str | Path,
+    args: argparse.Namespace,
+) -> None:
+    """Run publish mode: show JSON → formatted TXT and/or PDF.
+
+    Uses the ``vox_romana.publish`` package.  PDF output is silently
+    skipped (with a warning) when WeasyPrint is not installed.
+
+    Args:
+        json_path: Path to the show JSON to publish.
+        args:      Parsed namespace from parse_args().
+    """
+    from vox_romana.publish import publish_document, PDF_AVAILABLE
+
+    fmt = args.publish_format  # "txt", "pdf", or "both"
+    if fmt == "both":
+        formats: tuple[str, ...] = ("txt", "pdf")
+    else:
+        formats = (fmt,)
+
+    dest_dir = args.publish_output  # Path | None
+
+    result = publish_document(
+        src=json_path,
+        formats=formats,
+        dest_dir=dest_dir,
+    )
+
+    for warning in result.warnings:
+        print(f"  ⚠  {warning}")
+
+    if not args.quiet:
+        print(f"\n  Published [{result.show_type}] — {result.sections} section(s)")
+        if result.txt_path:
+            print(f"  TXT → {result.txt_path}")
+        if result.pdf_path:
+            print(f"  PDF → {result.pdf_path}")
+        if "pdf" in formats and not PDF_AVAILABLE:
+            print(
+                "  (PDF requires: pip install weasyprint jinja2 "
+                "+ brew install pango)"
+            )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -822,7 +967,30 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    if args.publish and args.mode not in ("generate", "full"):
+        print(
+            "Error: --publish can only be used with --mode generate or --mode full "
+            "(use --mode publish for standalone publishing).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.mode == "render" and args.script_input is not None:
+        if not args.script_input.exists():
+            print(
+                f"Error: script file not found: {args.script_input}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if args.mode == "publish" and args.script_input is None:
+        print(
+            "Error: --script-input is required for 'publish' mode.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.mode == "publish" and args.script_input is not None:
         if not args.script_input.exists():
             print(
                 f"Error: script file not found: {args.script_input}",
@@ -845,13 +1013,36 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Prompt: {args.prompt}")
         if args.script_input:
             print(f"  Script input: {args.script_input}")
+        if args.mode == "publish" or args.publish:
+            fmt_label = {"txt": "TXT", "pdf": "PDF", "both": "TXT + PDF"}[args.publish_format]
+            print(f"  Publish format: {fmt_label}")
+            if args.publish_output:
+                print(f"  Publish output: {args.publish_output}")
         print()
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
-    if args.mode == "generate":
+    if args.mode == "publish":
+        # Standalone publish — read existing JSON → TXT/PDF.
+        if not args.quiet:
+            print(f"{'─' * 60}")
+            print(f"  Publishing script...")
+            print(f"{'─' * 60}\n")
+        _mode_publish(args.script_input, args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Publish complete!")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "generate":
         # Generate only — produce JSON, no audio.
         json_path = _mode_generate(args)
+        if args.publish:
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print(f"  Publishing script...")
+                print(f"{'─' * 60}\n")
+            _mode_publish(json_path, args)
         if not args.quiet:
             print(f"\n{'═' * 60}")
             print(f"  Generated: {json_path}")
@@ -867,17 +1058,25 @@ def main(argv: list[str] | None = None) -> None:
         _mode_ingest(args)
 
     elif args.mode == "full":
-        # Full pipeline — generate then render.
+        # Full pipeline — generate then render (+ optional publish).
         # run_show.py streams its own Phase 1-4 banner + progress.
         # We just print a separator before the render step.
         json_path = _mode_generate(args)
 
+        step_n = 3 if args.publish else 2
         if not args.quiet:
             print(f"\n{'─' * 60}")
-            print(f"  Step 2/2: Rendering audio...")
+            print(f"  Step 2/{step_n}: Rendering audio...")
             print(f"{'─' * 60}\n")
 
         _mode_render(json_path, args)
+
+        if args.publish:
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print(f"  Step 3/{step_n}: Publishing script...")
+                print(f"{'─' * 60}\n")
+            _mode_publish(json_path, args)
 
         if not args.quiet:
             print(f"\n{'═' * 60}")

@@ -1,0 +1,173 @@
+/* publish.css — print-oriented styling for vox_romana published docs.
+ *
+ * Designed for WeasyPrint.  Uses serif body + sans-serif headings, A4
+ * paper, and class names matching the line-kind taxonomy in
+ * vox_romana.publish.models.LineKind so per-line styling is direct.
+ */
+
+@page {
+    size: A4;
+    margin: 2.2cm 2.4cm;
+    @bottom-center {
+        content: counter(page) " / " counter(pages);
+        font-family: "Helvetica", "Arial", sans-serif;
+        font-size: 9pt;
+        color: #666;
+    }
+}
+
+html {
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #111;
+}
+
+body { margin: 0; }
+
+/* ── Title page / header ────────────────────────────────────────────── */
+
+.doc-title {
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    font-weight: 700;
+    font-size: 28pt;
+    text-align: center;
+    margin: 0 0 0.4em 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.doc-subtitle {
+    text-align: center;
+    color: #555;
+    font-style: italic;
+    margin-bottom: 1.4em;
+}
+.front-matter {
+    margin: 1.2em auto 2em auto;
+    padding: 0.8em 1.2em;
+    border-top: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+    max-width: 28em;
+    font-size: 10.5pt;
+}
+.front-matter .metadata {
+    margin: 0.15em 0;
+    text-align: left;
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.section { page-break-inside: auto; margin-bottom: 1.5em; }
+.section-title {
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    font-weight: 700;
+    font-size: 14pt;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 1.6em 0 0.8em 0;
+    padding-bottom: 0.2em;
+    border-bottom: 1px solid #999;
+    page-break-after: avoid;
+}
+.section.chunk .section-title { text-align: center; }
+.section.segment .section-title { color: #222; }
+.section.chapter .section-title {
+    text-align: center;
+    border: none;
+    margin-top: 2.4em;
+    font-size: 18pt;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+}
+
+/* ── Line types ──────────────────────────────────────────────────────── */
+
+.line { margin: 0; }
+.line.blank { height: 0.6em; }
+.line.rule  {
+    text-align: center;
+    margin: 1.2em 0;
+    color: #888;
+    letter-spacing: 0.6em;
+}
+
+.line.speaker {
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.6em;
+    page-break-after: avoid;
+}
+.line.dialogue {
+    margin: 0.05em 0 0.05em 2.4em;
+}
+.line.narration {
+    margin: 0.4em 0;
+    font-style: italic;
+    color: #222;
+}
+.line.direction {
+    margin: 0.05em 0 0.05em 4em;
+    font-style: italic;
+    color: #555;
+}
+.line.metadata {
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    color: #444;
+    margin: 0.15em 0;
+}
+.line.heading {
+    font-weight: 600;
+    margin: 0.8em 0 0.3em 0;
+}
+.line.title {
+    font-weight: 700;
+    text-align: center;
+    margin: 0.8em 0;
+}
+
+/* ── Per-show-type overrides ─────────────────────────────────────────── */
+
+/* Audiobook: prose flow, no labels, generous indentation. */
+body.show-audiobook .line.narration {
+    font-style: normal;
+    text-indent: 1.5em;
+    margin: 0;
+    text-align: justify;
+}
+body.show-audiobook .line.dialogue {
+    margin: 0;
+    text-indent: 1.5em;
+    text-align: justify;
+}
+
+/* Podcast: looser, more web-transcript feel. */
+body.show-podcast .line.dialogue {
+    margin-left: 0;
+    margin-bottom: 0.4em;
+}
+body.show-podcast .line.speaker {
+    color: #1a4d8c;
+    margin-top: 1em;
+}
+
+/* News: monospace-ish for the slug headers and labels. */
+body.show-news .section.segment .section-title {
+    font-family: "Courier New", "Courier", monospace;
+    background: #111;
+    color: #fff;
+    padding: 0.3em 0.6em;
+    letter-spacing: 0.1em;
+}
+body.show-news .line.speaker {
+    font-family: "Courier New", "Courier", monospace;
+    color: #b30000;
+    margin-top: 0.8em;
+}
+body.show-news .line.metadata {
+    color: #555;
+    font-style: italic;
+}

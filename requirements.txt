@@ -77,3 +77,11 @@ transformers>=4.44,<4.46
 peft>=0.12,<0.14            # LoRA fine-tuning for memory system
 datasets>=3.0,<3.2          # dataset loading for memory trainer
 # neuralforecast>=1.7,<1.8  # uncomment for transformer-based forecasting
+
+# ── Publishing (--mode publish) — OPTIONAL ───────────────────────────────
+# TXT output works with no extra deps.  PDF output requires WeasyPrint
+# plus a system installation of Pango/Cairo/GDK-PixBuf:
+#     brew install pango cairo gdk-pixbuf libffi
+# If WeasyPrint is missing, --publish-format pdf is skipped with a
+# warning and TXT is still produced.
+weasyprint>=62

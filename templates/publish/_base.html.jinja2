@@ -1,0 +1,41 @@
+{# Base layout shared by all show-type templates. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ doc.title }}</title>
+</head>
+<body class="show-{{ doc.show_type }}">
+
+    <h1 class="doc-title">{{ doc.title }}</h1>
+    {% block subtitle %}{% endblock %}
+
+    {% if doc.front_matter %}
+    <div class="front-matter">
+        {% for line in doc.front_matter %}
+        <p class="line {{ line.kind }}">{{ line.text }}</p>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% block body %}
+    {% for section in doc.sections %}
+    <section class="section {{ section.kind }}">
+        {% if section.title %}
+        <h2 class="section-title">{{ section.title }}</h2>
+        {% endif %}
+        {% for line in section.lines %}
+            {% if line.kind == "blank" %}
+                <p class="line blank">&nbsp;</p>
+            {% elif line.kind == "rule" %}
+                <p class="line rule">* * *</p>
+            {% else %}
+                <p class="line {{ line.kind }}">{{ line.text }}</p>
+            {% endif %}
+        {% endfor %}
+    </section>
+    {% endfor %}
+    {% endblock %}
+
+</body>
+</html>
