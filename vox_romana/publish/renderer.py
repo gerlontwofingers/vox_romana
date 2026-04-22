@@ -228,10 +228,25 @@ def _default_outputs(
     src: Path,
     dest_dir: Path | None,
     formats: Iterable[str],
+    *,
+    language: str = "en",
+    root_lang: str = "en",
 ) -> dict[str, Path]:
-    """Compute default output paths for each requested format."""
+    """Compute default output paths for each requested format.
+
+    When ``language`` differs from ``root_lang``, a ``_{language}`` suffix
+    is inserted before the file extension so multilingual output files
+    coexist without overwriting each other.
+
+    Example (root_lang="en", language="es")::
+
+        debate.txt  →  debate_es.txt
+        debate.pdf  →  debate_es.pdf
+    """
     out_dir = dest_dir or src.parent
     stem = src.stem
+    if language != root_lang:
+        stem = f"{stem}_{language}"
     return {fmt: out_dir / f"{stem}.{fmt}" for fmt in formats}
 
 
@@ -239,14 +254,20 @@ def publish_document(
     src: str | Path,
     formats: Iterable[str] = ("txt",),
     dest_dir: str | Path | None = None,
+    *,
+    root_lang: str = "en",
 ) -> PublishResult:
     """Load show JSON, format it, and write the requested output formats.
 
     Args:
-        src:      Path to a show JSON file.
-        formats:  Iterable of formats to produce.  Currently supported:
-                  ``"txt"`` (always) and ``"pdf"`` (requires weasyprint).
-        dest_dir: Where to write outputs.  Defaults to ``src``'s parent.
+        src:       Path to a show JSON file.
+        formats:   Iterable of formats to produce.  Currently supported:
+                   ``"txt"`` (always) and ``"pdf"`` (requires weasyprint).
+        dest_dir:  Where to write outputs.  Defaults to ``src``'s parent.
+        root_lang: The project's root language (default ``"en"``).
+                   When the document's language differs from this, a
+                   ``_{lang}`` suffix is inserted in the output filenames
+                   (e.g. ``debate_es.txt``).
 
     Returns:
         A ``PublishResult`` describing what was written.
@@ -254,6 +275,7 @@ def publish_document(
     src_path = Path(src)
     data = json.loads(src_path.read_text(encoding="utf-8"))
     doc = format_document(data)
+    language = doc.language  # already normalised by the formatter
 
     fmts = {f.lower() for f in formats}
     unknown = fmts - {"txt", "pdf"}
@@ -267,10 +289,13 @@ def publish_document(
         src_path,
         Path(dest_dir) if dest_dir else None,
         fmts,
+        language=language,
+        root_lang=root_lang,
     )
 
     result = PublishResult(
         show_type=detect_show_type(data),
+        language=language,
         sections=len(doc.sections),
     )
 

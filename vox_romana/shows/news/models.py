@@ -79,11 +79,13 @@ class MergedNewsShow:
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
+    language: str = "en"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "show_id": self.show_id,
             "title": self.title,
+            "language": self.language,
             "segments": [s.to_dict() for s in self.segments],
             "events": [e.to_dict() for e in self.events],
             "anchors": list(self.anchors),

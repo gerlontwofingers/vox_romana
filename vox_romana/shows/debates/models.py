@@ -74,6 +74,7 @@ class MergedDebate:
     moderator_mode: str | None = None
     continuity_notes: tuple[str, ...] = ()
     source_count: int = 0
+    language: str = "en"
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
@@ -97,6 +98,7 @@ class MergedDebate:
             "moderator_mode": self.moderator_mode,
             "continuity_notes": list(self.continuity_notes),
             "source_count": self.source_count,
+            "language": self.language,
             "voice_casting": self.voice_casting,
             "voice_hints": self.voice_hints,
             "tts_styles": self.tts_styles,

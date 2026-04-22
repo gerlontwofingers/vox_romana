@@ -39,6 +39,38 @@ from .models import FormattedDocument, Line, Section
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Section-label i18n
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Maps a BCP-47 language code to localized labels for the structural
+# section headings that appear in formatted output.  Only the "act" and
+# "chapter" labels have meaningful translations; broadcast labels like
+# "SLUG" and "PKG" are industry-standard across languages.
+_SECTION_LABELS: dict[str, dict[str, str]] = {
+    "en": {"act": "ACT", "chapter": "Chapter", "segment": "Segment"},
+    "es": {"act": "ACTO", "chapter": "Capítulo", "segment": "Segmento"},
+    "fr": {"act": "ACTE", "chapter": "Chapitre", "segment": "Segment"},
+    "de": {"act": "AKT",  "chapter": "Kapitel",  "segment": "Abschnitt"},
+    "pt": {"act": "ATO",  "chapter": "Capítulo", "segment": "Segmento"},
+    "it": {"act": "ATTO", "chapter": "Capitolo", "segment": "Segmento"},
+    "nl": {"act": "BEDRIJF", "chapter": "Hoofdstuk", "segment": "Segment"},
+    "pl": {"act": "AKT",  "chapter": "Rozdział",  "segment": "Segment"},
+    "ru": {"act": "АКТ",  "chapter": "Глава",     "segment": "Сегмент"},
+    "ja": {"act": "幕",    "chapter": "章",         "segment": "セグメント"},
+    "zh": {"act": "幕",    "chapter": "章",         "segment": "部分"},
+    "ko": {"act": "막",    "chapter": "장",         "segment": "세그먼트"},
+    "ar": {"act": "فصل",  "chapter": "فصل",        "segment": "مقطع"},
+}
+
+_DEFAULT_LABELS: dict[str, str] = _SECTION_LABELS["en"]
+
+
+def _get_labels(language: str) -> dict[str, str]:
+    """Return section labels for *language*, falling back to English."""
+    return _SECTION_LABELS.get(language, _DEFAULT_LABELS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Show-type detection
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -173,6 +205,8 @@ class DebateFormatter(DocumentFormatter):
         participants = _norm_list(data.get("participants"))
         moderators = _norm_list(data.get("moderators"))
         hosts = _norm_list(data.get("hosts"))
+        language = (data.get("language") or "en").strip()
+        labels = _get_labels(language)
 
         # ── Front matter ────────────────────────────────────────────
         front: list[Line] = []
@@ -204,7 +238,7 @@ class DebateFormatter(DocumentFormatter):
             # Multi-act layout.
             for chunk in chunks:
                 act_n = chunk.get("chunk_order") or (len(sections) + 1)
-                sec = Section(title=f"ACT {act_n}", kind="chunk")
+                sec = Section(title=f"{labels['act']} {act_n}", kind="chunk")
                 self._render_events(chunk.get("events", []), sec)
                 sections.append(sec)
         else:
@@ -220,6 +254,7 @@ class DebateFormatter(DocumentFormatter):
         return FormattedDocument(
             show_type=self.show_type,
             title=title,
+            language=language,
             front_matter=front,
             sections=sections,
             meta={
@@ -333,6 +368,7 @@ class NewsFormatter(DocumentFormatter):
         anchors = _norm_list(data.get("anchors"))
         hosts = _norm_list(data.get("hosts"))
         guests = _norm_list(data.get("guests"))
+        language = (data.get("language") or "en").strip()
 
         front: list[Line] = []
         if topic:
@@ -382,6 +418,7 @@ class NewsFormatter(DocumentFormatter):
         return FormattedDocument(
             show_type=self.show_type,
             title=title,
+            language=language,
             front_matter=front,
             sections=sections,
             meta={
@@ -453,6 +490,8 @@ class PodcastFormatter(DocumentFormatter):
         topic = (data.get("topic") or "").strip()
         tone = (data.get("tone") or "").strip()
         hosts = _norm_list(data.get("hosts"))
+        language = (data.get("language") or "en").strip()
+        labels = _get_labels(language)
 
         front: list[Line] = []
         if show_name:
@@ -471,8 +510,8 @@ class PodcastFormatter(DocumentFormatter):
         if segments:
             for seg in segments:
                 order = seg.get("segment_order")
-                order_str = (f"Segment {int(order):02d}"
-                             if order is not None else "Segment")
+                order_str = (f"{labels['segment']} {int(order):02d}"
+                             if order is not None else labels["segment"])
                 seg_type = (seg.get("segment_type") or "").strip()
                 seg_topic = (seg.get("topic") or "").strip()
                 heading_bits = [order_str]
@@ -492,6 +531,7 @@ class PodcastFormatter(DocumentFormatter):
         return FormattedDocument(
             show_type=self.show_type,
             title=title,
+            language=language,
             front_matter=front,
             sections=sections,
             meta={
@@ -568,6 +608,8 @@ class AudiobookFormatter(DocumentFormatter):
         genre = (data.get("genre") or "").strip()
         tone = (data.get("tone") or "").strip()
         characters = _norm_list(data.get("characters"))
+        language = (data.get("language") or "en").strip()
+        labels = _get_labels(language)
 
         front: list[Line] = []
         if genre:
@@ -586,7 +628,7 @@ class AudiobookFormatter(DocumentFormatter):
             for ch in chapters:
                 order = ch.get("chapter_order") or (len(sections) + 1)
                 ch_title = (ch.get("title") or "").strip()
-                heading = f"Chapter {order}"
+                heading = f"{labels['chapter']} {order}"
                 if ch_title:
                     heading = f"{heading}: {ch_title}"
                 sec = Section(title=heading, kind="chapter")
@@ -603,6 +645,7 @@ class AudiobookFormatter(DocumentFormatter):
         return FormattedDocument(
             show_type=self.show_type,
             title=title,
+            language=language,
             front_matter=front,
             sections=sections,
             meta={

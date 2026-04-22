@@ -81,6 +81,9 @@ class FormattedDocument:
         show_type:    One of ``"debate"``, ``"news"``, ``"podcast"``,
                       ``"audiobook"``.
         title:        The show's title.
+        language:     BCP-47 language code (e.g. ``"en"``, ``"es"``).
+                      Used to set ``<html lang="…">`` in HTML/PDF output
+                      and to drive section-label i18n.
         front_matter: Lines shown before the first section (cast, date,
                       topic, format notes).
         sections:     Ordered body sections.
@@ -90,6 +93,7 @@ class FormattedDocument:
 
     show_type: str
     title: str
+    language: str = "en"
     front_matter: list[Line] = field(default_factory=list)
     sections: list[Section] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
@@ -100,17 +104,19 @@ class PublishResult:
     """What ``publish_document`` returns.
 
     Attributes:
-        txt_path: Path to the generated TXT file (None if not requested).
-        pdf_path: Path to the generated PDF file (None if not requested
-                  or weasyprint unavailable).
+        txt_path:  Path to the generated TXT file (None if not requested).
+        pdf_path:  Path to the generated PDF file (None if not requested
+                   or weasyprint unavailable).
         show_type: The detected show type.
-        sections: How many body sections the document had.
-        warnings: Non-fatal messages (e.g. "weasyprint not installed,
-                  PDF skipped").
+        language:  BCP-47 language code of the published document.
+        sections:  How many body sections the document had.
+        warnings:  Non-fatal messages (e.g. "weasyprint not installed,
+                   PDF skipped").
     """
 
     txt_path: Path | None = None
     pdf_path: Path | None = None
     show_type: str = ""
+    language: str = "en"
     sections: int = 0
     warnings: list[str] = field(default_factory=list)

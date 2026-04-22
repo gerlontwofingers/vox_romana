@@ -121,6 +121,7 @@ class ContentConfig:
     reference_material: str | None = None
     fact_check: FactCheckMode = "off"
     title: str | None = None
+    language: str = "en"
     estimated_duration_minutes: int | None = None
     target_duration_minutes: float | None = None
     target_words: int | None = None

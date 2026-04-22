@@ -204,6 +204,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR, PIPER_VOICES_DIR as _PIPER_VOICES_DIR
+from vox_romana.core.languages import (
+    LANGUAGE_CODES,
+    normalize_lang_arg,
+    language_display,
+    supported_languages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -628,6 +634,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Language / localisation flags ────────────────────────────────
+    lang_group = parser.add_argument_group(
+        "language / localisation"
+    )
+    lang_group.add_argument(
+        "--root-lang",
+        dest="root_lang",
+        type=str,
+        default="en",
+        metavar="LANG",
+        help=(
+            "Language the show is generated in.  Defaults to 'en'.  "
+            "The LLM produces all dialogue in this language.  "
+            "Use a BCP-47 code (en, es, fr, de, pt, …)."
+        ),
+    )
+    lang_group.add_argument(
+        "--out-lang",
+        dest="out_lang",
+        type=str,
+        default=None,
+        metavar="LANG[,LANG…]|all",
+        help=(
+            "Comma-separated list of output languages, or 'all' for every "
+            "language that has TTS voice coverage installed.  "
+            "Example: --out-lang en,es   or   --out-lang all.  "
+            "When omitted, only the root language is produced."
+        ),
+    )
+    lang_group.add_argument(
+        "--keep-translated",
+        dest="keep_translated",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep intermediate translated JSON files on disk after "
+            "rendering.  By default these are deleted once their audio "
+            "and published outputs have been written."
+        ),
+    )
+    lang_group.add_argument(
+        "--translation-model",
+        dest="translation_model",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Override the LLM model used for translation passes.  "
+            "Defaults to the same model the generator used."
+        ),
+    )
+
     # ── Shared flags ─────────────────────────────────────────────────
     parser.add_argument(
         "--quiet", "-q",
@@ -910,6 +968,7 @@ def _mode_publish(
         src=json_path,
         formats=formats,
         dest_dir=dest_dir,
+        root_lang=getattr(args, "root_lang", "en"),
     )
 
     for warning in result.warnings:
@@ -926,6 +985,181 @@ def _mode_publish(
                 "  (PDF requires: pip install weasyprint jinja2 "
                 "+ brew install pango)"
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Translation + multi-language fan-out
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mode_translate(
+    src_json: Path,
+    target_lang: str,
+    args: argparse.Namespace,
+) -> Path:
+    """Translate an existing show JSON into ``target_lang``.
+
+    Reads ``src_json``, runs every spoken event + structural label through
+    :class:`LLMTranslator` via :func:`translate_show_data`, then writes
+    the translated dict to ``<src>_<target_lang>.json`` next to the
+    source file.  The new JSON's ``language`` field is set to
+    ``target_lang`` so downstream render and publish steps know which
+    voices and labels to use.
+
+    Args:
+        src_json:    Path to the root-language JSON.
+        target_lang: BCP-47 language code (e.g. ``"es"``).
+        args:        Parsed namespace from :func:`parse_args`.  Reads
+                     ``args.root_lang``, ``args.translation_model``,
+                     ``args.quiet``.
+
+    Returns:
+        Path to the translated JSON file.
+    """
+    import json
+
+    from vox_romana.core.client import DeepSeekClient
+    from vox_romana.translate import LLMTranslator, translate_show_data
+
+    with open(src_json, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    client = DeepSeekClient()
+    translator = LLMTranslator(
+        client=client,
+        model=args.translation_model,
+    )
+
+    if not args.quiet:
+        print(
+            f"  Translating {src_json.name}: "
+            f"{args.root_lang} → {target_lang}…"
+        )
+
+    translated = translate_show_data(
+        data,
+        target_lang=target_lang,
+        translator=translator,
+        source_lang=args.root_lang,
+    )
+
+    out_path = src_json.with_name(f"{src_json.stem}_{target_lang}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(translated, f, ensure_ascii=False, indent=2)
+
+    if not args.quiet:
+        print(f"  Translated → {out_path}")
+
+    return out_path
+
+
+def _suffix_audio_output(
+    audio_output: Path | None,
+    language: str,
+) -> Path | None:
+    """Return ``audio_output`` with ``_{language}`` inserted before the suffix.
+
+    No-op when ``audio_output`` is ``None``.  Used so that an explicit
+    ``--audio-output debate.mp3`` becomes ``debate_es.mp3`` for the
+    Spanish pass of a multi-language run, instead of being overwritten.
+    """
+    if audio_output is None:
+        return None
+    return audio_output.with_name(f"{audio_output.stem}_{language}{audio_output.suffix}")
+
+
+def _run_language_matrix(
+    root_json: Path,
+    args: argparse.Namespace,
+    *,
+    do_render: bool,
+    do_publish: bool,
+) -> dict[str, Path]:
+    """Render and/or publish ``root_json`` once per language.
+
+    For the root language the original JSON is used directly.  For each
+    non-root language we first call :func:`_mode_translate` to produce a
+    suffixed JSON, then run render and/or publish against that file.
+    Translated JSON files are deleted afterwards unless
+    ``args.keep_translated`` is set.
+
+    Args:
+        root_json:  The freshly generated root-language JSON path.
+        args:       Parsed namespace.  Reads ``args.out_lang_list``,
+                    ``args.root_lang``, ``args.audio_output``,
+                    ``args.keep_translated``, ``args.quiet``.
+        do_render:  When True, run :func:`_mode_render` for each language.
+        do_publish: When True, run :func:`_mode_publish` for each language.
+
+    Returns:
+        Mapping of language code → JSON path used for that language's
+        outputs.  The root language entry is ``root_json`` itself; other
+        entries are the translated files (which may have been deleted by
+        the time the caller inspects them).
+    """
+    paths: dict[str, Path] = {}
+    original_audio_output = args.audio_output
+
+    for lang in args.out_lang_list:
+        is_root = (lang == args.root_lang)
+
+        if is_root:
+            target_json = root_json
+        else:
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print(f"  Translating to {lang}…")
+                print(f"{'─' * 60}\n")
+            target_json = _mode_translate(root_json, lang, args)
+
+        paths[lang] = target_json
+
+        # ── Render ───────────────────────────────────────────────────
+        if do_render:
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print(f"  Rendering audio [{lang}]…")
+                print(f"{'─' * 60}\n")
+            # Ensure explicit --audio-output doesn't overwrite across langs.
+            if not is_root:
+                args.audio_output = _suffix_audio_output(
+                    original_audio_output, lang
+                )
+            else:
+                args.audio_output = original_audio_output
+            try:
+                _mode_render(target_json, args)
+            finally:
+                args.audio_output = original_audio_output
+
+        # ── Publish ──────────────────────────────────────────────────
+        if do_publish:
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print(f"  Publishing script [{lang}]…")
+                print(f"{'─' * 60}\n")
+            # The translated JSON's stem already carries the _{lang}
+            # suffix; tell publish_document so it doesn't double-suffix.
+            saved_root_lang = args.root_lang
+            try:
+                if not is_root:
+                    args.root_lang = lang
+                _mode_publish(target_json, args)
+            finally:
+                args.root_lang = saved_root_lang
+
+        # ── Cleanup translated JSON ──────────────────────────────────
+        if not is_root and not args.keep_translated:
+            try:
+                target_json.unlink()
+                if not args.quiet:
+                    print(f"  Removed temporary {target_json.name}")
+            except OSError as exc:
+                logger.warning(
+                    "Could not delete translated JSON %s: %s",
+                    target_json, exc,
+                )
+
+    return paths
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -998,6 +1232,34 @@ def main(argv: list[str] | None = None) -> None:
             )
             sys.exit(1)
 
+    # ── Validate and normalise language args ─────────────────────────
+    # Normalise root_lang
+    args.root_lang = args.root_lang.strip().lower()
+    if args.root_lang not in LANGUAGE_CODES:
+        valid_sample = ", ".join(sorted(LANGUAGE_CODES)[:8])
+        print(
+            f"Error: unknown language code '{args.root_lang}'.  "
+            f"Valid codes include: {valid_sample}, …",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Normalise out_lang → resolved list (includes root_lang if not already)
+    if args.out_lang is None:
+        # No --out-lang supplied → produce only the root language.
+        args.out_lang_list: list[str] = [args.root_lang]
+    else:
+        try:
+            parsed_langs = normalize_lang_arg(args.out_lang)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        # Always include root_lang so users don't accidentally lose the
+        # primary output by specifying only non-root codes.
+        if args.root_lang not in parsed_langs:
+            parsed_langs = sorted({args.root_lang} | set(parsed_langs))
+        args.out_lang_list = parsed_langs
+
     # ── Banner ───────────────────────────────────────────────────────
     if not args.quiet:
         print(f"\n{'═' * 60}")
@@ -1018,17 +1280,25 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Publish format: {fmt_label}")
             if args.publish_output:
                 print(f"  Publish output: {args.publish_output}")
+        # Language matrix
+        if len(args.out_lang_list) == 1 and args.out_lang_list[0] == args.root_lang:
+            print(f"  Language: {language_display([args.root_lang])}")
+        else:
+            print(f"  Root language: {language_display([args.root_lang])}")
+            print(f"  Output languages: {language_display(args.out_lang_list)}")
         print()
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
     if args.mode == "publish":
         # Standalone publish — read existing JSON → TXT/PDF.
-        if not args.quiet:
-            print(f"{'─' * 60}")
-            print(f"  Publishing script...")
-            print(f"{'─' * 60}\n")
-        _mode_publish(args.script_input, args)
+        # Fan out across every language in --out-lang.
+        _run_language_matrix(
+            args.script_input,
+            args,
+            do_render=False,
+            do_publish=True,
+        )
         if not args.quiet:
             print(f"\n{'═' * 60}")
             print(f"  Publish complete!")
@@ -1037,12 +1307,26 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "generate":
         # Generate only — produce JSON, no audio.
         json_path = _mode_generate(args)
-        if args.publish:
-            if not args.quiet:
-                print(f"\n{'─' * 60}")
-                print(f"  Publishing script...")
-                print(f"{'─' * 60}\n")
-            _mode_publish(json_path, args)
+        # Translate (and optionally publish) into each non-root language.
+        non_root_requested = any(
+            lang != args.root_lang for lang in args.out_lang_list
+        )
+        if non_root_requested or args.publish:
+            # In generate mode the translated JSONs ARE the deliverable
+            # for non-root languages, so force-keep them unless we're
+            # also publishing (then user's --keep-translated wins).
+            saved_keep = args.keep_translated
+            if not args.publish:
+                args.keep_translated = True
+            try:
+                _run_language_matrix(
+                    json_path,
+                    args,
+                    do_render=False,
+                    do_publish=args.publish,
+                )
+            finally:
+                args.keep_translated = saved_keep
         if not args.quiet:
             print(f"\n{'═' * 60}")
             print(f"  Generated: {json_path}")
@@ -1051,32 +1335,34 @@ def main(argv: list[str] | None = None) -> None:
             print(json_path)
 
     elif args.mode == "render":
-        # Render only — audio from existing JSON.
-        _mode_render(args.script_input, args)
+        # Render only — audio from existing JSON, fanned across langs.
+        _run_language_matrix(
+            args.script_input,
+            args,
+            do_render=True,
+            do_publish=False,
+        )
 
     elif args.mode == "ingest":
         _mode_ingest(args)
 
     elif args.mode == "full":
-        # Full pipeline — generate then render (+ optional publish).
-        # run_show.py streams its own Phase 1-4 banner + progress.
-        # We just print a separator before the render step.
+        # Full pipeline — generate then render (+ optional publish),
+        # fanning across every requested output language.
         json_path = _mode_generate(args)
 
         step_n = 3 if args.publish else 2
         if not args.quiet:
             print(f"\n{'─' * 60}")
-            print(f"  Step 2/{step_n}: Rendering audio...")
+            print(f"  Step 2/{step_n}: Rendering audio…")
             print(f"{'─' * 60}\n")
 
-        _mode_render(json_path, args)
-
-        if args.publish:
-            if not args.quiet:
-                print(f"\n{'─' * 60}")
-                print(f"  Step 3/{step_n}: Publishing script...")
-                print(f"{'─' * 60}\n")
-            _mode_publish(json_path, args)
+        _run_language_matrix(
+            json_path,
+            args,
+            do_render=True,
+            do_publish=args.publish,
+        )
 
         if not args.quiet:
             print(f"\n{'═' * 60}")

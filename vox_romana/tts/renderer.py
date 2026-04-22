@@ -271,6 +271,9 @@ class TTSRenderer:
         output_path = Path(output_path)
         events = debate_data.get("events", [])
         participants = debate_data.get("participants", [])
+        # The show's language drives voice selection and is passed to every
+        # synthesize() call so the engine can validate / route appropriately.
+        language = debate_data.get("language", "en")
 
         # ── STEP 1: Assign voices to speakers ────────────────────────
         # Build the voice map (auto-assign if not manually provided).
@@ -279,7 +282,9 @@ class TTSRenderer:
         voice_casting = debate_data.get("voice_casting", {})
         voice_hints = debate_data.get("voice_hints", {})
         tts_styles = debate_data.get("tts_styles", {})
-        voice_map = self._build_voice_map(speaker_names, voice_casting, voice_hints)
+        voice_map = self._build_voice_map(
+            speaker_names, voice_casting, voice_hints, language=language,
+        )
 
         if not quiet:
             print(f"  Voice assignments:")
@@ -352,6 +357,7 @@ class TTSRenderer:
                     voice=voice_id,
                     emotion=emotion,
                     speed=speed,
+                    language=language,
                     **extras,
                 )
 
@@ -454,6 +460,8 @@ class TTSRenderer:
         speaker_names: list[str],
         voice_casting: dict[str, str] | None = None,
         voice_hints: dict[str, str] | None = None,
+        *,
+        language: str = "en",
     ) -> dict[str, str]:
         """Build a speaker→voice_id mapping.
 
@@ -472,6 +480,11 @@ class TTSRenderer:
                             strings ("male" or "female") from the show JSON.
             voice_hints:    Optional dict mapping speaker names to natural-
                             language casting notes for catalog matching.
+            language:       BCP-47 code for the show. When non-English on a
+                            Piper backend, the candidate voice pool is
+                            pre-filtered to voices whose id encodes that
+                            language; catalog matching is skipped (the
+                            built-in catalogs only cover English voices).
 
         Returns:
             Dict mapping every speaker name to a voice_id string.
@@ -490,16 +503,30 @@ class TTSRenderer:
         )
 
         try:
-            from .engines.piper_engine import PiperEngine
+            from .engines.piper_engine import PiperEngine, _lang_from_voice_id
             _is_piper = isinstance(self._engine, PiperEngine)
         except Exception:
             _is_piper = False
+            _lang_from_voice_id = lambda v: None  # type: ignore[assignment]
 
         try:
             from .engines.multi_engine import MultiEngine
             _is_multi = isinstance(self._engine, MultiEngine)
         except Exception:
             _is_multi = False
+
+        # ── Filter the voice pool by language ─────────────────────────
+        # For Piper (and MultiEngine, which delegates to Piper for non-en),
+        # restrict the candidate voices to those whose id encodes the
+        # requested language. The built-in catalogs are English-only, so
+        # we skip catalog matching entirely for non-English shows.
+        skip_catalog = False
+        if language != "en" and (_is_piper or _is_multi):
+            available = [
+                v for v in available
+                if _lang_from_voice_id(v) == language
+            ]
+            skip_catalog = True
 
         if _is_multi:
             # Both Kokoro + Piper voices are valid candidates; the engine
@@ -518,7 +545,7 @@ class TTSRenderer:
         # ── Catalog matching (when any speaker has a voice_hint) ──────
         # Build a cast dict for unassigned speakers that have hints.
         remaining = [n for n in speaker_names if n not in result]
-        if remaining and any(n in hints for n in remaining):
+        if not skip_catalog and remaining and any(n in hints for n in remaining):
             from .voice_catalog import match_voices_for_cast
 
             cast_info: dict[str, dict] = {}

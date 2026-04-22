@@ -80,6 +80,30 @@ from pathlib import Path
 from ..engine import BaseTTSEngine, SynthesizedAudio
 
 
+def _lang_from_voice_id(voice_id: str) -> str | None:
+    """Extract the BCP-47 language code from a Piper voice id.
+
+    Piper voice ids follow the pattern ``<lang>_<COUNTRY>-<name>-<quality>``,
+    e.g. ``en_US-lessac-medium``, ``es_ES-davefx-medium``, ``fr_FR-siwis-low``.
+    The language code is the part before the first underscore.
+
+    Args:
+        voice_id: A Piper voice identifier.
+
+    Returns:
+        Lowercase language code (e.g. "en", "es"), or None if the voice id
+        does not follow the conventional pattern (e.g. "default", custom
+        names without an underscore).
+    """
+    if not voice_id or "_" not in voice_id:
+        return None
+    head = voice_id.split("_", 1)[0]
+    # Reject obviously bogus prefixes (must be 2-3 lowercase letters).
+    if not (2 <= len(head) <= 3 and head.isalpha()):
+        return None
+    return head.lower()
+
+
 class PiperEngine(BaseTTSEngine):
     """Piper TTS engine — local, free, CPU-only.
 
@@ -126,6 +150,7 @@ class PiperEngine(BaseTTSEngine):
         voice: str = "default",
         emotion: str = "",
         speed: float = 1.0,
+        language: str = "en",
         **kwargs,
     ) -> SynthesizedAudio:
         """Synthesize text to speech using Piper.
@@ -133,19 +158,47 @@ class PiperEngine(BaseTTSEngine):
         Args:
             text:     The text to speak.
             voice:    Voice model name (e.g. "en_US-lessac-medium").
-                      If "default", uses the first available voice.
+                      If "default", uses the first available voice for the
+                      requested ``language`` (falls back to the first voice
+                      overall if no language-specific voice exists).
             emotion:  Ignored by Piper (no emotion control). Accepted
                       to match the interface — the renderer doesn't need
                       to know that Piper can't do emotions.
             speed:    Speed multiplier. 1.0 = normal, <1 = faster, >1 = slower.
                       NOTE: Piper's length_scale is inverted from what you'd
                       expect. We handle the conversion internally.
+            language: BCP-47 language code. Validated against the resolved
+                      voice's language (parsed from the voice id). Raises
+                      ValueError on mismatch.
             **kwargs: Passed to PiperVoice. Supports:
                       - speaker_id (int): For multi-speaker models.
 
         Returns:
             SynthesizedAudio with WAV bytes and sample rate.
+
+        Raises:
+            ValueError: If ``voice`` is a real voice id whose language does
+                        not match ``language``.
         """
+        # Resolve "default" voice using the requested language, so a non-
+        # English language picks the first matching voice instead of
+        # silently using an English one.
+        if voice == "default":
+            voice = self._default_voice_for_language(language)
+
+        # Validate that the chosen voice can actually speak the requested
+        # language. Voices with a parseable language prefix must match;
+        # voices that don't follow the convention are passed through (we
+        # can't tell what language they speak).
+        voice_lang = _lang_from_voice_id(voice)
+        if voice_lang is not None and voice_lang != language:
+            raise ValueError(
+                f"Piper voice {voice!r} speaks {voice_lang!r}, but "
+                f"language={language!r} was requested. Install a {language!r} "
+                f"voice (e.g. via huggingface.co/rhasspy/piper-voices) or "
+                f"adjust the voice mapping."
+            )
+
         # Lazy-load the voice model.
         piper_voice = self._load_voice(voice)
 
@@ -201,6 +254,57 @@ class PiperEngine(BaseTTSEngine):
             if not p.name.endswith(".onnx.json")
         )
         return voices
+
+    def available_voices_for_language(self, language: str) -> list[str]:
+        """List voices whose voice id encodes the given language code.
+
+        Voices that don't follow the conventional ``<lang>_<COUNTRY>-…``
+        pattern are excluded — we can't tell what language they speak.
+
+        Args:
+            language: BCP-47 language code (e.g. "en", "es").
+
+        Returns:
+            Sorted list of voice ids whose language prefix matches ``language``.
+        """
+        return [
+            v for v in self.available_voices()
+            if _lang_from_voice_id(v) == language
+        ]
+
+    def available_languages(self) -> list[str]:
+        """List the languages for which at least one voice is installed.
+
+        Returns:
+            Sorted list of unique BCP-47 language codes parsed from the
+            installed voice ids. Voices that don't follow the
+            ``<lang>_<COUNTRY>-…`` pattern are skipped.
+        """
+        langs = {
+            lang for v in self.available_voices()
+            if (lang := _lang_from_voice_id(v)) is not None
+        }
+        return sorted(langs)
+
+    def _default_voice_for_language(self, language: str) -> str:
+        """Pick a default voice for the requested language.
+
+        Prefers the first voice whose id encodes ``language``. Falls back
+        to the first available voice (caller will then validate language
+        compatibility) so that test fixtures using non-conventional voice
+        names continue to work.
+
+        Args:
+            language: BCP-47 language code.
+
+        Returns:
+            A voice id, or "default" if no voices are installed.
+        """
+        for_lang = self.available_voices_for_language(language)
+        if for_lang:
+            return for_lang[0]
+        all_voices = self.available_voices()
+        return all_voices[0] if all_voices else "default"
 
     def _load_voice(self, voice_id: str) -> object:
         """Lazy-load a Piper voice model.

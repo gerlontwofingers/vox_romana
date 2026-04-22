@@ -181,6 +181,7 @@ class BaseTTSEngine(ABC):
         voice: str = "default",
         emotion: str = "",
         speed: float = 1.0,
+        language: str = "en",
         **kwargs,
     ) -> SynthesizedAudio:
         """Convert text to speech audio.
@@ -198,6 +199,11 @@ class BaseTTSEngine(ABC):
                      (e.g. "aggressive", "contemplative", "excited").
                      Engines that support emotion control will use this.
                      Engines that don't will ignore it gracefully.
+            language: BCP-47 language code (e.g. "en", "es", "fr") for the
+                     text. Engines validate that the requested voice can
+                     speak this language and raise ValueError on mismatch.
+                     Kokoro is English-only; Piper supports any language
+                     for which an ONNX model is installed.
             speed:   Speech speed multiplier. 1.0 = normal.
             **kwargs: Engine-specific extras (e.g. pitch, stability).
 

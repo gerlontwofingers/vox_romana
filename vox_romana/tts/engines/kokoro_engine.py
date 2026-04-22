@@ -112,6 +112,11 @@ DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
 # Kokoro's native sample rate.
 KOKORO_SAMPLE_RATE = 24000
 
+# Languages Kokoro can synthesize. The mlx-community/Kokoro-82M-bf16 model
+# is English-only. If the user requests a non-English language, the renderer
+# must route to a language-capable engine (Piper) instead.
+KOKORO_LANGUAGES: frozenset[str] = frozenset({"en"})
+
 # All built-in Kokoro voices, organized by accent and gender.
 # These are baked into the model — no separate downloads needed.
 KOKORO_VOICES = [
@@ -167,6 +172,7 @@ class KokoroEngine(BaseTTSEngine):
         voice: str = "af_heart",
         emotion: str = "",
         speed: float = 1.0,
+        language: str = "en",
         **kwargs,
     ) -> SynthesizedAudio:
         """Synthesize text to speech using Kokoro via MLX.
@@ -180,10 +186,15 @@ class KokoroEngine(BaseTTSEngine):
                       "say this with excitement and conviction".
                       This maps to Kokoro's `instruct` parameter.
             speed:    Speed multiplier. 1.0 = normal.
+            language: BCP-47 language code. Kokoro only supports "en";
+                      any other value raises ValueError.
             **kwargs: Extra kwargs passed to generate_audio().
 
         Returns:
             SynthesizedAudio with WAV bytes and sample rate (24000 Hz).
+
+        Raises:
+            ValueError: If `language` is not "en". Kokoro is English-only.
 
         NOTE ON HOW THIS WORKS:
             mlx-audio's generate_audio() is designed to save files to disk.
@@ -195,6 +206,14 @@ class KokoroEngine(BaseTTSEngine):
             text chunking, model loading, and a bunch of edge cases we don't
             want to reimplement. The file roundtrip costs <10ms on an SSD.
         """
+        # Validate language: Kokoro only speaks English.
+        if language not in KOKORO_LANGUAGES:
+            raise ValueError(
+                f"KokoroEngine only supports English (language='en'); "
+                f"got language={language!r}. Use PiperEngine for non-English "
+                f"languages, or run vox_romana with --out-lang en."
+            )
+
         # Create a temp directory for the audio output.
         # generate_audio() writes files here; we read them back.
         with tempfile.TemporaryDirectory() as tmp_dir:
