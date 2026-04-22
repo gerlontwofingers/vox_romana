@@ -161,6 +161,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR, PIPER_VOICES_DIR as _PIPER_VOICES_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +298,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     gen_group.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
+        default=_OUTPUT_DIR,
         help="Base output directory for generated JSON (default: output/).",
     )
 
@@ -432,7 +433,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render_group.add_argument(
         "--model-dir",
         type=str,
-        default="piper-voices",
+        default=str(_PIPER_VOICES_DIR),
         help="Piper model directory (default: piper-voices).",
     )
 
@@ -569,7 +570,7 @@ def _build_generate_argv(args: argparse.Namespace) -> list[str]:
 
     if args.show_type:
         argv += ["--type", args.show_type]
-    if args.output != Path("output"):
+    if args.output != _OUTPUT_DIR:
         argv += ["--output", str(args.output)]
     if args.research is True:
         argv.append("--research")
@@ -626,7 +627,7 @@ def _build_render_argv(
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
         argv += ["--voice-policy", args.voice_policy]
-    if args.model_dir != "piper-voices":
+    if args.model_dir != str(_PIPER_VOICES_DIR):
         argv += ["--model-dir", args.model_dir]
     if args.model:
         argv += ["--model", args.model]

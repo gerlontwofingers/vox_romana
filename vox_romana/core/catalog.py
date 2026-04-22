@@ -57,8 +57,8 @@ from pathlib import Path
 from typing import Any
 
 
-# Default DB path relative to the workspace root.
-DEFAULT_DB_PATH = Path("data/vox_romana.db")
+# Default DB path — resolved via VOX_ROMANA_DATA_DIR or ~/.vox_romana/config.yaml.
+from vox_romana.core.paths import CATALOG_DB_PATH as DEFAULT_DB_PATH
 
 # Schema version — bump this when adding migrations.
 SCHEMA_VERSION = 1

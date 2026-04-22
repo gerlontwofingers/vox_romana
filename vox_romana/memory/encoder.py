@@ -32,7 +32,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENCODER_DIR = Path("data/memory/encoder")
+from vox_romana.core.paths import ENCODER_DIR as DEFAULT_ENCODER_DIR
 DEFAULT_BASE_MODEL = "all-MiniLM-L6-v2"
 
 

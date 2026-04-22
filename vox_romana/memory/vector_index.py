@@ -57,7 +57,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CHROMA_DIR = Path("data/memory/chroma")
+from vox_romana.core.paths import CHROMA_DIR as DEFAULT_CHROMA_DIR
 
 
 # ─────────────────────────────────────────────────────────────────────────────

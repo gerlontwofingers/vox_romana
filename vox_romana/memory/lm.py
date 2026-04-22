@@ -41,7 +41,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LM_DIR = Path("data/memory/lm")
+from vox_romana.core.paths import LM_DIR as DEFAULT_LM_DIR
 DEFAULT_BASE_MODEL = "Qwen/Qwen2-1.5B"
 
 # LoRA defaults.

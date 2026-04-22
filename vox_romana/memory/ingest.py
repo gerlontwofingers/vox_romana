@@ -70,7 +70,7 @@ from xml.etree import ElementTree
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DOCUMENT_DIR = Path("data/memory/documents")
+from vox_romana.core.paths import DOCUMENT_DIR as DEFAULT_DOCUMENT_DIR
 
 # Chunking defaults.
 CHUNK_SIZE = 800       # target chars per chunk

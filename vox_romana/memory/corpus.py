@@ -27,7 +27,7 @@ from ..core.catalog import Catalog
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CORPUS_ROOT = Path("data/memory/corpus")
+from vox_romana.core.paths import CORPUS_ROOT as DEFAULT_CORPUS_ROOT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
