@@ -169,8 +169,15 @@ def parse_args() -> argparse.Namespace:
         help="Auto-research the topic before generating. Uses Google if API "
         "keys are set (GOOGLE_API_KEY + GOOGLE_CSE_ID), falls back to LLM "
         "knowledge otherwise.",
+    )    parser.add_argument(
+        "--no-memory",
+        action="store_false",
+        dest="memory",
+        default=True,
+        help="Disable memory-first lookup during --research. By default, the "
+        "local knowledge base (Chroma + FTS5) is consulted before any web "
+        "search; use this flag to force web-only research.",
     )
-
     # ── Overrides ────────────────────────────────────────────────────
     # Post-it notes on the Architect's plan. Applied last, always win.
     parser.add_argument(
@@ -273,8 +280,16 @@ def main() -> None:
 
     # ── Optional: auto-research ──────────────────────────────────────
     if args.research:
-        bootstrap_kwargs["auto_research"] = True
-        try:
+        bootstrap_kwargs["auto_research"] = True        if args.memory:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.memory.recall import MemoryRecall
+                catalog = Catalog()
+                memory = MemoryRecall(catalog=catalog)
+                bootstrap_kwargs["memory"] = memory
+                log("  Memory-first search: ON", quiet=args.quiet)
+            except Exception as e:
+                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)        try:
             from vox_romana.core.search import GoogleSearchProvider
             search_provider = GoogleSearchProvider()
             bootstrap_kwargs["search_provider"] = search_provider

@@ -57,9 +57,10 @@ EXAMPLE — mock client for testing:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from ...core.client import DeepSeekClient
-from ...core.search import BaseSearchProvider
+from ...core.search import BaseSearchProvider, build_research_provider
 from .config import (
     PodcastConfig,
     PodcastDirectorBrief,
@@ -267,6 +268,7 @@ class PodcastBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        memory: Any | None = None,
         target_words: int | None = None,
     ) -> PodcastConfig:
         """Run the full bootstrap chain: brief → fully populated PodcastConfig.
@@ -278,6 +280,10 @@ class PodcastBootstrap:
             overrides:          Dict of PodcastConfig field names to override.
             auto_research:      If True, research the topic before generating.
             search_provider:    Search provider for web research.
+            memory:             Optional MemoryRecall instance. When provided,
+                                auto-research consults the local knowledge base
+                                FIRST and only falls through to ``search_provider``
+                                if memory doesn't have enough material.
             target_words:       Target word count for the episode.
 
         Returns:
@@ -291,12 +297,15 @@ class PodcastBootstrap:
         # If the caller wants auto-research AND didn't provide their own
         # reference material, fire up the DebateResearcher to gather facts.
         # The researcher is domain-agnostic — it works for any topic.
+        # Memory comes FIRST (free, fast, domain-tuned); web search is the
+        # paid fallback only consulted when memory misses.
         if auto_research and not reference_material:
             from ..debates.researcher import DebateResearcher
-            if search_provider is None:
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ══════════════════════════════════════════════════════════════

@@ -21,10 +21,11 @@ EXAMPLE:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
-from ...core.search import BaseSearchProvider
+from ...core.search import BaseSearchProvider, build_research_provider
 from .config import AnchorConfig, DirectorBrief, NewsConfig, SegmentConfig
 
 
@@ -166,6 +167,7 @@ class NewsBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        memory: Any | None = None,
         target_words: int | None = None,
     ) -> NewsConfig:
         """Run the full bootstrap chain: brief → fully populated NewsConfig.
@@ -178,6 +180,10 @@ class NewsBootstrap:
             auto_research:      If True, research the topic before generating.
             search_provider:    Search provider for web research. If None and
                                 auto_research=True, falls back to LLM-only research.
+            memory:             Optional MemoryRecall instance. When provided,
+                                auto-research consults the local knowledge base
+                                FIRST and only falls through to ``search_provider``
+                                if memory doesn't have enough material.
 
         Returns:
             A fully populated NewsConfig.
@@ -188,12 +194,13 @@ class NewsBootstrap:
         if auto_research and not reference_material:
             # Reuse the debate researcher — it works for any topic.
             from ..debates.researcher import DebateResearcher
-            if search_provider is None:
-                # No search provider → LLM-only research (DeepSeek compiles
-                # from training knowledge).
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
+                # No search provider AND no memory → LLM-only research
+                # (DeepSeek compiles from training knowledge).
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────

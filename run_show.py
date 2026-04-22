@@ -209,6 +209,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--no-memory",
+        action="store_false",
+        dest="memory",
+        default=True,
+        help="Disable memory-first lookup during research. By default, the "
+        "local knowledge base (Chroma + FTS5) is consulted before any web "
+        "search; use this flag to force web-only research.",
+    )
+
+    parser.add_argument(
         "--tag", "-t",
         type=str,
         default=None,
@@ -337,6 +347,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(f"  {msg}", flush=True)
+
+
+def _enable_research(bootstrap_kwargs: dict, args) -> None:
+    """Wire memory + Google into ``bootstrap_kwargs`` for an auto-research run.
+
+    Centralized here so all three show types (debate / news / podcast) use
+    the exact same fallback ladder:
+
+        Memory (free, local)  →  Google (paid, web)  →  LLM-only (DeepSeek)
+
+    ``args.memory`` (default ``True``, disabled by ``--no-memory``) controls
+    whether the local knowledge base is consulted; ``args.research`` controls
+    whether web search is consulted. Either failure is non-fatal — we just
+    drop down to the next tier.
+    """
+    bootstrap_kwargs["auto_research"] = True
+    if getattr(args, "memory", True):
+        try:
+            from vox_romana.core.catalog import Catalog
+            from vox_romana.memory.recall import MemoryRecall
+            catalog = Catalog()
+            memory = MemoryRecall(catalog=catalog)
+            bootstrap_kwargs["memory"] = memory
+            log("  Memory-first search: ON", quiet=args.quiet)
+        except Exception as e:
+            log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
+    try:
+        from vox_romana.core.search import GoogleSearchProvider
+        bootstrap_kwargs["search_provider"] = GoogleSearchProvider()
+        log("  Research mode ON (Google)", quiet=args.quiet)
+    except (ValueError, ImportError):
+        log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
 
 
 # ── Word/duration accounting helpers ───────────────────────────
@@ -545,14 +587,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     )
 
     if args.research:
-        bootstrap_kwargs["auto_research"] = True
-        try:
-            from vox_romana.core.search import GoogleSearchProvider
-            search_provider = GoogleSearchProvider()
-            bootstrap_kwargs["search_provider"] = search_provider
-            log("  Research mode ON (Google)", quiet=args.quiet)
-        except (ValueError, ImportError):
-            log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -650,14 +685,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     )
 
     if args.research:
-        bootstrap_kwargs["auto_research"] = True
-        try:
-            from vox_romana.core.search import GoogleSearchProvider
-            search_provider = GoogleSearchProvider()
-            bootstrap_kwargs["search_provider"] = search_provider
-            log("  Research mode ON (Google)", quiet=args.quiet)
-        except (ValueError, ImportError):
-            log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -760,14 +788,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         bootstrap_kwargs["target_words"] = target_words
 
     if args.research:
-        bootstrap_kwargs["auto_research"] = True
-        try:
-            from vox_romana.core.search import GoogleSearchProvider
-            search_provider = GoogleSearchProvider()
-            bootstrap_kwargs["search_provider"] = search_provider
-            log("  Research mode ON (Google)", quiet=args.quiet)
-        except (ValueError, ImportError):
-            log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = PodcastBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)

@@ -60,8 +60,10 @@ EXAMPLE — mock client for testing:
 
 from __future__ import annotations
 
+from typing import Any
+
 from ...core.client import DeepSeekClient
-from ...core.search import BaseSearchProvider
+from ...core.search import BaseSearchProvider, build_research_provider
 from .architect import DebateArchitect
 from .config import DebateConfig, ParticipantProfile
 from .director import DebateDirector
@@ -110,6 +112,7 @@ class DebateBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        memory: Any | None = None,
     ) -> DebateConfig:
         """Run the full bootstrap chain: brief → fully populated DebateConfig.
 
@@ -127,6 +130,12 @@ class DebateBootstrap:
                                 before running the Architect. Requires a search_provider.
             search_provider:    A BaseSearchProvider instance (e.g. GoogleSearchProvider).
                                 Required when auto_research=True. Ignored otherwise.
+            memory:             Optional MemoryRecall instance. When provided,
+                                auto-research consults the local knowledge base
+                                FIRST and only falls through to ``search_provider``
+                                if memory doesn't have enough material. Free,
+                                fast, and domain-tuned. See
+                                ``vox_romana.core.search.MemorySearchProvider``.
 
         Returns:
             A fully populated DebateConfig with:
@@ -152,13 +161,17 @@ class DebateBootstrap:
         # Think of it like a production assistant running to the library
         # before the show starts — getting everyone their prep packet.
         if auto_research and not reference_material:
-            if search_provider is None:
-                # No search provider → LLM-only research (DeepSeek compiles
-                # from training knowledge). Still useful — DeepSeek knows a
-                # lot about most topics.
+            # Build the effective search provider. Memory comes FIRST when
+            # available — it's free, sub-millisecond, and domain-tuned. We
+            # only fall through to the (paid, slower) web search when memory
+            # doesn't have enough material to ground the topic.
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
+                # No search provider AND no memory → LLM-only research
+                # (DeepSeek compiles from training knowledge). Still useful.
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ══════════════════════════════════════════════════════════════
