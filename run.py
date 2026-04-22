@@ -55,7 +55,7 @@ USAGE:
 
     # === FULL MODE (generate + render) ===============================
 
-    # Simplest: auto-detect show type, default engine (kokoro), mp3:
+    # Simplest: auto-detect show type, default engine (both = all voices), mp3:
     python run.py prompts/ubi_debate.txt
 
     # Force show type, custom engine, wav format:
@@ -120,11 +120,14 @@ OUTPUT:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -188,12 +191,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full"],
+        choices=["generate", "render", "full", "ingest"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
             "'render' = audio only (from existing JSON). "
-            "'full' = generate + render (default)."
+            "'full' = generate + render (default). "
+            "'ingest' = feed documents into the knowledge store."
         ),
     )
 
@@ -358,9 +362,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render_group.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
+        default="both",
         choices=["kokoro", "piper", "both"],
-        help="TTS engine (default: kokoro). 'both' mixes Kokoro + Piper voices.",
+        help="TTS engine (default: both — uses all Kokoro + Piper voices). Use 'kokoro' or 'piper' for a single engine.",
     )
 
     render_group.add_argument(
@@ -418,7 +422,72 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "these cues."
         ),
     )
-
+    # ── Knowledge ingestion flags ────────────────────────────────
+    ingest_group = parser.add_argument_group(
+        "knowledge ingestion (--mode ingest)"
+    )
+    ingest_group.add_argument(
+        "--ingest-path",
+        dest="ingest_path",
+        metavar="PATH",
+        action="append",
+        default=None,
+        help=(
+            "File or directory to ingest. May be repeated: "
+            "--ingest-path docs/ --ingest-path extra.pdf"
+        ),
+    )
+    ingest_group.add_argument(
+        "--recursive",
+        dest="recursive",
+        action="store_true",
+        default=True,
+        help="Recurse into sub-directories (default: on).",
+    )
+    ingest_group.add_argument(
+        "--no-recursive",
+        dest="recursive",
+        action="store_false",
+        help="Do not recurse into sub-directories.",
+    )
+    ingest_group.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Report what would be ingested without writing any files.",
+    )
+    ingest_group.add_argument(
+        "--force-reingest",
+        dest="force_reingest",
+        action="store_true",
+        default=False,
+        help="Re-ingest files that have already been processed.",
+    )
+    ingest_group.add_argument(
+        "--chunk-size",
+        dest="ingest_chunk_size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Target characters per chunk (default: 800).",
+    )
+    ingest_group.add_argument(
+        "--chunk-overlap",
+        dest="ingest_chunk_overlap",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Overlap characters between consecutive chunks (default: 100).",
+    )
+    ingest_group.add_argument(
+        "--ingest-tag",
+        dest="ingest_tag",
+        type=str,
+        default="",
+        metavar="TAG",
+        help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
+    )
     # ── Shared flags ─────────────────────────────────────────────────
     parser.add_argument(
         "--quiet", "-q",
@@ -573,6 +642,107 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
     render_show.main(argv)
 
 
+def _mode_ingest(args: argparse.Namespace) -> None:
+    """Run ingest mode: feed documents into the knowledge store.
+
+    Walks each --ingest-path, calls DocumentIngester, then prints a
+    per-file summary table and a grand total.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.memory.ingest import (
+        DocumentIngester,
+        CHUNK_SIZE,
+        CHUNK_OVERLAP,
+    )
+
+    chunk_size = args.ingest_chunk_size or CHUNK_SIZE
+    chunk_overlap = args.ingest_chunk_overlap or CHUNK_OVERLAP
+
+    ingester = DocumentIngester(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+
+    all_stats = []
+    for raw_path in args.ingest_path:
+        p = Path(raw_path)
+        if p.is_dir():
+            stats_list = ingester.ingest_directory(
+                p,
+                recursive=args.recursive,
+                dry_run=args.dry_run,
+                force_reingest=args.force_reingest,
+                tag=args.ingest_tag,
+            )
+            all_stats.extend(stats_list)
+        elif p.is_file():
+            try:
+                stats = ingester.ingest(
+                    p,
+                    dry_run=args.dry_run,
+                    force_reingest=args.force_reingest,
+                    tag=args.ingest_tag,
+                )
+                all_stats.append(stats)
+            except Exception as exc:
+                import sys
+                print(f"  ERROR: {p}: {exc}", file=sys.stderr)
+        else:
+            import sys
+            print(f"  WARNING: path not found: {raw_path}", file=sys.stderr)
+
+    if not args.quiet:
+        # Print per-file summary table.
+        label = "[DRY RUN] " if args.dry_run else ""
+        print(f"\n{'─' * 70}")
+        print(f"  {label}Ingest summary")
+        print(f"{'─' * 70}")
+        col_w = 50
+        print(f"  {'Source':<{col_w}}  {'Fmt':<7}  {'Chunks':>6}  {'Status'}")
+        print(f"  {'-' * col_w}  {'-' * 7}  {'-' * 6}  {'-' * 10}")
+        for s in all_stats:
+            src = Path(s.source).name
+            if len(src) > col_w:
+                src = "..." + src[-(col_w - 3):]
+            if s.skipped:
+                status = f"skipped ({s.skip_reason})"
+            else:
+                status = "ok"
+            print(
+                f"  {src:<{col_w}}  {s.format or '?':<7}  {s.chunks:>6}  {status}"
+            )
+        ingested = [s for s in all_stats if not s.skipped]
+        skipped = [s for s in all_stats if s.skipped]
+        total_chunks = sum(s.chunks for s in ingested)
+        total_chars = sum(s.chars for s in ingested)
+        print(f"{'─' * 70}")
+        print(
+            f"  Total: {len(ingested)} ingested, {len(skipped)} skipped — "
+            f"{total_chunks} chunks, {total_chars:,} chars"
+        )
+        print(f"{'─' * 70}\n")
+
+    # ── Phase 2: Update vector index after ingest ─────────────────────
+    if not args.dry_run:
+        try:
+            from vox_romana.memory.vector_index import ChromaVectorIndex
+            import vox_romana.memory.ingest as _ingest_mod
+            if ChromaVectorIndex.is_available():
+                index = ChromaVectorIndex()
+                migration_stats = index.migrate_documents(
+                    _ingest_mod.DEFAULT_DOCUMENT_DIR
+                )
+                if not args.quiet and migration_stats["files"] > 0:
+                    print(
+                        f"  Vector index: +{migration_stats['loaded']} chunk(s) "
+                        f"embedded from {migration_stats['files']} new file(s)\n"
+                    )
+        except Exception as exc:
+            logger.warning("Failed to update vector index: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -590,6 +760,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
     # ── Validate mode-specific requirements ──────────────────────────
+    if args.mode == "ingest" and not args.ingest_path:
+        print(
+            "Error: --ingest-path is required for 'ingest' mode.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.mode in ("generate", "full") and args.prompt is None:
         print(
             "Error: prompt file is required for "
@@ -619,6 +796,11 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  VOX ROMANA — Master Pipeline")
         print(f"{'═' * 60}")
         print(f"  Mode: {args.mode}")
+        if args.mode == "ingest" and args.ingest_path:
+            for p in args.ingest_path:
+                print(f"  Ingest path: {p}")
+            if args.dry_run:
+                print("  (dry run — no files will be written)")
         if args.prompt:
             print(f"  Prompt: {args.prompt}")
         if args.script_input:
@@ -640,6 +822,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "render":
         # Render only — audio from existing JSON.
         _mode_render(args.script_input, args)
+
+    elif args.mode == "ingest":
+        _mode_ingest(args)
 
     elif args.mode == "full":
         # Full pipeline — generate then render.

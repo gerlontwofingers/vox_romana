@@ -240,12 +240,13 @@ class TestDocumentIngester:
     def test_ingest_directory(self, tmp_path):
         (tmp_path / "a.txt").write_text("Document A content.")
         (tmp_path / "b.md").write_text("Document B content.")
-        (tmp_path / "c.py").write_text("# not a supported format")
+        (tmp_path / "c.py").write_text("# source file — also supported now")
 
         ingester = DocumentIngester(output_dir=tmp_path / "output")
         results = ingester.ingest_directory(tmp_path)
 
-        assert len(results) == 2  # .txt and .md, not .py
+        # .txt, .md, and .py are all supported since Phase 1.
+        assert len(results) == 3
 
     def test_ingest_missing_file(self, tmp_path):
         ingester = DocumentIngester(output_dir=tmp_path / "output")
@@ -253,8 +254,9 @@ class TestDocumentIngester:
             ingester.ingest(tmp_path / "nonexistent.txt")
 
     def test_ingest_unsupported_format(self, tmp_path):
-        doc = tmp_path / "data.xlsx"
-        doc.write_bytes(b"fake excel")
+        # Use a completely unknown extension (not Tier1/2/3).
+        doc = tmp_path / "data.xyz"
+        doc.write_bytes(b"totally unknown format")
         ingester = DocumentIngester(output_dir=tmp_path / "output")
         with pytest.raises(ValueError, match="Unsupported format"):
             ingester.ingest(doc)
@@ -289,7 +291,7 @@ class TestMemoryRecall:
 
     def test_fts5_fallback(self, seeded_catalog):
         """Without encoder, should fall back to FTS5."""
-        recall = MemoryRecall(catalog=seeded_catalog)
+        recall = MemoryRecall(catalog=seeded_catalog, use_chroma=False)
         result = recall.query("universal basic income")
 
         assert result.method == "fts5"
@@ -303,13 +305,13 @@ class TestMemoryRecall:
         assert "RELATED STUDIES:" in context or "(no prior knowledge found)" in context
 
     def test_format_context_empty(self, catalog):
-        recall = MemoryRecall(catalog=catalog)
+        recall = MemoryRecall(catalog=catalog, use_chroma=False)
         result = recall.query("something that doesn't exist")
         context = recall.format_context(result)
         assert context == "(no prior knowledge found)"
 
     def test_no_catalog(self):
-        recall = MemoryRecall(catalog=None)
+        recall = MemoryRecall(catalog=None, use_chroma=False)
         result = recall.query("anything")
         assert result.method == "fts5"  # default, but no results
         assert result.catalog_runs == []
@@ -342,6 +344,7 @@ class TestMemoryRecall:
         recall = MemoryRecall(
             catalog=seeded_catalog,
             encoder=mock_encoder,
+            use_chroma=False,
         )
 
         # The encode method should be called for batch indexing too.
@@ -365,6 +368,7 @@ class TestMemoryRecall:
         recall = MemoryRecall(
             catalog=seeded_catalog,
             lm=mock_lm,
+            use_chroma=False,
         )
         result = recall.query("UBI employment effects")
         assert result.synthesis == "UBI pilots typically show employment gains."
@@ -417,6 +421,7 @@ class TestDataResearcherMemoryIntegration:
         recall = MemoryRecall(
             catalog=seeded_catalog,
             lm=mock_lm,
+            use_chroma=False,
         )
 
         researcher = DataResearcher(

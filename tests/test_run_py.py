@@ -114,9 +114,9 @@ class TestParseArgs:
         assert args.no_log_audio_duration is True
 
     def test_engine_default(self, tmp_prompt):
-        """Default engine should be kokoro."""
+        """Default engine should be both (all Kokoro + Piper voices)."""
         args = parse_args([str(tmp_prompt)])
-        assert args.engine == "kokoro"
+        assert args.engine == "both"
 
     def test_format_default(self, tmp_prompt):
         """Default audio format should be mp3."""
@@ -191,7 +191,7 @@ class TestBuildArgv:
         argv = _build_render_argv(tmp_json, args)
         assert str(tmp_json) in argv
         assert "--engine" in argv
-        assert "kokoro" in argv
+        assert "both" in argv
 
     def test_render_argv_with_audio_output(self, tmp_json, tmp_path):
         """--audio-output should be forwarded as --output."""

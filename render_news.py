@@ -88,9 +88,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
+        default="both",
         choices=["kokoro", "piper", "both"],
-        help="TTS engine (default: kokoro).",
+        help="TTS engine (default: both — uses all Kokoro + Piper voices).",
     )
 
     parser.add_argument(

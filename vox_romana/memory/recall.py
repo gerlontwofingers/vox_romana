@@ -6,12 +6,12 @@ The single entry point for all memory retrieval.  Combines three tiers:
        about the query.  This is associative, lossy, generative — like
        real memory.  Runs first to provide a hypothesis.
 
-    2. **Semantic search** — The encoder finds the most similar passages
-       from the catalog via embedding cosine similarity.  Returns ranked
-       results with scores.
+    2. **Vector search** — Persistent Chroma index (preferred) or an
+       in-memory cosine index (fallback).  Indexes catalog runs/studies
+       AND all ingested documents (from ``data/memory/documents/``).
 
-    3. **FTS5 fallback** — If no encoder is trained, falls back to the
-       catalog's built-in FTS5 full-text search.  Always available.
+    3. **FTS5 fallback** — If no vector index is available, falls back to
+       the catalog's built-in FTS5 full-text search.  Always available.
 
 USAGE:
     from vox_romana.memory.recall import MemoryRecall
@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.catalog import Catalog, StudyRecord
+from .vector_index import ChromaVectorIndex, _CosineFallbackIndex
 
 logger = logging.getLogger(__name__)
 
@@ -46,79 +47,16 @@ class RecallResult:
     """LM-generated memory synthesis (empty if LM not available)."""
 
     passages: list[tuple[str, float, str]] = field(default_factory=list)
-    """Ranked (text, similarity_score, source_id) from encoder search."""
+    """Ranked (text, similarity_score, source_id) from vector search."""
 
     catalog_studies: list[StudyRecord] = field(default_factory=list)
-    """StudyRecords from catalog (via FTS5 or semantic search)."""
+    """StudyRecords from catalog (via vector or FTS5 search)."""
 
     catalog_runs: list[Any] = field(default_factory=list)
     """RunRecords from catalog search."""
 
     method: str = "fts5"
-    """Which search method was used: "semantic", "fts5", or "none"."""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Embedding index — in-memory for now, SQLite-backed later if needed.
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _EmbeddingIndex:
-    """Simple in-memory cosine similarity index over catalog content.
-
-    Indexes study findings + run briefs into a numpy matrix.  On query,
-    encodes the query and returns top-k by cosine similarity.
-    """
-
-    def __init__(self, encoder) -> None:
-        self._encoder = encoder
-        self._texts: list[str] = []
-        self._source_ids: list[str] = []
-        self._source_types: list[str] = []
-        self._embeddings = None  # numpy (n, dim) matrix
-
-    @property
-    def size(self) -> int:
-        return len(self._texts)
-
-    def add(self, text: str, source_id: str, source_type: str = "") -> None:
-        self._texts.append(text)
-        self._source_ids.append(source_id)
-        self._source_types.append(source_type)
-
-    def build(self) -> None:
-        """Encode all texts into the embedding matrix."""
-        if not self._texts:
-            return
-        import numpy as np
-        self._embeddings = self._encoder.encode(self._texts)
-        # Normalize for cosine similarity via dot product.
-        norms = np.linalg.norm(self._embeddings, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
-        self._embeddings = self._embeddings / norms
-
-    def search(self, query: str, *, top_k: int = 10) -> list[tuple[str, float, str]]:
-        """Find top-k most similar passages.
-
-        Returns:
-            List of (text, cosine_similarity, source_id) sorted by score desc.
-        """
-        if self._embeddings is None or len(self._texts) == 0:
-            return []
-
-        import numpy as np
-        q_emb = self._encoder.encode(query)
-        q_emb = q_emb / (np.linalg.norm(q_emb) or 1.0)
-        scores = self._embeddings @ q_emb
-        top_indices = np.argsort(scores)[::-1][:top_k]
-
-        results = []
-        for idx in top_indices:
-            results.append((
-                self._texts[idx],
-                float(scores[idx]),
-                self._source_ids[idx],
-            ))
-        return results
+    """Search method used: ``"chroma"``, ``"semantic"``, ``"fts5"``, or ``"none"``."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,13 +66,20 @@ class _EmbeddingIndex:
 class MemoryRecall:
     """Unified memory query interface.
 
-    Combines LM synthesis, semantic encoder search, and FTS5 fallback.
-    Gracefully degrades: if no encoder/LM is trained, uses FTS5 only.
+    Priority:
+        1. LM synthesis (if lm provided)
+        2. Chroma persistent vector search (if chromadb installed and use_chroma=True)
+        3. In-memory cosine search (if encoder provided and Chroma unavailable)
+        4. FTS5 fallback (always available when catalog provided)
 
     Args:
-        catalog: The vox_romana catalog for FTS5 and study lookup.
-        encoder: Optional trained KnowledgeEncoder.
-        lm: Optional trained KnowledgeLM.
+        catalog:       The vox_romana Catalog for FTS5 and study lookup.
+        encoder:       Optional KnowledgeEncoder (used for in-memory fallback).
+        lm:            Optional KnowledgeLM for synthesis.
+        use_chroma:    If True (default), use Chroma when available.
+        _chroma_client: Injected Chroma client for testing (e.g.
+                       ``chromadb.EphemeralClient()``).  When provided, the
+                       Chroma index runs in-memory without touching disk.
     """
 
     def __init__(
@@ -143,33 +88,80 @@ class MemoryRecall:
         *,
         encoder: Any | None = None,
         lm: Any | None = None,
+        use_chroma: bool = True,
+        _chroma_client: Any | None = None,
     ) -> None:
         self._catalog = catalog
         self._encoder = encoder
         self._lm = lm
-        self._index: _EmbeddingIndex | None = None
+        self._use_chroma = use_chroma
+        self._chroma_client = _chroma_client
+        self._index: ChromaVectorIndex | _CosineFallbackIndex | None = None
         self._indexed = False
 
     def _ensure_index(self) -> None:
-        """Build the embedding index from catalog content (lazy, once)."""
-        if self._indexed or self._encoder is None or self._catalog is None:
+        """Initialise the vector index (lazy, once per MemoryRecall instance).
+
+        Tries Chroma first; falls back to the in-memory cosine index.
+        When Chroma is used, also migrates any ingested JSONL documents.
+        """
+        if self._indexed:
             return
 
-        self._index = _EmbeddingIndex(self._encoder)
+        # ── Option 1: Chroma persistent index ────────────────────────────
+        if self._use_chroma and ChromaVectorIndex.is_available():
+            index = ChromaVectorIndex(_client=self._chroma_client)
 
-        # Index all studies.
-        all_runs = self._catalog.recent(limit=10000)
-        for run in all_runs:
+            # Migrate ingested documents (fast after first run — marker file).
+            try:
+                from .ingest import DEFAULT_DOCUMENT_DIR
+                index.migrate_documents(DEFAULT_DOCUMENT_DIR)
+            except Exception as exc:
+                logger.warning("Document migration into Chroma failed: %s", exc)
+
+            # Add catalog entries (only new ones — batch existence check).
+            if self._catalog is not None:
+                try:
+                    entries: list[tuple[str, str, str]] = []
+                    for run in self._catalog.recent(limit=10_000):
+                        if run.brief:
+                            entries.append((run.brief, run.run_id, "catalog_run"))
+                        for study in self._catalog.get_studies(run.run_id):
+                            if study.findings:
+                                entries.append(
+                                    (study.findings, study.study_id, "catalog_study")
+                                )
+                    added = index.add_catalog_entries(entries)
+                    if added:
+                        logger.info(
+                            "Added %d new catalog entries to Chroma index", added
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to index catalog into Chroma: %s", exc)
+
+            self._index = index
+            self._indexed = True
+            logger.info("Using Chroma vector index (%d entries)", index.count())
+            return
+
+        # ── Option 2: In-memory cosine index (encoder required) ──────────
+        if self._encoder is None or self._catalog is None:
+            self._indexed = True  # nothing to build — skip on future calls
+            return
+
+        index_fb = _CosineFallbackIndex(self._encoder)
+        for run in self._catalog.recent(limit=10_000):
             if run.brief:
-                self._index.add(run.brief, run.run_id, "run")
-            studies = self._catalog.get_studies(run.run_id)
-            for study in studies:
+                index_fb.add(run.brief, run.run_id, "catalog_run")
+            for study in self._catalog.get_studies(run.run_id):
                 if study.findings:
-                    self._index.add(study.findings, study.study_id, "study")
-
-        self._index.build()
+                    index_fb.add(study.findings, study.study_id, "catalog_study")
+        index_fb.build()
+        self._index = index_fb
         self._indexed = True
-        logger.info("Built embedding index with %d entries", self._index.size)
+        logger.info(
+            "Built in-memory fallback index with %d entries", index_fb.size
+        )
 
     def query(
         self,
@@ -181,8 +173,8 @@ class MemoryRecall:
         """Query memory for relevant knowledge.
 
         Args:
-            text: The query / research brief.
-            top_k: Max results from semantic or FTS5 search.
+            text:       The query / research brief.
+            top_k:      Max results from vector or FTS5 search.
             synthesize: If True and LM is available, generate a synthesis.
 
         Returns:
@@ -199,30 +191,40 @@ class MemoryRecall:
             except Exception as e:
                 logger.warning("LM synthesis failed: %s", e)
 
-        # ── Tier 2: Semantic search ───────────────────────────────────
-        if self._encoder is not None:
-            try:
-                self._ensure_index()
-                if self._index is not None:
-                    result.passages = self._index.search(text, top_k=top_k)
-                    result.method = "semantic"
+        # ── Tier 2: Vector search (Chroma or in-memory fallback) ──────
+        try:
+            self._ensure_index()
+        except Exception as e:
+            logger.warning("Failed to build search index: %s", e)
 
-                    # Look up actual study/run records for the top hits.
-                    study_ids = set()
-                    run_ids = set()
-                    for _, _, source_id in result.passages:
-                        study_ids.add(source_id)
-                        run_ids.add(source_id)
+        if self._index is not None:
+            try:
+                passages = self._index.search(text, top_k=top_k)
+                if passages:
+                    result.passages = passages
+                    result.method = (
+                        "chroma"
+                        if isinstance(self._index, ChromaVectorIndex)
+                        else "semantic"
+                    )
+                    # Look up catalog records for catalog source_types.
+                    study_ids: set[str] = set()
+                    run_ids: set[str] = set()
+                    for _, _, source in passages:
+                        study_ids.add(source)
+                        run_ids.add(source)
 
                     if self._catalog:
-                        for run in self._catalog.recent(limit=10000):
+                        for run in self._catalog.recent(limit=10_000):
                             if run.run_id in run_ids:
                                 result.catalog_runs.append(run)
                                 for study in self._catalog.get_studies(run.run_id):
                                     if study.study_id in study_ids:
                                         result.catalog_studies.append(study)
             except Exception as e:
-                logger.warning("Semantic search failed, falling back to FTS5: %s", e)
+                logger.warning(
+                    "Vector search failed, falling back to FTS5: %s", e
+                )
 
         # ── Tier 3: FTS5 fallback ─────────────────────────────────────
         if not result.passages and self._catalog is not None:
@@ -230,7 +232,6 @@ class MemoryRecall:
                 fts_runs = self._catalog.search(text, limit=top_k)
                 result.catalog_runs = fts_runs
                 result.method = "fts5"
-
                 for run in fts_runs:
                     studies = self._catalog.get_studies(run.run_id)
                     result.catalog_studies.extend(studies)
@@ -244,7 +245,7 @@ class MemoryRecall:
         """Format a RecallResult into a text context block for LLM prompts.
 
         Args:
-            result: The RecallResult to format.
+            result:    The RecallResult to format.
             max_chars: Maximum characters in the output.
 
         Returns:
@@ -275,3 +276,5 @@ class MemoryRecall:
         if len(combined) > max_chars:
             combined = combined[:max_chars] + "\n... (truncated)"
         return combined or "(no prior knowledge found)"
+
+

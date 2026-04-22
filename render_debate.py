@@ -171,13 +171,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
+        default="both",
         choices=["kokoro", "piper", "both"],
         help=(
             "Which TTS engine to use. "
-            "kokoro = Apple Silicon GPU (best quality, default). "
-            "piper = CPU-only (faster setup, lower quality). "
-            "(default: kokoro)"
+            "both = all Kokoro + Piper voices (default). "
+            "kokoro = Apple Silicon GPU only. "
+            "piper = CPU-only. "
+            "(default: both)"
         ),
     )
 
