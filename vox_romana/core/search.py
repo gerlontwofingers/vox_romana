@@ -237,6 +237,11 @@ class MemorySearchProvider(BaseSearchProvider):
     only knows about ``BaseSearchProvider`` — can transparently query the
     local knowledge base built up by ``--mode ingest`` and prior runs.
 
+    Memory is populated by ``python run.py --mode ingest`` —
+    see ``vox_romana/memory/ingest.py`` for the ingestion pipeline and
+    ``vox_romana/memory/vector_index.py`` for the embedding/persistence
+    layer that this provider queries.
+
     HOW HITS BECOME RESULTS:
 
         MemoryRecall returns ``passages`` (text chunks ranked by cosine

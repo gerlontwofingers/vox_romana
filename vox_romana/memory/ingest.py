@@ -166,7 +166,13 @@ def _extract_pdf(path: Path) -> str:
 
 
 def _extract_json(path: Path) -> str:
-    """Extract text from a JSON file (looks for 'text' field)."""
+    """Extract text from a JSON file.
+
+    Priority order for dict objects: ``"text"`` key → concatenation of all
+    top-level string values.  For lists, each string element or
+    ``{"text": …}`` dict entry is included.  Falls back to empty string if
+    no textual content is found.
+    """
     with open(path) as f:
         data = json.load(f)
     if isinstance(data, str):
@@ -189,7 +195,11 @@ def _extract_json(path: Path) -> str:
 
 
 def _extract_jsonl(path: Path) -> str:
-    """Extract text from a JSONL file (one JSON object per line)."""
+    """Extract text from a JSONL file (one JSON object per line).
+
+    Applies the same ``"text"`` key priority as ``_extract_json`` to each
+    line independently.  Malformed lines are silently skipped.
+    """
     parts: list[str] = []
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -211,7 +221,12 @@ def _extract_jsonl(path: Path) -> str:
 
 
 def _extract_html(path: Path) -> str:
-    """Extract text from HTML/HTM using BeautifulSoup (optional dep)."""
+    """Extract readable text from an HTML/HTM file.
+
+    Requires ``beautifulsoup4`` + ``lxml`` (``pip install beautifulsoup4 lxml``).
+    ``<script>``, ``<style>``, and ``<head>`` tags are removed before text
+    extraction so JavaScript, CSS, and metadata don't pollute the output.
+    """
     try:
         from bs4 import BeautifulSoup  # type: ignore[import]
     except ImportError:
@@ -227,7 +242,13 @@ def _extract_html(path: Path) -> str:
 
 
 def _extract_csv(path: Path) -> str:
-    """Extract text from CSV or TSV files using stdlib csv."""
+    """Extract text from CSV or TSV files using stdlib csv.
+
+    The dialect (delimiter, quoting style) is auto-detected via
+    ``csv.Sniffer`` on the first 4 KB.  For ``.tsv`` files the tab
+    delimiter is forced regardless.  Each row is emitted as a
+    tab-separated line; empty cells are omitted.
+    """
     raw = _read_text_auto(path)
     suffix = path.suffix.lower()
     try:
@@ -460,7 +481,15 @@ _ARCHIVE_EXTS: frozenset[str] = frozenset({".zip", ".tar", ".gz", ".bz2", ".tgz"
 
 
 def _extract_zip(path: Path) -> str:
-    """Recursively extract text from all supported files inside a ZIP."""
+    """Recursively extract text from all supported files inside a ZIP.
+
+    Each member is written to a temporary file so format-specific
+    extractors (which require a real ``Path``) can operate on it.  The
+    temporary file is always deleted in a ``finally`` block.  Nested
+    archives (zip-in-zip) are skipped via ``_ARCHIVE_EXTS`` to prevent
+    infinite recursion.  Members without a matching extractor are silently
+    ignored.
+    """
     if not zipfile.is_zipfile(path):
         raise ValueError(f"Not a valid ZIP file: {path}")
     parts: list[str] = []
@@ -492,7 +521,12 @@ def _extract_zip(path: Path) -> str:
 
 
 def _extract_tar(path: Path) -> str:
-    """Recursively extract text from all supported files inside a TAR archive."""
+    """Recursively extract text from all supported files inside a TAR archive.
+
+    Handles all compression variants supported by ``tarfile.open`` in
+    ``r:*`` mode (uncompressed, gzip, bzip2, xz).  Same temp-file and
+    skip-nested-archive strategy as ``_extract_zip``.
+    """
     parts: list[str] = []
     with tarfile.open(path, "r:*") as tf:
         for member in sorted(tf.getmembers(), key=lambda m: m.name):
@@ -524,6 +558,17 @@ def _extract_tar(path: Path) -> str:
     return "\n\n".join(parts)
 
 
+# Dispatch table: file extension (lowercase, with leading dot) → extractor
+# function.  Each extractor takes a ``Path`` and returns a plain-text string.
+#
+# To add a new format:
+#   1. Write a  def _extract_<fmt>(path: Path) -> str  function above.
+#   2. Add one or more extension → function entries in this dict.
+#   3. If the format requires an optional dependency, raise ``ImportError``
+#      with a ``pip install …`` hint inside the function.
+#
+# Extensions NOT listed here (but known) live in ``_TIER3_MESSAGES`` with
+# human-readable installation guidance.
 _EXTRACTORS: dict[str, Any] = {
     # Plain text
     ".txt": _extract_text,
@@ -635,7 +680,35 @@ def chunk_text(
     chunk_size: int = CHUNK_SIZE,
     overlap: int = CHUNK_OVERLAP,
 ) -> list[str]:
-    """Split text into overlapping chunks, respecting paragraph boundaries."""
+    """Split *text* into overlapping chunks, respecting paragraph boundaries.
+
+    Strategy
+    --------
+    1. The text is first split on double newlines (``\\n\\n``) to obtain
+       natural paragraph units.  Paragraphs are never broken mid-way.
+    2. Paragraphs are accumulated into a *current* buffer.  When adding
+       the next paragraph would exceed *chunk_size* characters, the buffer
+       is flushed as a chunk and the **last paragraph** of the flushed
+       chunk is retained as the start of the next buffer (overlap).
+    3. If the retained paragraph is longer than *overlap* characters it is
+       discarded rather than kept (avoids a single giant paragraph
+       dominating every chunk boundary).
+    4. **Character-level fallback** — if the text has no paragraph breaks
+       at all (e.g. a single long sentence), the function falls back to a
+       sliding-window character-level split with a step of
+       ``chunk_size - overlap``.
+
+    Args:
+        text:       Raw extracted text to split.
+        chunk_size: Target maximum characters per chunk (default
+                    ``CHUNK_SIZE`` = 800).  Soft limit — a single
+                    paragraph longer than this will not be split.
+        overlap:    Characters of overlap between consecutive chunks
+                    (default ``CHUNK_OVERLAP`` = 100).
+
+    Returns:
+        List of non-empty chunk strings.  Empty input → ``[]``.
+    """
     # First split on double newlines (paragraphs).
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 

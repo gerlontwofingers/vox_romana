@@ -1,5 +1,25 @@
 """Vector index backends for vox_romana memory recall.
 
+Pipeline position
+-----------------
+This module sits in **Phase 2** of the ingest pipeline::
+
+    Phase 1 — ingest.py                Phase 2 — vector_index.py
+    ──────────────────────             ──────────────────────────
+    DocumentIngester                   ChromaVectorIndex
+    └─→ JSONL chunks written           └─→ migrate_documents()
+        to data/memory/                    reads JSONL, embeds chunks,
+        documents/                         persists to Chroma on disk
+                                                   │
+                                                   ▼
+                                       Phase 3 — recall.py
+                                       MemoryRecall.query()
+                                       └─→ MemorySearchProvider
+                                           (used by all bootstraps
+                                            when --research is active)
+
+Populated by ``DocumentIngester`` via ``python run.py --mode ingest``.
+
 Two backends sharing the same ``search()`` interface:
 
     ChromaVectorIndex — persistent Chroma-backed cosine similarity index.

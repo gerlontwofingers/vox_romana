@@ -13,6 +13,13 @@ The single entry point for all memory retrieval.  Combines three tiers:
     3. **FTS5 fallback** — If no vector index is available, falls back to
        the catalog's built-in FTS5 full-text search.  Always available.
 
+Populating memory
+-----------------
+Memory is populated by ``python run.py --mode ingest`` which runs
+``DocumentIngester`` (Phase 1) to produce JSONL chunks, then
+``ChromaVectorIndex.migrate_documents()`` (Phase 2) to embed and persist
+them.  All three tiers above then query that same Chroma store.
+
 USAGE:
     from vox_romana.memory.recall import MemoryRecall
     from vox_romana.core.catalog import Catalog

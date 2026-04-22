@@ -106,6 +106,41 @@ USAGE:
     python run.py prompts/podcast/soccer.txt --mode generate --type podcast
     python run.py --mode render --script-input output/text/podcasts/soccer.json
 
+    # === INGEST MODE (build the knowledge base) ======================
+    #
+    # Feed documents into the local memory store so future --research
+    # runs consult your material first (free, sub-ms) before falling
+    # back to Google.  The pipeline:
+    #
+    #   1. Text is extracted from each file (PDF, DOCX, HTML, CSV, …)
+    #   2. Extracted text is split into overlapping chunks (~800 chars)
+    #   3. Chunks are written to data/memory/documents/ as JSONL
+    #   4. ChromaVectorIndex embeds the chunks (all-MiniLM-L6-v2)
+    #   5. Any future  run.py … --research  queries memory FIRST
+    #
+    # Optional packages for extra formats (plain text / JSON / XML /
+    # CSV work without any extras):
+    #   pip install beautifulsoup4 lxml python-docx openpyxl python-pptx
+    #   pip install ebooklib odfpy striprtf  # epub, odt, rtf
+
+    # Ingest a whole directory of papers:
+    python run.py --mode ingest --ingest-path papers/
+
+    # Ingest a single PDF with a tag for later filtering:
+    python run.py --mode ingest --ingest-path report.pdf --ingest-tag research-2026
+
+    # Preview what would be ingested — no files written:
+    python run.py --mode ingest --ingest-path docs/ --dry-run
+
+    # Force re-ingest files already processed (e.g. after an update):
+    python run.py --mode ingest --ingest-path docs/ --force-reingest
+
+    # Multiple source paths in one run:
+    python run.py --mode ingest --ingest-path papers/ --ingest-path extra.pdf
+
+    # Custom chunk size (larger = fewer but richer chunks):
+    python run.py --mode ingest --ingest-path docs/ --chunk-size 1200
+
 ENVIRONMENT:
     DEEPSEEK_API_KEY in .env (required for generate/full modes).
     No API keys needed for render mode — all TTS is local.
@@ -197,7 +232,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'generate' = text only (JSON). "
             "'render' = audio only (from existing JSON). "
             "'full' = generate + render (default). "
-            "'ingest' = feed documents into the knowledge store."
+            "'ingest' = feed documents into the knowledge store. "
+            "Run 'python run.py --mode ingest --ingest-path docs/' to build "
+            "the local knowledge base; future --research runs will query it "
+            "first (free, fast, domain-tuned) before calling Google. "
+            "See the USAGE block above for full examples."
         ),
     )
 
