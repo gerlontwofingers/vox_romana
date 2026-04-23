@@ -51,6 +51,8 @@ ebooklib>=0.18              # .epub (also requires lxml, listed above)
 # If not installed, DataResearcher gracefully degrades (text-only findings).
 pandas>=2.2,<2.3
 scipy>=1.13,<1.15
+langdetect>=1.0.9           # language detection for TranslatorAgent
+bert-score>=0.3             # back-translation quality scoring (BERTScore F1)
 statsmodels>=0.14,<0.15
 pingouin>=0.5.4,<0.6
 scikit-learn>=1.5,<1.7
