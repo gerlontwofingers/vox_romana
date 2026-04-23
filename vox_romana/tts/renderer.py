@@ -118,8 +118,8 @@ def strip_stage_directions(text: str) -> str:
     """Remove parenthetical stage directions from TTS text.
 
     Strips all (parenthetical) blocks regardless of their position in the
-    string, then collapses any resulting runs of whitespace.  Ellipsis
-    clusters around the removed block are preserved.
+    string, then collapses any resulting runs of whitespace.  Adjacent
+    ellipsis and em-dash artifacts created by the removal are also merged.
 
     Examples::
 
@@ -131,10 +131,12 @@ def strip_stage_directions(text: str) -> str:
         'Just plain dialogue.'
     """
     cleaned = _STAGE_DIR_RE.sub('', text)
-    # Collapse multiple whitespace (including from removed leading direction)
-    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
-    # Tidy up triple-dot + space created when a mid-sentence direction is removed
-    cleaned = re.sub(r'\.\.\.\s+', '... ', cleaned)
+    # Collapse ALL whitespace runs — including \n from removed inline directions
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    # Merge adjacent-ellipsis artifacts left by "... (direction) ...": "... ..." → "..."
+    cleaned = re.sub(r'\.\.\.[ \t]*\.\.\.', '...', cleaned)
+    # Merge adjacent em-dash artifacts left by "—(direction)—": "——" or "— —" → "—"
+    cleaned = re.sub(r'\u2014[ \t]*\u2014', '\u2014', cleaned)
     return cleaned.strip()
 
 

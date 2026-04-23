@@ -1234,6 +1234,21 @@ class TestStripStageDirections:
         assert not result.startswith("(")
         assert "Welcome, listeners" in result
 
+    def test_double_ellipsis_merged(self):
+        """'... (direction) ...' artifacts are collapsed to a single '...'."""
+        result = strip_stage_directions("I mean... (pause) ...what do you think?")
+        assert result == "I mean...what do you think?"
+
+    def test_double_em_dash_merged(self):
+        """'\u2014(direction)\u2014' sandwich artifacts collapse to a single '\u2014'."""
+        result = strip_stage_directions("I\u2014(hesitates)\u2014just don't know.")
+        assert result == "I\u2014just don't know."
+
+    def test_newline_in_direction_collapsed(self):
+        """\\n left by a stripped inline direction is collapsed to a space."""
+        result = strip_stage_directions("Hello.\n(sighs deeply)\nWorld.")
+        assert result == "Hello. World."
+
 
 class TestStripMarkdownEmphasis:
     """Unit tests for the strip_markdown_emphasis() helper."""
