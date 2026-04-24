@@ -1424,3 +1424,275 @@ class TestRendererStripDirections:
         }
         renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
         assert engine.calls[0]["text"] == "anything still works to come back to"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. VOICE REGISTRY INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These tests verify the end-to-end wiring between TTSRenderer, the voice
+# catalog, and the persistent VoiceRegistry. The two key behaviours under
+# test are:
+#
+#   (a) CROSS-EPISODE CONSISTENCY — the same character (by name) gets the
+#       same voice every time we render an episode in the same series.
+#       This is what makes "Dr. Chen" sound like Dr. Chen across all 30
+#       episodes of "The Science Hour".
+#
+#   (b) AM_ADAM VARIETY — the bug that started this whole journey: a 5-male
+#       cast with no voice hints used to give every speaker am_adam. After
+#       the fix, the gender fallback rotates through the male pool so
+#       distinct speakers get distinct voices.
+#
+# Both groups use ":memory:" registry instances to avoid polluting the
+# shared vox_romana.db.
+
+class TestRendererRegistryConsistency:
+    """Cross-episode character consistency via VoiceRegistry."""
+
+    KOKORO_VOICES = [
+        "af_heart", "af_alloy", "af_aoede", "af_jessica", "af_kore",
+        "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+        "am_michael", "am_onyx",
+        "bf_emma", "bf_isabella", "bf_lily",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    ]
+
+    def test_same_character_same_voice_across_episodes(self, tmp_path):
+        """Episode 2 should reuse Episode 1's voice for shared characters."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine, registry=registry, series_key="my-podcast")
+
+        # Episode 1.
+        ep1_data = make_debate_data(speakers=["Dr. Chen", "Host"], num_events=2)
+        ep1_data["voice_casting"] = {"Dr. Chen": "female", "Host": "male"}
+        ep1 = renderer.render(ep1_data, tmp_path / "ep1.wav", format="wav", quiet=True)
+
+        # Episode 2 — same characters reappear plus a new one.
+        ep2_data = make_debate_data(
+            speakers=["Dr. Chen", "Host", "Guest"],
+            num_events=3,
+        )
+        ep2_data["voice_casting"] = {
+            "Dr. Chen": "female",
+            "Host": "male",
+            "Guest": "male",
+        }
+        ep2 = renderer.render(ep2_data, tmp_path / "ep2.wav", format="wav", quiet=True)
+
+        assert ep1.voice_map["Dr. Chen"] == ep2.voice_map["Dr. Chen"], (
+            f"Dr. Chen's voice changed between episodes: "
+            f"ep1={ep1.voice_map['Dr. Chen']} ep2={ep2.voice_map['Dr. Chen']}"
+        )
+        assert ep1.voice_map["Host"] == ep2.voice_map["Host"], (
+            f"Host's voice changed between episodes: "
+            f"ep1={ep1.voice_map['Host']} ep2={ep2.voice_map['Host']}"
+        )
+        # The new "Guest" character must get a fresh voice that isn't either
+        # of the locked ones.
+        assert ep2.voice_map["Guest"] not in (
+            ep2.voice_map["Dr. Chen"], ep2.voice_map["Host"]
+        )
+
+    def test_different_series_get_independent_assignments(self, tmp_path):
+        """Same character name in a different series can receive a different voice."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+
+        # Render in series A.
+        renderer_a = TTSRenderer(engine, registry=registry, series_key="series-a")
+        data_a = make_debate_data(speakers=["Alice"], num_events=1)
+        data_a["voice_casting"] = {"Alice": "female"}
+        result_a = renderer_a.render(data_a, tmp_path / "a.wav", format="wav", quiet=True)
+
+        # Render in series B with the same character name.
+        renderer_b = TTSRenderer(engine, registry=registry, series_key="series-b")
+        data_b = make_debate_data(speakers=["Alice"], num_events=1)
+        data_b["voice_casting"] = {"Alice": "female"}
+        result_b = renderer_b.render(data_b, tmp_path / "b.wav", format="wav", quiet=True)
+
+        # Series A's Alice is locked. Series B's Alice resolves independently
+        # — and because A bumped the usage count of its assigned voice, B
+        # should pick a *different* voice.
+        a_voice = result_a.voice_map["Alice"]
+        b_voice = result_b.voice_map["Alice"]
+        assert a_voice != b_voice, (
+            f"Alice should have different voices across series, "
+            f"both got {a_voice}"
+        )
+
+    def test_no_registry_falls_back_to_legacy_behaviour(self, tmp_path):
+        """Omitting the registry must not break rendering."""
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine)  # No registry, no series_key.
+
+        data = make_debate_data(speakers=["Alice", "Bob"], num_events=2)
+        data["voice_casting"] = {"Alice": "female", "Bob": "male"}
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert "Alice" in result.voice_map
+        assert "Bob" in result.voice_map
+        assert result.voice_map["Alice"] != result.voice_map["Bob"]
+
+    def test_series_key_from_show_json_used_when_constructor_omits_it(self, tmp_path):
+        """When series_key isn't passed to the constructor, render() derives
+        it from the show JSON's series_id field."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        # No series_key in the constructor.
+        renderer = TTSRenderer(engine, registry=registry)
+
+        ep1_data = make_debate_data(speakers=["Dr. Chen"], num_events=1)
+        ep1_data["voice_casting"] = {"Dr. Chen": "female"}
+        ep1_data["series_id"] = "json-derived-series"
+        ep1 = renderer.render(ep1_data, tmp_path / "ep1.wav", format="wav", quiet=True)
+
+        ep2_data = make_debate_data(speakers=["Dr. Chen"], num_events=1)
+        ep2_data["voice_casting"] = {"Dr. Chen": "female"}
+        ep2_data["series_id"] = "json-derived-series"
+        ep2 = renderer.render(ep2_data, tmp_path / "ep2.wav", format="wav", quiet=True)
+
+        assert ep1.voice_map["Dr. Chen"] == ep2.voice_map["Dr. Chen"]
+
+    def test_locked_voice_preserved_even_when_pool_changes(self, tmp_path):
+        """A locked voice must be reused as long as it's still in the
+        engine's available pool."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+
+        # Episode 1 with the full pool.
+        engine1 = FakeEngine(voices=self.KOKORO_VOICES)
+        r1 = TTSRenderer(engine1, registry=registry, series_key="show-x")
+        data1 = make_debate_data(speakers=["Alice"], num_events=1)
+        data1["voice_casting"] = {"Alice": "female"}
+        result1 = r1.render(data1, tmp_path / "1.wav", format="wav", quiet=True)
+        alice_voice = result1.voice_map["Alice"]
+
+        # Episode 2 with a smaller pool that still includes Alice's voice.
+        smaller_pool = [v for v in self.KOKORO_VOICES if v == alice_voice or v.startswith("am_")]
+        engine2 = FakeEngine(voices=smaller_pool)
+        r2 = TTSRenderer(engine2, registry=registry, series_key="show-x")
+        data2 = make_debate_data(speakers=["Alice"], num_events=1)
+        data2["voice_casting"] = {"Alice": "female"}
+        result2 = r2.render(data2, tmp_path / "2.wav", format="wav", quiet=True)
+
+        assert result2.voice_map["Alice"] == alice_voice
+
+
+class TestRendererAmAdamVariety:
+    """The bug fix: 5-male casts must not all default to am_adam."""
+
+    KOKORO_VOICES = [
+        "af_heart", "af_jessica", "af_nova",
+        "am_adam", "am_echo", "am_eric", "am_fenrir",
+        "am_liam", "am_michael", "am_onyx",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    ]
+
+    def test_five_male_cast_gets_distinct_voices(self, tmp_path):
+        """Five male speakers without voice hints must get five distinct voices."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine, registry=registry, series_key="variety-test")
+
+        speakers = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
+        data = make_debate_data(speakers=speakers, num_events=5)
+        data["voice_casting"] = {s: "male" for s in speakers}
+
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        voices = [result.voice_map[s] for s in speakers]
+        assert len(set(voices)) == 5, (
+            f"Expected 5 distinct voices for 5 male speakers, got {voices}"
+        )
+
+    def test_five_male_cast_does_not_all_get_am_adam(self, tmp_path):
+        """The original bug: all 5 male speakers defaulted to am_adam."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine, registry=registry, series_key="no-am-adam-flood")
+
+        speakers = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
+        data = make_debate_data(speakers=speakers, num_events=5)
+        data["voice_casting"] = {s: "male" for s in speakers}
+
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        voices = [result.voice_map[s] for s in speakers]
+        am_adam_count = voices.count("am_adam")
+        assert am_adam_count <= 1, (
+            f"am_adam should appear at most once in a 5-male cast, "
+            f"got {am_adam_count} occurrences in {voices}"
+        )
+
+    def test_am_adam_still_in_pool(self, tmp_path):
+        """am_adam must remain a valid candidate — just not the always-default."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        # Fresh registry, single male speaker → am_adam is the catalog-order
+        # first male and should be picked.
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+        renderer = TTSRenderer(engine, registry=registry, series_key="solo-test")
+
+        data = make_debate_data(speakers=["SoloGuy"], num_events=1)
+        data["voice_casting"] = {"SoloGuy": "male"}
+        result = renderer.render(data, tmp_path / "solo.wav", format="wav", quiet=True)
+
+        assert result.voice_map["SoloGuy"] == "am_adam", (
+            f"With an empty registry and one male speaker, expected am_adam, "
+            f"got {result.voice_map['SoloGuy']}"
+        )
+
+    def test_repeated_renders_distribute_across_voice_pool(self, tmp_path):
+        """Across many renders with one male speaker each, the voice pool
+        should be exercised — no single voice should dominate."""
+        from vox_romana.tts.voice_registry import VoiceRegistry
+
+        registry = VoiceRegistry(db_path=":memory:")
+        engine = FakeEngine(voices=self.KOKORO_VOICES)
+
+        assigned: list[str] = []
+        # Each "show" has a unique series_key and a unique character name so
+        # the registry never serves a locked voice — every assignment goes
+        # through the fallback path.
+        for i in range(8):
+            renderer = TTSRenderer(
+                engine, registry=registry, series_key=f"show-{i}",
+            )
+            data = make_debate_data(speakers=[f"Char{i}"], num_events=1)
+            data["voice_casting"] = {f"Char{i}": "male"}
+            result = renderer.render(
+                data, tmp_path / f"r{i}.wav", format="wav", quiet=True,
+            )
+            assigned.append(result.voice_map[f"Char{i}"])
+
+        # Across 8 renders, we should see at least 4 distinct voices.
+        # (Strictly, the least-used policy guarantees we touch every voice
+        # in the pool before repeating any, so 8 renders → 8 distinct voices
+        # so long as the pool has ≥ 8 male voices, which it does.)
+        unique_voices = set(assigned)
+        assert len(unique_voices) >= 4, (
+            f"Expected at least 4 distinct voices across 8 renders, "
+            f"got {len(unique_voices)}: {assigned}"
+        )
+
+        # And no single voice should be picked more than twice.
+        from collections import Counter
+        counts = Counter(assigned)
+        max_count = max(counts.values())
+        assert max_count <= 2, (
+            f"No voice should be assigned more than 2 times across 8 renders, "
+            f"got {dict(counts)}"
+        )

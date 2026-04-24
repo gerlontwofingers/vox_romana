@@ -408,6 +408,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Series / voice registry ───────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, the "
+            "voice registry locks each character to the same voice "
+            "across all episodes that share this series ID. Falls back "
+            "to the show JSON's series_id / show_name when omitted."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -467,10 +481,20 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     # ── Build the renderer and render ────────────────────────────────
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception:
+        pass
+
     renderer = TTSRenderer(
         engine,
         voice_map=voice_map,
         strip_directions=args.strip_directions,
+        registry=registry,
+        series_key=series_key,
     )
 
     if not args.quiet:

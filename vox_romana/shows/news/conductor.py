@@ -103,7 +103,7 @@ class NewsConductorResult(ConductorResult):
     news_segments: list[NewsSegment] = field(default_factory=list)
     show_id: str = ""
 
-    def to_merged_news_show(self) -> MergedNewsShow:
+    def to_merged_news_show(self, series_id: str | None = None) -> MergedNewsShow:
         """Convert this result into a MergedNewsShow for serialization."""
         config = self.config
         if not isinstance(config, NewsConfig):
@@ -145,6 +145,7 @@ class NewsConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            series_id=series_id,
         )
 
 

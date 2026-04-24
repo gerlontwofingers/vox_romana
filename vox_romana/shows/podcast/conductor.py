@@ -131,7 +131,7 @@ class PodcastConductorResult(ConductorResult):
     podcast_segments: list[PodcastSegment] = field(default_factory=list)
     podcast_id: str = ""
 
-    def to_merged_podcast(self) -> MergedPodcast:
+    def to_merged_podcast(self, series_id: str | None = None) -> MergedPodcast:
         """Convert this result into a MergedPodcast for serialization.
 
         Bridges conductor output to the serialization format. Builds
@@ -165,6 +165,7 @@ class PodcastConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            series_id=series_id,
         )
 
 

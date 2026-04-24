@@ -342,6 +342,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Series grouping ──────────────────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, voice "
+            "assignments for recurring characters are locked in the registry "
+            "so the same character always gets the same voice across episodes. "
+            "E.g. --series-id my-science-podcast"
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -629,7 +643,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     # ── Serialize ────────────────────────────────────────────────────
     log("Phase 4: Saving output...", quiet=args.quiet)
 
-    merged = result.to_merged_debate()
+    merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
     serializer = DebateSerializer()
 
     stem = args.prompt.stem
@@ -728,7 +742,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     # ── Serialize ────────────────────────────────────────────────────
     log("Phase 4: Saving output...", quiet=args.quiet)
 
-    merged = result.to_merged_news_show()
+    merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
     serializer = NewsSerializer()
 
     stem = args.prompt.stem
@@ -832,7 +846,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     # ── Serialize ────────────────────────────────────────────────────
     log("Phase 4: Saving output...", quiet=args.quiet)
 
-    merged = result.to_merged_podcast()
+    merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
     serializer = PodcastSerializer()
 
     stem = args.prompt.stem

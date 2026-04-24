@@ -29,6 +29,7 @@ QUICK START:
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, AudioClip, PAUSE_MAP, DEFAULT_PAUSE_MS
 from .renderer import TTSRenderer, RenderResult
+from .voice_registry import VoiceRegistry, series_key_for
 from .voice_catalog import (
     VoiceDescriptor,
     KOKORO_VOICE_CATALOG,
@@ -53,6 +54,9 @@ __all__ = [
     # Renderer
     "TTSRenderer",
     "RenderResult",
+    # Voice registry
+    "VoiceRegistry",
+    "series_key_for",
     # Voice catalog
     "VoiceDescriptor",
     "KOKORO_VOICE_CATALOG",

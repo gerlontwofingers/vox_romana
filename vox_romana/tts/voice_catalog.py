@@ -684,15 +684,18 @@ def match_voice(
     exclude: set[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
     position: int = 0,
+    usage_counts: dict[str, int] | None = None,
 ) -> str | None:
     """Find the best voice for a character description.
 
     Scores each voice in the catalog by counting how many of its tags
     appear in the hint string. Higher score = better fit. Ties among
     voices with the same non-zero score are broken by catalog insertion
-    order. When ALL candidates score zero (no tag overlap), the
-    ``position`` index is used to pick a different voice per speaker so
-    that identical-hint casts still get variety.
+    order. When ALL candidates score zero (no tag overlap), candidates
+    are sorted by ``usage_counts`` ascending (least-used first) so the
+    fallback distributes across the full voice pool rather than always
+    landing on the first voice alphabetically. ``position`` is used as a
+    secondary tiebreaker among voices with equal usage counts.
 
     Args:
         hint:             Natural-language character voice description.
@@ -707,9 +710,13 @@ def match_voice(
                           ensure every character gets a unique voice.
         catalog:          Voice catalog dict. Defaults to KOKORO_VOICE_CATALOG.
         position:         0-based index of this speaker in the cast. Used
-                          as a tie-breaker when hint produces no tag overlap —
-                          speaker 0 gets the first eligible voice, speaker 1
-                          gets the second, etc.
+                          as a secondary tiebreaker in the zero-score branch
+                          when multiple candidates share the same usage count.
+        usage_counts:     Dict of voice_id → total times used globally
+                          (from VoiceRegistry.usage_counts()). Voices not
+                          present in the dict are treated as count 0. When
+                          None, falls back to catalog insertion order
+                          (legacy behaviour — ``am_adam`` for first male).
 
     Returns:
         The best-matching voice_id string, or None if no voices
@@ -754,9 +761,23 @@ def match_voice(
         # At least one tag matched — return the highest-scoring candidate.
         best = max(candidates, key=_score)
     else:
-        # No tag overlap — use position to distribute voices across speakers
-        # so a cast with empty hints doesn't all get the same voice.
-        best = candidates[position % len(candidates)]
+        # No tag overlap — prefer least-used voices so the fallback
+        # distributes across the full pool instead of pinning to index 0.
+        # Secondary tiebreaker: position, so a same-hint cast still gets
+        # variety even on a fresh database (all counts == 0).
+        counts = usage_counts or {}
+
+        def _fallback_key(desc: VoiceDescriptor) -> tuple[int, int]:
+            # (usage_count, catalog_position) — sort ascending
+            return (counts.get(desc.voice_id, 0), candidates.index(desc))
+
+        sorted_candidates = sorted(candidates, key=_fallback_key)
+        # Group candidates that share the minimum usage count so position
+        # rotates only within truly tied entries.
+        min_count = _fallback_key(sorted_candidates[0])[0]
+        tied = [c for c in sorted_candidates
+                if counts.get(c.voice_id, 0) == min_count]
+        best = tied[position % len(tied)]
     return best.voice_id
 
 
@@ -764,6 +785,7 @@ def match_voices_for_cast(
     cast: dict[str, dict],
     available_voices: list[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
+    usage_counts: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Assign unique voices to an entire cast, best-fit first.
 
@@ -781,6 +803,10 @@ def match_voices_for_cast(
         available_voices: Only consider these voice IDs. If None,
                           uses the full catalog.
         catalog:          Voice catalog dict. Defaults to KOKORO_VOICE_CATALOG.
+        usage_counts:     Dict of voice_id → total times used globally
+                          (from VoiceRegistry.usage_counts()). Passed through
+                          to each match_voice() call so the zero-score fallback
+                          prefers least-used voices. None = legacy behaviour.
 
     Returns:
         Dict mapping speaker_name → voice_id for every speaker in cast.
@@ -807,6 +833,7 @@ def match_voices_for_cast(
             exclude=used,
             catalog=catalog,
             position=position,
+            usage_counts=usage_counts,
         )
 
         if voice_id is None:
@@ -819,6 +846,7 @@ def match_voices_for_cast(
                 exclude=set(),
                 catalog=catalog,
                 position=position,
+                usage_counts=usage_counts,
             )
 
         if voice_id:

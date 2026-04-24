@@ -80,6 +80,7 @@ class MergedNewsShow:
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
     language: str = "en"
+    series_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,4 +98,5 @@ class MergedNewsShow:
             "voice_casting": self.voice_casting,
             "voice_hints": self.voice_hints,
             "tts_styles": self.tts_styles,
+            "series_id": self.series_id,
         }

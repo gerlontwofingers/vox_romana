@@ -154,7 +154,7 @@ class DebateConductorResult(ConductorResult):
     debate_events: list[DebateEvent] = field(default_factory=list)
     debate_id: str = ""
 
-    def to_merged_debate(self) -> MergedDebate:
+    def to_merged_debate(self, series_id: str | None = None) -> MergedDebate:
         """Convert this result into a MergedDebate for serialization.
 
         This bridges the conductor's output to the existing pipeline.
@@ -251,6 +251,7 @@ class DebateConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            series_id=series_id,
         )
 
 

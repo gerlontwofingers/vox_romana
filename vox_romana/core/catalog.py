@@ -193,6 +193,29 @@ class Catalog:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_wpm_type ON wpm_stats(content_type);
+
+                -- Voice registry: lock a character name to a specific voice_id
+                -- within a series/show so the same character always sounds the same.
+                -- series_key is: series_id if set, else show_name, else "global".
+                CREATE TABLE IF NOT EXISTS character_voices (
+                    character_name TEXT NOT NULL,
+                    series_key     TEXT NOT NULL,
+                    voice_id       TEXT NOT NULL,
+                    first_seen     TEXT NOT NULL,
+                    last_seen      TEXT NOT NULL,
+                    PRIMARY KEY (character_name, series_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_charvoices_series
+                    ON character_voices(series_key);
+
+                -- Global usage counter per voice_id so the fallback picker
+                -- can prefer less-used voices and avoid over-repeating any one.
+                CREATE TABLE IF NOT EXISTS voice_usage (
+                    voice_id    TEXT PRIMARY KEY,
+                    usage_count INTEGER NOT NULL DEFAULT 0,
+                    last_used   TEXT NOT NULL
+                );
             """)
 
             # FTS5 virtual table for full-text search across runs.

@@ -141,6 +141,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Suppress progress output.",
     )
 
+    # ── Series / voice registry ───────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, the "
+            "voice registry locks each character to the same voice "
+            "across all episodes that share this series ID."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -184,7 +197,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error creating {args.engine} engine: {e}", file=sys.stderr)
         sys.exit(1)
 
-    renderer = TTSRenderer(engine, voice_map=voice_map)
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception:
+        pass
+
+    renderer = TTSRenderer(engine, voice_map=voice_map, registry=registry, series_key=series_key)
 
     if not args.quiet:
         print(f"  Input:  {json_path}")

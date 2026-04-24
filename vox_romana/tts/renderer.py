@@ -222,6 +222,8 @@ class TTSRenderer:
         *,
         voice_map: dict[str, VoiceConfig] | None = None,
         strip_directions: bool = False,
+        registry: "VoiceRegistry | None" = None,
+        series_key: str | None = None,
     ) -> None:
         """Initialize the renderer.
 
@@ -235,6 +237,16 @@ class TTSRenderer:
                               utterance's text before synthesis.  The original
                               JSON is never modified — only the text sent to the
                               TTS engine is cleaned.
+            registry:         Optional VoiceRegistry for cross-episode character
+                              consistency and global voice-usage tracking. When
+                              supplied, recurring characters in the same series
+                              are locked to the same voice and the gender-only
+                              fallback prefers least-used voices. When None,
+                              registry features are disabled (test-friendly).
+            series_key:       Override for the series identifier used for
+                              registry lookups. When None, ``render()`` derives
+                              one from the input JSON (series_id → show_name →
+                              "global").
 
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
@@ -243,6 +255,8 @@ class TTSRenderer:
         self._engine = engine
         self._voice_map = voice_map or {}
         self._strip_directions = strip_directions
+        self._registry = registry
+        self._series_key_override = series_key
 
     def render(
         self,
@@ -286,8 +300,20 @@ class TTSRenderer:
         tts_styles = debate_data.get("tts_styles", {})
         _title = debate_data.get("title", "")
         _seed = sum(ord(c) for c in _title[:32]) if _title else 0
+
+        # Resolve the series key for registry lookups. Priority:
+        # explicit constructor override > JSON series_id > JSON show_name > "global".
+        series_key = (
+            self._series_key_override
+            or debate_data.get("series_id")
+            or debate_data.get("show_name")
+            or "global"
+        )
+
         voice_map = self._build_voice_map(
-            speaker_names, voice_casting, voice_hints, language=language, seed=_seed,
+            speaker_names, voice_casting, voice_hints,
+            language=language, seed=_seed,
+            registry=self._registry, series_key=series_key,
         )
 
         if not quiet:
@@ -467,17 +493,26 @@ class TTSRenderer:
         *,
         language: str = "en",
         seed: int = 0,
+        registry: "VoiceRegistry | None" = None,
+        series_key: str | None = None,
     ) -> dict[str, str]:
         """Build a speaker→voice_id mapping.
 
         Priority order:
         1. Manual voice_map (passed to TTSRenderer constructor).
-        2. Catalog-matched voice using voice_hints metadata. If any
+        2. Registry lookup — lock recurring characters to their previously
+           assigned voice within ``series_key`` (when registry is provided).
+        3. Catalog-matched voice using voice_hints metadata. If any
            speaker has a voice_hint, the catalog's ``match_voices_for_cast``
            assigns distinct voices based on hint tag overlap.
-        3. Gender-aware assignment using voice_casting metadata from the
-           show JSON (maps speaker names to "male"/"female").
-        4. Round-robin through available voices (fallback).
+        4. Gender-aware assignment using voice_casting metadata from the
+           show JSON (maps speaker names to "male"/"female"), preferring
+           least-used voices when a registry is provided.
+        5. Round-robin through available voices (fallback).
+
+        After assignment, every newly chosen voice is written back to the
+        registry (if any) so future renders honor the lock and so the
+        usage-count-based fallback distributes work across the full pool.
 
         Args:
             speaker_names:  Speaker names in order of first appearance.
@@ -547,6 +582,31 @@ class TTSRenderer:
             if name in self._voice_map:
                 result[name] = self._voice_map[name].voice_id
 
+        # ── Registry lookup: lock recurring characters ──────────────
+        # If we have a registry and the previously assigned voice is still
+        # in the available pool, reuse it so the same character keeps the
+        # same voice across episodes within the series.
+        if registry is not None and series_key:
+            available_set = set(available)
+            for name in speaker_names:
+                if name in result:
+                    continue
+                try:
+                    locked = registry.resolve(name, series_key)
+                except Exception:
+                    locked = None
+                if locked and locked in available_set:
+                    result[name] = locked
+
+        # Snapshot global usage counts once — used by both the catalog
+        # matcher and the gender-only fallback to prefer least-used voices.
+        usage_counts: dict[str, int] = {}
+        if registry is not None:
+            try:
+                usage_counts = registry.usage_counts()
+            except Exception:
+                usage_counts = {}
+
         # ── Catalog matching (when any speaker has a voice_hint) ──────
         # Build a cast dict for unassigned speakers that have hints.
         remaining = [n for n in speaker_names if n not in result]
@@ -562,11 +622,18 @@ class TTSRenderer:
                     info["voice_hint"] = hints[name]
                 cast_info[name] = info
 
-            # Catalog assigns unique voices for the entire cast.
-            catalog_map = match_voices_for_cast(cast_info, catalog=active_catalog)
+            # Catalog assigns unique voices for the entire cast. Voices
+            # already locked by the registry must not be reassigned.
+            already_used = set(result.values())
+            catalog_map = match_voices_for_cast(
+                cast_info,
+                catalog=active_catalog,
+                usage_counts=usage_counts,
+            )
             for name, voice_id in catalog_map.items():
-                if voice_id and name not in result:
+                if voice_id and name not in result and voice_id not in already_used:
                     result[name] = voice_id
+                    already_used.add(voice_id)
 
         # ── Gender-only fallback for any still-unassigned speakers ────
         # For Piper voices, the naming convention is:
@@ -607,6 +674,17 @@ class TTSRenderer:
             # Kokoro naming convention: af_* / bf_* = female; am_* / bm_* = male
             male_voices = [v for v in available if v[:2] in ("am", "bm")]
             female_voices = [v for v in available if v[:2] in ("af", "bf")]
+
+        # When usage counts are available, sort each gender pool by
+        # ascending usage so the next unassigned speaker draws from the
+        # least-used voices first. Python's sort is stable, so voices
+        # with equal counts keep their original (catalog) order — this
+        # makes behavior deterministic and reproducible.
+        if usage_counts:
+            male_voices = sorted(male_voices, key=lambda v: usage_counts.get(v, 0))
+            female_voices = sorted(female_voices, key=lambda v: usage_counts.get(v, 0))
+            available = sorted(available, key=lambda v: usage_counts.get(v, 0))
+
         male_idx = seed % len(male_voices) if male_voices else 0
         female_idx = seed % len(female_voices) if female_voices else 0
         fallback_idx = seed % len(available) if available else 0
@@ -631,6 +709,22 @@ class TTSRenderer:
                 fallback_idx += 1
             else:
                 result[name] = "default"
+
+        # ── Persist assignments to the registry ──────────────────
+        # register() is idempotent: it locks the voice on first sight and
+        # only refreshes last_seen on subsequent calls (never overwrites).
+        # record_usage() always increments — the next render's gender
+        # fallback will see the bumped count and prefer other voices.
+        if registry is not None and series_key:
+            for name, voice_id in result.items():
+                if not voice_id or voice_id == "default":
+                    continue
+                try:
+                    registry.register(name, voice_id, series_key)
+                    registry.record_usage(voice_id)
+                except Exception:
+                    # Registry failures must never break a render.
+                    pass
 
         return result
 
