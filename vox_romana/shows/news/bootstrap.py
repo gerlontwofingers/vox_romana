@@ -193,14 +193,14 @@ class NewsBootstrap:
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
             # Reuse the debate researcher — it works for any topic.
-            from ..debates.researcher import DebateResearcher
+            from ..debates.researcher import DebateResearcher, NEWS_QUERY_FORMULATOR_PROMPT
             effective_provider = build_research_provider(search_provider, memory)
             if effective_provider is None:
                 # No search provider AND no memory → LLM-only research
                 # (DeepSeek compiles from training knowledge).
-                researcher = DebateResearcher(self._client)
+                researcher = DebateResearcher(self._client, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
             else:
-                researcher = DebateResearcher(self._client, effective_provider)
+                researcher = DebateResearcher(self._client, effective_provider, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────

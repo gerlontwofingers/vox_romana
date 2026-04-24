@@ -107,6 +107,30 @@ EXAMPLE OUTPUT:
   ]
 """
 
+NEWS_QUERY_FORMULATOR_PROMPT = """\
+You are a research assistant preparing background material for a show.
+Given a show brief, generate 3-5 targeted search queries that will find
+the best factual background information for the topics covered.
+
+RULES:
+- Focus on: current events, statistics, named programs/policies, expert opinions.
+- Keep queries concise and search-engine-friendly (no full sentences).
+- Cover the main topics mentioned in the brief.
+- ALWAYS respond with a JSON array of strings. Nothing else.
+
+EXAMPLE INPUT:
+  "Local news broadcast covering housing costs, public transit, and city budget"
+
+EXAMPLE OUTPUT:
+  [
+    "local housing costs affordability data 2024",
+    "public transit ridership funding statistics",
+    "city budget allocations infrastructure 2024",
+    "affordable housing policy programs local government",
+    "transit expansion impact commuters"
+  ]
+"""
+
 COMPILER_PROMPT = """\
 You are a research compiler. You've been given search results about a debate
 topic. Your job is to extract and organize the KEY FACTS into a structured
@@ -182,18 +206,25 @@ class DebateResearcher:
         self,
         client: DeepSeekClient,
         search_provider: BaseSearchProvider | None = None,
+        query_formulator_prompt: str | None = None,
     ) -> None:
         """Initialize the researcher.
 
         Args:
-            client:          DeepSeekClient for LLM calls.
-            search_provider: Any search provider implementing BaseSearchProvider.
-                             In production: GoogleSearchProvider().
-                             In tests: a mock.
-                             If None, run() falls back to LLM-only research.
+            client:                   DeepSeekClient for LLM calls.
+            search_provider:          Any search provider implementing BaseSearchProvider.
+                                      In production: GoogleSearchProvider().
+                                      In tests: a mock.
+                                      If None, run() falls back to LLM-only research.
+            query_formulator_prompt:  Override the system prompt used for query
+                                      formulation. Defaults to the debate-specific
+                                      QUERY_FORMULATOR_PROMPT. Pass
+                                      NEWS_QUERY_FORMULATOR_PROMPT when using this
+                                      researcher for a news show.
         """
         self._client = client
         self._search = search_provider
+        self._query_formulator_prompt = query_formulator_prompt or QUERY_FORMULATOR_PROMPT
 
     def run(self, brief: str) -> str:
         """Research a topic and return structured reference material.
@@ -259,7 +290,7 @@ class DebateResearcher:
         """
         raw = self._client.chat(
             messages=[
-                {"role": "system", "content": QUERY_FORMULATOR_PROMPT},
+                {"role": "system", "content": self._query_formulator_prompt},
                 {"role": "user", "content": brief},
             ],
             temperature=0,

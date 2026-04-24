@@ -28,6 +28,8 @@ from vox_romana.shows.debates.researcher import (
     DebateResearcher,
     DEFAULT_RESULTS_PER_QUERY,
     MAX_QUERIES,
+    NEWS_QUERY_FORMULATOR_PROMPT,
+    QUERY_FORMULATOR_PROMPT,
 )
 
 
@@ -219,6 +221,46 @@ class TestFormulateQueries:
         assert "cats vs dogs" in user_msg["content"]
 
         assert queries == ["q1", "q2", "q3"]
+
+    def test_default_prompt_is_debate_specific(self):
+        """DebateResearcher() with no prompt kwarg uses the debate prompt."""
+        mock_client = Mock()
+        mock_client.chat.return_value = '["q1"]'
+
+        researcher = DebateResearcher(mock_client, MockSearchProvider())
+        researcher.formulate_queries("any brief")
+
+        call_args = mock_client.chat.call_args
+        messages = call_args[1].get("messages") or call_args[0][0]
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert system_msg["content"] == QUERY_FORMULATOR_PROMPT
+
+    def test_injectable_prompt_is_used(self):
+        """Passing query_formulator_prompt overrides the default."""
+        mock_client = Mock()
+        mock_client.chat.return_value = '["local housing costs", "transit funding"]'
+
+        researcher = DebateResearcher(
+            mock_client,
+            MockSearchProvider(),
+            query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT,
+        )
+        queries = researcher.formulate_queries("local news show brief")
+
+        call_args = mock_client.chat.call_args
+        messages = call_args[1].get("messages") or call_args[0][0]
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert system_msg["content"] == NEWS_QUERY_FORMULATOR_PROMPT
+        assert queries == ["local housing costs", "transit funding"]
+
+    def test_news_prompt_differs_from_debate_prompt(self):
+        """The two prompts must be distinct strings."""
+        assert NEWS_QUERY_FORMULATOR_PROMPT != QUERY_FORMULATOR_PROMPT
+
+    def test_none_prompt_falls_back_to_debate_default(self):
+        """Passing query_formulator_prompt=None still uses the debate default."""
+        researcher = DebateResearcher(Mock(), query_formulator_prompt=None)
+        assert researcher._query_formulator_prompt == QUERY_FORMULATOR_PROMPT
 
 
 # ═══════════════════════════════════════════════════════════════════════════
