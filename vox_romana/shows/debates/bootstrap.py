@@ -231,10 +231,12 @@ class DebateBootstrap:
                 topic=config.topic or brief,
                 reference_material=reference_material,
             )
-            # We only need the voice_fingerprint from the profile. The host
+            # Copy voice casting fields from the profile. The host
             # doesn't have "key positions" or "factual claims" — they narrate,
             # they don't argue.
             config.show_host.voice_fingerprint = host_profile.voice_fingerprint
+            config.show_host.voice_hint = host_profile.voice_hint
+            config.show_host.voice_gender = host_profile.voice_gender
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 3: DIRECTOR BRIEF

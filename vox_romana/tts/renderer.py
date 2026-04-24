@@ -284,8 +284,10 @@ class TTSRenderer:
         voice_casting = debate_data.get("voice_casting", {})
         voice_hints = debate_data.get("voice_hints", {})
         tts_styles = debate_data.get("tts_styles", {})
+        _title = debate_data.get("title", "")
+        _seed = sum(ord(c) for c in _title[:32]) if _title else 0
         voice_map = self._build_voice_map(
-            speaker_names, voice_casting, voice_hints, language=language,
+            speaker_names, voice_casting, voice_hints, language=language, seed=_seed,
         )
 
         if not quiet:
@@ -464,6 +466,7 @@ class TTSRenderer:
         voice_hints: dict[str, str] | None = None,
         *,
         language: str = "en",
+        seed: int = 0,
     ) -> dict[str, str]:
         """Build a speaker→voice_id mapping.
 
@@ -604,9 +607,9 @@ class TTSRenderer:
             # Kokoro naming convention: af_* / bf_* = female; am_* / bm_* = male
             male_voices = [v for v in available if v[:2] in ("am", "bm")]
             female_voices = [v for v in available if v[:2] in ("af", "bf")]
-        male_idx = 0
-        female_idx = 0
-        fallback_idx = 0
+        male_idx = seed % len(male_voices) if male_voices else 0
+        female_idx = seed % len(female_voices) if female_voices else 0
+        fallback_idx = seed % len(available) if available else 0
 
         for name in speaker_names:
             if name in result:

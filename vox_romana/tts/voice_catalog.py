@@ -683,17 +683,16 @@ def match_voice(
     available_voices: list[str] | None = None,
     exclude: set[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
+    position: int = 0,
 ) -> str | None:
     """Find the best voice for a character description.
 
     Scores each voice in the catalog by counting how many of its tags
-    appear in the hint string. Higher score = better fit. Ties are
-    broken by catalog insertion order (which is curated: best defaults
-    come first within each group).
-
-    If no voice scores above zero, returns the first eligible voice
-    (gender-filtered, not excluded). This means the function always
-    returns something if there's any eligible voice at all.
+    appear in the hint string. Higher score = better fit. Ties among
+    voices with the same non-zero score are broken by catalog insertion
+    order. When ALL candidates score zero (no tag overlap), the
+    ``position`` index is used to pick a different voice per speaker so
+    that identical-hint casts still get variety.
 
     Args:
         hint:             Natural-language character voice description.
@@ -707,6 +706,10 @@ def match_voice(
         exclude:          Voice IDs already assigned — skip these to
                           ensure every character gets a unique voice.
         catalog:          Voice catalog dict. Defaults to KOKORO_VOICE_CATALOG.
+        position:         0-based index of this speaker in the cast. Used
+                          as a tie-breaker when hint produces no tag overlap —
+                          speaker 0 gets the first eligible voice, speaker 1
+                          gets the second, etc.
 
     Returns:
         The best-matching voice_id string, or None if no voices
@@ -745,7 +748,15 @@ def match_voice(
     def _score(desc: VoiceDescriptor) -> int:
         return sum(1 for tag in desc.tags if tag in hint_lower)
 
-    best = max(candidates, key=_score)
+    scores = [_score(c) for c in candidates]
+    best_score = max(scores)
+    if best_score > 0:
+        # At least one tag matched — return the highest-scoring candidate.
+        best = max(candidates, key=_score)
+    else:
+        # No tag overlap — use position to distribute voices across speakers
+        # so a cast with empty hints doesn't all get the same voice.
+        best = candidates[position % len(candidates)]
     return best.voice_id
 
 
@@ -785,7 +796,7 @@ def match_voices_for_cast(
     assigned: dict[str, str] = {}
     used: set[str] = set()
 
-    for speaker, info in cast.items():
+    for position, (speaker, info) in enumerate(cast.items()):
         gender = info.get("gender")
         hint = info.get("voice_hint", "")
 
@@ -795,6 +806,7 @@ def match_voices_for_cast(
             available_voices=available_voices,
             exclude=used,
             catalog=catalog,
+            position=position,
         )
 
         if voice_id is None:
@@ -806,6 +818,7 @@ def match_voices_for_cast(
                 available_voices=available_voices,
                 exclude=set(),
                 catalog=catalog,
+                position=position,
             )
 
         if voice_id:

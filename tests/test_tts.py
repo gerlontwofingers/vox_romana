@@ -347,7 +347,7 @@ def make_debate_data(
         events.append(event)
 
     return {
-        "title": "Test Debate",
+        "title": "",
         "participants": [
             {"name": s, "side": "pro" if i == 0 else "con"}
             for i, s in enumerate(speakers)

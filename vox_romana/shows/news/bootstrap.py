@@ -128,8 +128,8 @@ RULES:
 # ═══════════════════════════════════════════════════════════════════════════
 
 ANCHOR_PROFILER_PROMPT = """\
-You are creating a voice profile for a news anchor. Given their name and style,
-produce a detailed voice fingerprint — HOW they talk, not WHAT they say.
+You are creating a voice profile for a news anchor or show host. Given their
+name and style, produce a voice profile — how they SOUND and how they TALK.
 
 Anchor name: {name}
 Anchor style: {style}
@@ -138,6 +138,12 @@ Broadcast tone: {tone}
 
 Respond with ONLY a JSON object:
 {{
+  "voice_gender": "string — 'male' or 'female'. The vocal gender of this \
+person for TTS voice assignment. Base this on their name and role.",
+  "voice_hint": "string — a short TTS casting note describing how this person \
+SOUNDS. Accent, age range, energy, tone texture. Examples: 'warm authoritative \
+baritone, 50s, network news cadence', 'clear alto, 30s, steady and precise', \
+'bright tenor, 40s, BBC polish'.",
   "voice_fingerprint": "string — 2-3 sentences describing their vocal delivery, \
 cadence, verbal habits, and on-air personality. Be specific and distinctive."
 }}
@@ -216,7 +222,7 @@ class NewsBootstrap:
 
         # ── Stage 2.5: Show host profiling ───────────────────────────
         if config.show_host and config.show_host.name:
-            config.show_host.voice_fingerprint = self._profile_host(
+            self._profile_host(
                 config.show_host,
                 topic=config.topic or brief,
             )
@@ -362,13 +368,17 @@ class NewsBootstrap:
         try:
             data = json.loads(cleaned)
             anchor.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_hint"):
+                anchor.voice_hint = data["voice_hint"]
+            if data.get("voice_gender"):
+                anchor.voice_gender = data["voice_gender"]
         except (json.JSONDecodeError, TypeError):
             anchor.voice_fingerprint = "(default authoritative news delivery)"
 
         return anchor
 
-    def _profile_host(self, host: ShowHostConfig, *, topic: str) -> str:
-        """Give the show host a voice_fingerprint via LLM."""
+    def _profile_host(self, host: ShowHostConfig, *, topic: str) -> None:
+        """Enrich the show host with voice_fingerprint, voice_hint, and voice_gender via LLM."""
         prompt = ANCHOR_PROFILER_PROMPT.format(
             name=host.name,
             style=host.style or "polished and engaging",
@@ -391,9 +401,13 @@ class NewsBootstrap:
 
         try:
             data = json.loads(cleaned)
-            return data.get("voice_fingerprint", "")
+            host.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_hint"):
+                host.voice_hint = data["voice_hint"]
+            if data.get("voice_gender"):
+                host.voice_gender = data["voice_gender"]
         except (json.JSONDecodeError, TypeError):
-            return "(warm, polished broadcast host delivery)"
+            host.voice_fingerprint = "(warm, polished broadcast host delivery)"
 
     def _run_director(self, config: NewsConfig) -> DirectorBrief:
         """Call the Director LLM to plan the broadcast arc."""
