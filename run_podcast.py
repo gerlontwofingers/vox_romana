@@ -122,6 +122,7 @@ from vox_romana import (
     PodcastConductor,
     DeepSeekClient,
 )
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.podcast.serializer import PodcastSerializer
 
 
@@ -158,8 +159,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Base output directory (default: output/). Files go to text/podcasts/ under this.",
+        default=_OUTPUT_DIR,
+        help=f"Base output directory (default: {_OUTPUT_DIR}). Files go to text/podcasts/ under this.",
     )
 
     # ── Research ─────────────────────────────────────────────────────
@@ -339,11 +340,11 @@ def main() -> None:
     merged = result.to_merged_podcast()
     serializer = PodcastSerializer()
 
-    # Build filename: {prompt_stem}_{tag}_{timestamp}.json
+    # Build filename: {classification}_{prompt_stem}_{tag}_{timestamp}.json
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
     output_path = output_dir / filename
 
     serializer.save(merged, output_path)

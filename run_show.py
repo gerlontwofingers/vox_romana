@@ -122,6 +122,7 @@ load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.core.router import ShowRouter
 
 
@@ -188,8 +189,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Directory to save the output JSON (default: output/).",
+        default=_OUTPUT_DIR,
+        help=f"Directory to save the output JSON (default: {_OUTPUT_DIR}).",
     )
 
     parser.add_argument(
@@ -634,7 +635,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"debate_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save_merged(merged, output_path)
@@ -733,7 +734,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"news_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)
@@ -837,11 +838,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
-    # Podcasts go to output/text/podcasts/ alongside debates/ and news/.
-    podcast_dir = args.output / "text" / "podcasts"
-    podcast_dir.mkdir(parents=True, exist_ok=True)
-    output_path = podcast_dir / filename
+    filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
+    output_path = args.output / filename
 
     serializer.save(merged, output_path)
     return output_path

@@ -1,0 +1,61 @@
+# vox_romana.example.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+# COPY THIS FILE → vox_romana.yaml (in this same folder, next to run.py)
+# then edit the values below to point to wherever you want your files to live.
+#
+# vox_romana.yaml is in .gitignore — your local paths won't be committed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# WHERE ALL OUTPUT AND DATA LIVES
+# ──────────────────────────────────────────────────────────────────────────────
+# All generated files (show JSON, audio, catalog DB, memory index) go under
+# this single directory.  Subfolders are created automatically.
+#
+# Leave commented out to use the default: ~/.vox_romana/
+#
+# Examples:
+#   data_dir: ~/vox_romana_data
+#   data_dir: /Volumes/BigDisk/vox_romana
+#   data_dir: /Users/yourname/Desktop/vox_romana_output
+
+# data_dir: ~/vox_romana_data
+
+
+# PIPER VOICE MODELS (optional override)
+# ──────────────────────────────────────────────────────────────────────────────
+# Where your downloaded Piper TTS voice .onnx files live.
+# By default this is data_dir/piper-voices/.
+# Only set this if your voices are stored somewhere else entirely.
+#
+# Example:
+#   piper_voices_dir: /Volumes/BigDisk/piper-voices
+
+# piper_voices_dir: ~/piper-voices
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FOLDER LAYOUT UNDER data_dir
+# ──────────────────────────────────────────────────────────────────────────────
+# Once you set data_dir, your files will be organised like this:
+#
+#   data_dir/
+#     output/
+#       text/
+#         debates/          ← generated show JSON files (debates)
+#         news/             ← generated show JSON files (news)
+#         podcasts/         ← generated show JSON files (podcasts)
+#         analysis/         ← emotion flow HTML reports
+#         emotion_flow/     ← emotion flow pipeline output
+#       audio/
+#         debates/          ← rendered audio files (debates)
+#         news/             ← rendered audio files (news)
+#         podcasts/         ← rendered audio files (podcasts)
+#     vox_romana.db         ← show catalog (SQLite)
+#     piper-voices/         ← Piper TTS voice models
+#     memory/
+#       chroma/             ← vector search index
+#       documents/          ← ingested document chunks
+#       encoder/            ← fine-tuned embedding model
+#       lm/                 ← fine-tuned language model adapters
+#       corpus/             ← corpus files

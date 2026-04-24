@@ -30,6 +30,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -51,8 +53,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         "-o",
         metavar="DIR",
-        default="output/shows/emotion_flow/",
-        help="Output directory for config and show files. (default: output/shows/emotion_flow/)",
+        default=str(_OUTPUT_DIR / "shows" / "emotion_flow"),
+        help=f"Output directory for config and show files. (default: {_OUTPUT_DIR / 'shows' / 'emotion_flow'})",
     )
     parser.add_argument(
         "--n-segments",

@@ -71,6 +71,8 @@ import logging
 import sys
 from pathlib import Path
 
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -101,8 +103,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output",
         metavar="DIR",
         type=Path,
-        default=Path("output/emotion_flow"),
-        help="Output directory.  (default: output/emotion_flow/)",
+        default=_OUTPUT_DIR / "emotion_flow",
+        help=f"Output directory.  (default: {_OUTPUT_DIR / 'emotion_flow'})",
     )
     p.add_argument(
         "--seed",

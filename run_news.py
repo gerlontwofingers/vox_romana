@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.news.bootstrap import NewsBootstrap
 from vox_romana.shows.news.conductor import NewsConductor
 from vox_romana.shows.news.serializer import NewsSerializer
@@ -56,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Directory to save the output JSON (default: output/)",
+        default=_OUTPUT_DIR,
+        help=f"Directory to save the output JSON (default: {_OUTPUT_DIR})",
     )
 
     parser.add_argument(
@@ -206,7 +207,7 @@ def main() -> None:
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"news_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)

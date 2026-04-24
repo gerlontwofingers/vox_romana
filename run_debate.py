@@ -118,6 +118,7 @@ from vox_romana import (
     DebateConductor,
     DeepSeekClient,
 )
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.debates.serializer import DebateSerializer
 
 
@@ -159,8 +160,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Directory to save the output JSON (default: output/)",
+        default=_OUTPUT_DIR,
+        help=f"Directory to save the output JSON (default: {_OUTPUT_DIR})",
     )
 
     # ── Research ─────────────────────────────────────────────────────
@@ -388,12 +389,12 @@ def main() -> None:
 
     # Build a filename from the prompt file name + tag + timestamp.
     # Examples:
-    #   ubi_debate_20260405_143022.json           (no tag)
-    #   ubi_debate_batch_01_20260405_143022.json  (with --tag batch_01)
+    #   debate_ubi_debate_20260405_143022.json           (no tag)
+    #   debate_ubi_debate_batch_01_20260405_143022.json  (with --tag batch_01)
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"debate_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save_merged(merged, output_path)

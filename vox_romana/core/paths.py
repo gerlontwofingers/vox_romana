@@ -3,14 +3,16 @@
 All runtime data (catalog DB, memory index, audio output, TTS models) lives
 under a single configurable root.  Resolution order:
 
-1. ``VOX_ROMANA_DATA_DIR`` environment variable
-2. ``data_dir`` key in ``~/.vox_romana/config.yaml``
-3. Default: ``~/.vox_romana/``
+1. ``VOX_ROMANA_DATA_DIR`` environment variable  (highest priority)
+2. ``vox_romana.yaml`` in the project root  (copy from vox_romana.example.yaml)
+3. ``~/.vox_romana/config.yaml``  (user-level, backward compatible)
+4. Default: ``~/.vox_romana/``
 
-To customise, create ``~/.vox_romana/config.yaml``::
+To customise, copy ``vox_romana.example.yaml`` → ``vox_romana.yaml`` in the
+project root (next to ``run.py``) and edit the values there::
 
     data_dir: /Volumes/BigDisk/vox_romana_data
-    # Optional — only needed if Piper models live elsewhere:
+    # Optional — only needed if Piper voices live elsewhere:
     # piper_voices_dir: /Volumes/BigDisk/piper-voices
 
 Every module that previously hard-coded a ``data/…`` path now imports the
@@ -22,17 +24,32 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Project root = the directory containing this file's package root (3 levels up:
+# paths.py → core/ → vox_romana/ → repo root).
+_PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+
 
 def _load_config() -> dict:
-    """Load ~/.vox_romana/config.yaml if it exists, else return empty dict."""
-    config_path = Path.home() / ".vox_romana" / "config.yaml"
-    if config_path.exists():
-        try:
-            import yaml  # pyyaml
-            with config_path.open() as fh:
-                return yaml.safe_load(fh) or {}
-        except Exception:
-            pass
+    """Load config from project-root yaml, then user-level yaml, else empty dict.
+
+    Resolution order:
+        1. vox_romana.yaml  (project root — copy from vox_romana.example.yaml)
+        2. ~/.vox_romana/config.yaml  (user-level, backward compatible)
+    """
+    candidates = [
+        _PROJECT_ROOT / "vox_romana.yaml",
+        Path.home() / ".vox_romana" / "config.yaml",
+    ]
+    for config_path in candidates:
+        if config_path.exists():
+            try:
+                import yaml  # pyyaml
+                with config_path.open() as fh:
+                    result = yaml.safe_load(fh) or {}
+                if result:
+                    return result
+            except Exception:
+                pass
     return {}
 
 

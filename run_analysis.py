@@ -37,6 +37,8 @@ import logging
 import sys
 from pathlib import Path
 
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
@@ -76,8 +78,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--output-dir",
         metavar="DIR",
-        default="output/text/analysis",
-        help="Directory for the HTML report (default: output/text/analysis/).",
+        default=str(_OUTPUT_DIR / "text" / "analysis"),
+        help=f"Directory for the HTML report (default: {_OUTPUT_DIR / 'text' / 'analysis'}).",
     )
     p.add_argument(
         "--n-topics",
