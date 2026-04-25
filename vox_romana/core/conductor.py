@@ -142,6 +142,10 @@ class BaseConductor(ABC):
         # segment's text can be measured for actual TTS duration. When a
         # BudgetTracker is also provided, those measurements feed back
         # into per-segment time targets for dynamic rebalancing.
+        # When either is None, that feature is simply skipped — the
+        # conductor generates content without TTS measurement or budget
+        # feedback. None is the normal state for CLI runs that don't pass
+        # --checkpoint-renderer / --budget-tracker.
         self._checkpoint_renderer = checkpoint_renderer
         self._budget_tracker = budget_tracker
 
@@ -596,6 +600,72 @@ class BaseConductor(ABC):
         NewsConductor, etc.) override this to scan the generated config
         for fabricated claims and abort or warn accordingly.
         """
+
+    # ------------------------------------------------------------------
+    # Bootstrap convenience
+    # ------------------------------------------------------------------
+
+    # Subclasses set this to their show-specific bootstrap class so that
+    # ``BaseConductor.from_brief`` can build a config without knowing the
+    # show type. Left as ``None`` on the base means subclasses must
+    # override ``from_brief`` directly (which is fine, but uncommon).
+    _bootstrap_cls: type | None = None
+
+    @classmethod
+    def from_brief(
+        cls,
+        brief: str,
+        *,
+        reference_material: str | None = None,
+        fact_check: str = "off",
+        overrides: dict | None = None,
+        client: DeepSeekClient | None = None,
+        api_key: str | None = None,
+        target_words: int | None = None,
+    ) -> "BaseConductor":
+        """Bootstrap a config from a brief and create a conductor.
+
+        Template implementation: each subclass sets ``_bootstrap_cls`` to
+        its show-specific bootstrap class, and the rest of the wiring —
+        sharing the LLM client between bootstrap and conductor, forwarding
+        ``overrides`` and (when supported) ``target_words`` — happens here.
+
+        Args:
+            brief:              Natural language description of the show.
+            reference_material: Factual source text to ground the output.
+            fact_check:         "off", "quick", or "thorough".
+            overrides:          Dict of config-field overrides (subclass-specific).
+            client:             Shared DeepSeekClient. One client is used for
+                                BOTH the bootstrap agents and the conductor.
+            api_key:            API key if ``client`` is not provided.
+            target_words:       Target word count for the show. Forwarded to
+                                bootstraps that accept it (news, podcast,
+                                audiobooks); ignored for debates.
+
+        Returns:
+            A subclass instance ready to ``run()``.
+        """
+        if cls._bootstrap_cls is None:
+            raise NotImplementedError(
+                f"{cls.__name__}._bootstrap_cls is not set. Override "
+                "from_brief() or set _bootstrap_cls on the subclass."
+            )
+        shared_client = client or DeepSeekClient(api_key=api_key)
+        bootstrap = cls._bootstrap_cls(client=shared_client)
+
+        kwargs: dict = {
+            "reference_material": reference_material,
+            "fact_check": fact_check,
+            "overrides": overrides,
+        }
+        # Only forward target_words when the bootstrap accepts it. Debates
+        # don't take a word target at the bootstrap stage; everyone else does.
+        from inspect import signature
+        if "target_words" in signature(bootstrap.from_brief).parameters:
+            kwargs["target_words"] = target_words
+
+        config = bootstrap.from_brief(brief, **kwargs)
+        return cls(config, client=shared_client)
 
     @abstractmethod
     def _build_agents(self) -> None:

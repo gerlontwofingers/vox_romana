@@ -99,7 +99,7 @@ from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
 from .bootstrap import DebateBootstrap
 from .config import DebateConfig, ParticipantProfile
-from .models import DebateChunk, DebateEvent, MergedDebate
+from .models import DebateEvent, DebateSegment, MergedDebate
 from .prompts import (
     CONTEXT_SUMMARY_PROMPT,
     DIRECTOR_CHECK_PROMPT,
@@ -175,8 +175,8 @@ class DebateConductorResult(ConductorResult):
 
         events_tuple = tuple(self.debate_events)
 
-        # Build a single DebateChunk wrapping all events.
-        chunk = DebateChunk(
+        # Build a single DebateSegment wrapping all events.
+        chunk = DebateSegment(
             template_id="conductor",
             debate_id=self.debate_id,
             title=config.title or "Untitled Debate",
@@ -283,6 +283,8 @@ class DebateConductor(BaseConductor):
         _llm_calls:         Counter for total LLM API calls made.
     """
 
+    _bootstrap_cls = DebateBootstrap
+
     def __init__(
         self,
         config: DebateConfig,
@@ -328,45 +330,35 @@ class DebateConductor(BaseConductor):
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
     ) -> DebateConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap a DebateConfig from a brief and create a conductor.
 
-        This is the "one-shot" convenience method: brief → config → conductor.
-
-        Args:
-            brief:              Natural language description of the debate.
-            reference_material: Factual source text to ground the output.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of DebateConfig field overrides.
-            client:             Shared DeepSeekClient (used for both bootstrap and conducting).
-            api_key:            API key if client is not provided.
-
-        Returns:
-            A DebateConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief` that fixes the
+        return type for callers and tooling.
         """
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = DebateBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface implementation
     # ═══════════════════════════════════════════════════════════════════
 
     def _build_agents(self) -> None:
-        """Build system prompts for each agent from the config.
+        """Build system prompts and AgentSessions for each participant.
 
-        We don't create persistent DeepSeekAgent objects because we're
-        managing context manually (sliding window + summary). Instead,
-        we build system prompts here and use the raw DeepSeekClient.chat()
-        for each turn, constructing the full message list fresh each time.
-
-        This gives us total control over what each agent sees, which is
-        critical for the context compression strategy.
+        Each participant and the moderator (if present) gets their own
+        :class:`~vox_romana.core.session.AgentSession` with an independent
+        sliding-window context. Sessions are created here rather than at
+        init time because the config may not have been fully populated when
+        the conductor was constructed (e.g. after ``from_brief()``).  We do
+        NOT build one monolithic "DebateAgent" object — the multi-agent
+        approach (one session per character) is what produces the distinct
+        voice and perspective separation that makes debates work.
         """
         config = self.config
         if not isinstance(config, DebateConfig):

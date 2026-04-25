@@ -57,6 +57,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
+from .bootstrap import NewsBootstrap
 from ...core.conductor import BaseConductor, ConductorResult
 from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
@@ -161,6 +162,8 @@ class NewsConductor(BaseConductor):
     deliveries and show host transitions for each story.
     """
 
+    _bootstrap_cls = NewsBootstrap
+
     def __init__(
         self,
         config: NewsConfig,
@@ -196,32 +199,21 @@ class NewsConductor(BaseConductor):
         overrides: dict | None = None,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        target_words: int | None = None,
     ) -> NewsConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap a NewsConfig from a brief and create a conductor.
 
-        Args:
-            brief:              Natural language description of the news show.
-            reference_material: Factual source text to ground the output.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of NewsConfig field overrides.
-            client:             Shared DeepSeekClient.
-            api_key:            API key if client is not provided.
-
-        Returns:
-            A NewsConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief`.
         """
-        # Import here to avoid circular imports.
-        from .bootstrap import NewsBootstrap
-
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = NewsBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
+            target_words=target_words,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface

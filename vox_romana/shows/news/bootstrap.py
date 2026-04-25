@@ -23,10 +23,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
 from ...core.search import BaseSearchProvider, build_research_provider
-from .config import AnchorConfig, DirectorBrief, NewsConfig, SegmentConfig
+from .config import AnchorConfig, NewsConfig, NewsDirectorBrief, SegmentConfig
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,7 +151,7 @@ cadence, verbal habits, and on-air personality. Be specific and distinctive."
 """
 
 
-class NewsBootstrap:
+class NewsBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain for news shows.
 
     Chain: brief → [Researcher] → Architect → Anchor profiler → Director → config
@@ -162,7 +163,7 @@ class NewsBootstrap:
         *,
         api_key: str | None = None,
     ) -> None:
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
 
     def from_brief(
         self,
@@ -231,9 +232,7 @@ class NewsBootstrap:
         config.director_brief = self._run_director(config)
 
         # ── Stage 4: Apply overrides ─────────────────────────────────
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        self._apply_overrides(config, overrides)
 
         return config
 
@@ -409,7 +408,7 @@ class NewsBootstrap:
         except (json.JSONDecodeError, TypeError):
             host.voice_fingerprint = "(warm, polished broadcast host delivery)"
 
-    def _run_director(self, config: NewsConfig) -> DirectorBrief:
+    def _run_director(self, config: NewsConfig) -> NewsDirectorBrief:
         """Call the Director LLM to plan the broadcast arc."""
         segment_list = "\n".join(
             f"  {i+1}. {s.headline} ({s.duration_hint}, {s.tone or config.tone or 'neutral'})"
@@ -433,8 +432,8 @@ class NewsBootstrap:
 
         return self._parse_director_response(raw)
 
-    def _parse_director_response(self, raw_json: str) -> DirectorBrief:
-        """Parse the Director's JSON into a DirectorBrief."""
+    def _parse_director_response(self, raw_json: str) -> NewsDirectorBrief:
+        """Parse the Director's JSON into a NewsDirectorBrief."""
         cleaned = raw_json.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -448,7 +447,7 @@ class NewsBootstrap:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        return DirectorBrief(
+        return NewsDirectorBrief(
             show_arc=data.get("show_arc", ""),
             mood_progression=data.get("mood_progression", []),
             segment_order_notes=data.get("segment_order_notes"),

@@ -132,6 +132,20 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def main() -> None:
+    """Run the news show generation pipeline.
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` auto-routes to the
+        news pipeline when the brief is news-shaped. ``run_news.py`` will
+        be removed in a future release.
+    """
+    import warnings
+    warnings.warn(
+        "run_news.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the news pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     if not args.prompt.exists():

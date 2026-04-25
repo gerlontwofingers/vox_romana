@@ -30,7 +30,7 @@ from .formatter import (
     detect_show_type,
     format_document,
 )
-from .renderer import render_txt, render_pdf, publish_document, PDF_AVAILABLE
+from .outputter import render_txt, render_pdf, publish_document, PDF_AVAILABLE
 
 __all__ = [
     "FormattedDocument",

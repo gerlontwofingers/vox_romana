@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 from ...core.client import DeepSeekClient
+from .bootstrap import AudiobookBootstrap
 from ...core.conductor import BaseConductor, ConductorResult
 from ...core.content_mode import ContentModeClassifier
 from ...core.fact_checker import FactChecker
@@ -148,6 +149,8 @@ class AudiobookConductor(BaseConductor):
     audiobook chapters build on each other — continuity is critical.
     """
 
+    _bootstrap_cls = AudiobookBootstrap
+
     def __init__(
         self,
         config: AudiobookConfig,
@@ -184,32 +187,19 @@ class AudiobookConductor(BaseConductor):
         api_key: str | None = None,
         target_words: int | None = None,
     ) -> AudiobookConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap an AudiobookConfig from a brief and create a conductor.
 
-        Args:
-            brief:              Natural language description of the audiobook.
-            reference_material: Source text, plot notes, or research.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of AudiobookConfig field overrides.
-            client:             Shared DeepSeekClient.
-            api_key:            API key if client is not provided.
-            target_words:       Target word count for the audiobook.
-
-        Returns:
-            An AudiobookConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief`.
         """
-        from .bootstrap import AudiobookBootstrap
-
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = AudiobookBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
             target_words=target_words,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface

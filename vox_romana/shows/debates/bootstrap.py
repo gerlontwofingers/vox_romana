@@ -62,6 +62,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.search import BaseSearchProvider, build_research_provider
 from .architect import DebateArchitect
@@ -71,7 +72,7 @@ from .profile_builder import DebateProfileBuilder
 from .researcher import DebateResearcher
 
 
-class DebateBootstrap:
+class DebateBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain.
 
     Takes a human's natural language brief and produces a fully populated
@@ -95,7 +96,7 @@ class DebateBootstrap:
         # All three agents share the same client. In production, this means
         # they share the same HTTP connection pool. In tests, you inject one
         # mock that handles all three stages.
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
         self._architect = DebateArchitect(self._client)
         self._profiler = DebateProfileBuilder(self._client)
         self._director = DebateDirector(self._client)
@@ -270,17 +271,11 @@ class DebateBootstrap:
         return config
 
     @staticmethod
-    def _apply_overrides(config: DebateConfig, overrides: dict) -> None:
-        """Apply user overrides to a DebateConfig.
+    def _apply_overrides(config: DebateConfig, overrides: dict | None) -> None:
+        """Apply user overrides to a DebateConfig (delegates to base).
 
-        Only sets attributes that actually exist on DebateConfig. Unknown
-        keys are silently skipped — they might be for future config fields,
-        and complaining about them would be annoying.
-
-        Args:
-            config:    The DebateConfig to modify (in place).
-            overrides: Dict of {field_name: value} to apply.
+        Kept for backward compatibility — callers/tests may import
+        :meth:`DebateBootstrap._apply_overrides` directly. The actual
+        implementation lives on :class:`BaseShowBootstrap`.
         """
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        BaseShowBootstrap._apply_overrides(config, overrides)

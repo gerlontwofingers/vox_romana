@@ -42,6 +42,27 @@ class JsonParseError(Exception):
         self.raw_response = raw_response
 
 
+def strip_json_fences(raw: str) -> str:
+    """Strip surrounding markdown code fences from an LLM response.
+
+    LLMs often wrap JSON output in ```json ... ``` (or just ``` ... ```) even
+    when explicitly told not to. This helper drops the opening fence (with
+    optional language tag) and the closing fence, returning the inner text
+    stripped of leading/trailing whitespace. Input without fences is returned
+    unchanged (apart from a top-level strip()).
+
+    This is the canonical fence-stripping helper for the codebase. Other
+    modules (fact_checker, editing.editor) should import this rather than
+    re-implement it.
+    """
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        # Drop the opening fence (and optional language tag) and closing fence.
+        cleaned = "\n".join(lines[1:-1]).strip()
+    return cleaned
+
+
 def parse_json_response(raw: str) -> dict:
     """Extract and parse a JSON object from an LLM response.
 
@@ -60,13 +81,7 @@ def parse_json_response(raw: str) -> dict:
     Raises:
         JsonParseError: If no valid JSON object can be extracted.
     """
-    cleaned = raw.strip()
-
-    # Strip markdown fences if present.
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        # Remove first and last lines (the fences).
-        cleaned = "\n".join(lines[1:-1]).strip()
+    cleaned = strip_json_fences(raw)
 
     # Try direct parse first (most common case).
     try:

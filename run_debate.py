@@ -266,7 +266,21 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def main() -> None:
-    """Run the full debate generation pipeline."""
+    """Run the full debate generation pipeline.
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` dispatches to the
+        correct show pipeline based on the brief (debate, news, podcast,
+        audiobook) using a single unified entry point. ``run_debate.py``
+        will be removed in a future release.
+    """
+    import warnings
+    warnings.warn(
+        "run_debate.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the debate pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     # ── Validate the prompt file exists ──────────────────────────────

@@ -1,5 +1,14 @@
 """TranslatorAgent — maps speech segments to English using Helsinki-NLP opus-mt models.
 
+.. note::
+   This module is **not** related to :mod:`vox_romana.translate`, which
+   performs full multilingual output for show scripts (e.g. publishing a
+   podcast episode in French or Spanish).  ``TranslatorAgent`` has a
+   single, narrow purpose: translate segments *to English only* so that
+   the downstream English-only emotion tagger (:class:`~.tagger.EmotionTagger`)
+   can process cross-lingual inputs.  It is an internal pre-processing
+   step within the ``emotion_flow`` pipeline.
+
 Performs:
   1. Language detection via langdetect.
   2. Forward translation to English (if source != English).

@@ -14,7 +14,7 @@ dominant_cycle
       middle.
 
 null_test.is_structured
-    → DirectorBrief.show_arc:
+    → NewsDirectorBrief.show_arc:
           True  → "structured arc — emotions follow a statistically
                    significant pattern; build toward the dominant theme."
           False → "exploratory survey — emotional transitions appear
@@ -44,7 +44,7 @@ from typing import Any
 import numpy as np
 
 from ..core.config import ShowHostConfig
-from ..shows.news.config import AnchorConfig, DirectorBrief, NewsConfig, SegmentConfig
+from ..shows.news.config import AnchorConfig, NewsConfig, NewsDirectorBrief, SegmentConfig
 from .models import (
     EMOTION_LABELS,
     EmotionFlowReport,
@@ -346,7 +346,7 @@ class EmotionFlowShowAdapter:
             voice_gender=None,
         )
 
-    def _build_director_brief(self, report: EmotionFlowReport) -> DirectorBrief:
+    def _build_director_brief(self, report: EmotionFlowReport) -> NewsDirectorBrief:
         is_structured = (
             report.null_test.is_structured
             if report.null_test is not None
@@ -374,7 +374,7 @@ class EmotionFlowShowAdapter:
             )
             mood_progression = ["curious", "measured", "reflective", "open"]
 
-        return DirectorBrief(
+        return NewsDirectorBrief(
             show_arc=show_arc,
             mood_progression=mood_progression,
             check_interval=2,

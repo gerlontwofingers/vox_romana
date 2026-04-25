@@ -1014,13 +1014,14 @@ class FactChecker:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _strip_fences(raw: str) -> str:
-    """Strip markdown code fences from an LLM response."""
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        # Drop the opening fence (and optional language tag) and closing fence.
-        cleaned = "\n".join(lines[1:-1]).strip()
-    return cleaned
+    """Strip markdown code fences from an LLM response.
+
+    Thin compatibility wrapper around :func:`json_retry.strip_json_fences`.
+    Kept as a private name so existing call sites in this module need no
+    changes; new code should import ``strip_json_fences`` directly.
+    """
+    from .json_retry import strip_json_fences
+    return strip_json_fences(raw)
 
 
 def _trim_prior_context(

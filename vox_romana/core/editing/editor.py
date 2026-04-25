@@ -211,10 +211,8 @@ class ChunkEditor:
         Same robust JSON extraction as the existing conductors —
         handles markdown fences, preamble text, and garbage gracefully.
         """
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]).strip()
+        from ..json_retry import strip_json_fences
+        cleaned = strip_json_fences(raw)
 
         start = cleaned.find("{")
         end = cleaned.rfind("}")

@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import json
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
 from ...core.search import BaseSearchProvider
 from .config import (
     AudiobookConfig,
     ChapterConfig,
-    DirectorBrief,
+    AudiobookDirectorBrief,
     NarratorConfig,
 )
 
@@ -141,7 +142,7 @@ cadence, verbal habits, and narrative personality. Be specific and distinctive."
 """
 
 
-class AudiobookBootstrap:
+class AudiobookBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain for audiobooks.
 
     Chain: brief → [Researcher] → Architect → Narrator profiler → Director → config
@@ -153,7 +154,7 @@ class AudiobookBootstrap:
         *,
         api_key: str | None = None,
     ) -> None:
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
 
     def from_brief(
         self,
@@ -208,9 +209,7 @@ class AudiobookBootstrap:
         config.director_brief = self._run_director(config)
 
         # ── Stage 4: Apply overrides ─────────────────────────────────
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        self._apply_overrides(config, overrides)
 
         return config
 
@@ -355,7 +354,7 @@ class AudiobookBootstrap:
 
         return narrator
 
-    def _run_director(self, config: AudiobookConfig) -> DirectorBrief:
+    def _run_director(self, config: AudiobookConfig) -> AudiobookDirectorBrief:
         """Call the Director LLM to plan the narrative arc."""
         chapter_list = "\n".join(
             f"  {i+1}. {ch.title} ({ch.duration_hint}, {ch.tone or config.tone or 'neutral'})"
@@ -380,8 +379,8 @@ class AudiobookBootstrap:
 
         return self._parse_director_response(raw)
 
-    def _parse_director_response(self, raw_json: str) -> DirectorBrief:
-        """Parse the Director's JSON into a DirectorBrief."""
+    def _parse_director_response(self, raw_json: str) -> AudiobookDirectorBrief:
+        """Parse the Director's JSON into an AudiobookDirectorBrief."""
         cleaned = raw_json.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -401,7 +400,7 @@ class AudiobookBootstrap:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        return DirectorBrief(
+        return AudiobookDirectorBrief(
             narrative_arc=data.get("narrative_arc", ""),
             mood_progression=data.get("mood_progression", []),
             chapter_notes=data.get("chapter_notes"),

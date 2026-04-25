@@ -10,26 +10,22 @@ Config hierarchy:
         └── AudiobookConfig
                 ├── NarratorConfig  — the primary voice
                 ├── ChapterConfig[] — ordered chapter outline
-                └── DirectorBrief   — pacing/mood arc
+                └── AudiobookDirectorBrief   — pacing/mood arc
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...core.config import ContentConfig, ParticipantProfile, ShowHostConfig
+from ...core.config import ContentConfig, ParticipantProfile, ShowHostConfig, VoiceProfile
 
 
 @dataclass
-class NarratorConfig:
+class NarratorConfig(VoiceProfile):
     """The primary narrator voice for the audiobook."""
 
     name: str = ""
     style: str | None = None  # e.g., "Warm, measured, literary"
-    voice_fingerprint: str | None = None
-    voice_gender: str | None = None
-    voice_hint: str | None = None  # TTS casting note
-    tts_style: str | None = None
 
 
 @dataclass
@@ -46,8 +42,24 @@ class ChapterConfig:
 
 
 @dataclass
-class DirectorBrief:
-    """Pacing and arc plan for the audiobook."""
+class AudiobookDirectorBrief:
+    """Pacing and arc plan for the audiobook.
+
+    Attributes:
+        narrative_arc:     High-level narrative structure describing how the
+                           story should feel from opening chapter to close.
+        mood_progression:  Ordered list of moods the narration should move
+                           through (e.g. ["anticipatory", "tense", "resolved"]).
+        chapter_notes:     Director notes for specific chapters or transition
+                           points. Free text.
+        closing_strategy:  How to close the final chapter — e.g. "Leave on
+                           an ambiguous note" or "Full resolution".
+        check_interval:    How many *chapters* between Director check-ins.
+                           At each check-in the Director reads the narration
+                           so far and injects a mood/pacing note for the next
+                           chapter. Lower = tighter arc control, higher =
+                           more organic flow. Default: every 3 chapters.
+    """
 
     narrative_arc: str = ""
     mood_progression: list[str] = field(default_factory=list)
@@ -73,7 +85,7 @@ class AudiobookConfig(ContentConfig):
     narrator: NarratorConfig | None = None
     chapters: list[ChapterConfig] = field(default_factory=list)
     characters: list[ParticipantProfile] = field(default_factory=list)  # Cast for dialogue
-    director_brief: DirectorBrief | None = None
+    director_brief: AudiobookDirectorBrief | None = None
 
     def validate(self) -> list[str]:
         """Return a list of validation problems (empty = valid)."""
@@ -85,3 +97,11 @@ class AudiobookConfig(ContentConfig):
         elif not self.narrator.name:
             problems.append("Narrator must have a name.")
         return problems
+
+
+# Backwards-compatibility alias. ``DirectorBrief`` was renamed to
+# ``AudiobookDirectorBrief`` to disambiguate the three former DirectorBrief
+# classes that lived in debates/news/audiobooks (each with different fields).
+# External callers that imported ``DirectorBrief`` continue to work via this
+# alias; new code should use the explicit ``AudiobookDirectorBrief``.
+DirectorBrief = AudiobookDirectorBrief

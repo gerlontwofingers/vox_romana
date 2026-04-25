@@ -15,12 +15,12 @@ single speaker $L$ (the *leader*), potentially drawn from multiple source
 languages, we estimate:
 
 1. A **first-order Markov transition matrix** $P$ over a fixed emotion alphabet
-   $\mathcal{E}$ describing the speaker's local affective dynamics.
+   $\mathcal{E}$ describing the speaker's local emotion dynamics.
 2. A **null-hypothesis rejection statistic** $\rho$ testing whether the observed
    transitions are structurally different from a memoryless permutation of the
    same emotion tags.
 3. A **topic–emotion coupling coefficient** $r$ measuring whether semantic
-   drift co-varies with affective drift across consecutive segments.
+   drift co-varies with emotion drift across consecutive segments.
 
 The analysis is **segment-level**: each speech $s$ is decomposed into an
 ordered sequence of paragraph-scale segments, each independently classified.
@@ -335,10 +335,10 @@ so downstream consumers can reason about the result without special cases.
 
 - $r > 0$ and significant: topics and emotions shift together — "when the
   subject changes, the feeling changes."
-- $r \approx 0$: affective modulation is decoupled from topical modulation —
+- $r \approx 0$: emotion modulation is decoupled from topical modulation —
   the speaker's emotion trajectory is not driven by what they are discussing.
 - $r < 0$ and significant: an unusual anti-pattern — topical continuity
-  coincides with affective change, or vice versa.
+  coincides with emotion change, or vice versa.
 
 The pipeline requires $T \geq 3$ (so there are at least two shift pairs) to
 compute $r$; otherwise $(r, p) = (0, 1)$ is returned with an empty

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
 from .merge import DebateDocumentMerger
-from .models import DebateChunk, DebateEvent, ParsedDebateDocument
+from .models import DebateEvent, DebateSegment, ParsedDebateDocument
 
 
 class DebateParserError(ValueError):
@@ -56,7 +56,7 @@ class DebateTemplate01Parser(DebateTemplateParser):
             chunks=tuple(chunks),
         )
 
-    def _parse_chunk(self, chunk_text: str) -> DebateChunk:
+    def _parse_chunk(self, chunk_text: str) -> DebateSegment:
         if "--- UTTERANCE START ---" not in chunk_text:
             raise DebateParserError("template_01 chunk is missing utterance blocks.")
 
@@ -69,7 +69,7 @@ class DebateTemplate01Parser(DebateTemplateParser):
         if not utterances:
             raise DebateParserError("template_01 chunk must contain at least one utterance.")
 
-        return DebateChunk(
+        return DebateSegment(
             template_id=metadata.get("TEMPLATE_ID", self.template_id),
             debate_id=_require(metadata, "DEBATE_ID"),
             title=_require(metadata, "DEBATE_TITLE"),
@@ -147,7 +147,7 @@ class DebateTemplate02Parser(DebateTemplateParser):
             chunks=tuple(chunks),
         )
 
-    def _parse_segment(self, segment_text: str) -> DebateChunk:
+    def _parse_segment(self, segment_text: str) -> DebateSegment:
         if "+++ EVENT START +++" not in segment_text:
             raise DebateParserError("template_02 segment is missing event blocks.")
 
@@ -160,7 +160,7 @@ class DebateTemplate02Parser(DebateTemplateParser):
         if not events:
             raise DebateParserError("template_02 segment must contain at least one event.")
 
-        return DebateChunk(
+        return DebateSegment(
             template_id=metadata.get("TEMPLATE_ID", self.template_id),
             debate_id=_require(metadata, "DEBATE_ID"),
             title=_require(metadata, "DEBATE_TITLE"),

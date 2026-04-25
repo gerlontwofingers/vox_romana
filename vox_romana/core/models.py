@@ -1,3 +1,18 @@
+"""Core data models for vox_romana.
+
+This module defines the universal :class:`AudioEvent` schema shared by every
+show type (debates, news, podcasts, audiobooks). Both the TTS renderer and the
+audio mixer consume :class:`AudioEvent` instances generically — they do not need
+to know which show type produced them.
+
+:class:`AgentResponse` captures the raw prompt/response pair for each LLM call
+and is used by conductors to build audit trails and test fixtures.
+
+Note: ``raw_fields`` on ``AudioEvent`` is typed ``dict[str, str]`` (not
+``dict[str, Any]``) because all values must survive JSON round-trips; every
+non-string value must be serialised to a string before storage.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

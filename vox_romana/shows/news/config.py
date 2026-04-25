@@ -16,7 +16,7 @@ THE CAST:
     NewsConfig          The whole blueprint — everything the conductor needs.
     AnchorConfig        The news anchor(s) — the voice of the broadcast.
     SegmentConfig       One story in the rundown — what to cover and how.
-    DirectorBrief       Pacing and dramatic arc for the full broadcast.
+    NewsDirectorBrief       Pacing and dramatic arc for the full broadcast.
 
 RE-EXPORTED FROM CORE (shared across all show types):
 
@@ -48,11 +48,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...core.config import ContentConfig, ParticipantProfile, ShowHostConfig
+from ...core.config import ContentConfig, ParticipantProfile, ShowHostConfig, VoiceProfile
 
 
 @dataclass
-class AnchorConfig:
+class AnchorConfig(VoiceProfile):
     """Configuration for a news anchor.
 
     Attributes:
@@ -75,10 +75,6 @@ class AnchorConfig:
 
     name: str = ""
     style: str | None = None
-    voice_fingerprint: str | None = None
-    voice_gender: str | None = None
-    voice_hint: str | None = None
-    tts_style: str | None = None
 
 
 @dataclass
@@ -111,7 +107,7 @@ class SegmentConfig:
 
 
 @dataclass
-class DirectorBrief:
+class NewsDirectorBrief:
     """Pacing plan for the full broadcast.
 
     Attributes:
@@ -170,7 +166,7 @@ class NewsConfig(ContentConfig):
     anchors: list[AnchorConfig] = field(default_factory=list)
     segments: list[SegmentConfig] = field(default_factory=list)
     show_host: ShowHostConfig | None = None
-    director_brief: DirectorBrief | None = None
+    director_brief: NewsDirectorBrief | None = None
     target_segments: int | None = None
     guests: list[ParticipantProfile] = field(default_factory=list)
 
@@ -200,3 +196,11 @@ class NewsConfig(ContentConfig):
             seen.add(name)
 
         return problems
+
+
+# Backwards-compatibility alias. ``DirectorBrief`` was renamed to
+# ``NewsDirectorBrief`` to disambiguate the three former DirectorBrief
+# classes that lived in debates/news/audiobooks (each with different fields).
+# External callers that imported ``DirectorBrief`` continue to work via this
+# alias; new code should use the explicit ``NewsDirectorBrief``.
+DirectorBrief = NewsDirectorBrief

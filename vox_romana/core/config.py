@@ -30,7 +30,7 @@ USAGE:
     )
 
 MUTABILITY:
-    Unlike our DebateEvent / DebateChunk models (which are frozen — immutable
+    Unlike our DebateEvent / DebateSegment models (which are frozen — immutable
     output data), config objects are MUTABLE. That's because the bootstrap
     process fills them in progressively:
         1. User sets brief + reference_material
@@ -130,6 +130,12 @@ class ContentConfig:
                        length system.  When set, the conductor estimates a
                        word budget and enforces ±tolerance_percent.
 
+        target_words:  Explicit word-count target. When set, takes priority
+                       over ``target_duration_minutes`` (the conductor uses
+                       this count directly instead of converting minutes to
+                       words). Only one of the two should be set; setting
+                       both is allowed but ``target_words`` wins.
+
         tolerance_percent:
                        How much deviation (in %) from the word budget is
                        acceptable.  Default: 10.0 (±10%).
@@ -195,13 +201,49 @@ class ContentConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# VoiceProfile  (shared mixin for any voiced role)
+# ─────────────────────────────────────────────────────────────────────────────
+# Every show-type role that gets a TTS voice — debater, anchor, narrator,
+# podcast host, show host — needs the same four pieces of voice metadata.
+# Centralising them here removes duplicate field declarations from each
+# show package's config module.
+#
+#   voice_gender:       "male" | "female" | None (auto-detect)
+#   voice_hint:         Casting note for the renderer's voice catalog
+#                       (e.g., "deep authoritative baritone, 50s").
+#   tts_style:          Persistent TTS instruction prepended to every
+#                       utterance (engines that support it use it; others
+#                       ignore gracefully).
+#   voice_fingerprint:  Description of HOW this person talks — cadence,
+#                       rhetorical habits, verbal tics.
+#
+# Concrete profile classes inherit from VoiceProfile and add their own
+# domain-specific fields.
+
+@dataclass
+class VoiceProfile:
+    """Common voice-casting fields shared by every voiced role.
+
+    Inherited by :class:`ParticipantProfile`, :class:`ShowHostConfig`,
+    and the show-specific profile classes (AnchorConfig, NarratorConfig,
+    PodcastHostProfile). Carries only the fields the TTS layer cares
+    about — content/personality fields live on the subclasses.
+    """
+
+    voice_gender: str | None = None
+    voice_hint: str | None = None
+    tts_style: str | None = None
+    voice_fingerprint: str | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ParticipantProfile
 # ─────────────────────────────────────────────────────────────────────────────
 # The "character sheet" for any voiced participant in a show — debaters,
 # anchors, reporters, panelists, guests. Every show type reuses this.
 
 @dataclass
-class ParticipantProfile:
+class ParticipantProfile(VoiceProfile):
     """Complete personality profile for a show participant.
 
     Used by debates (debaters), news shows (anchors, reporters, panelists),
@@ -268,10 +310,6 @@ class ParticipantProfile:
     name: str = ""
     side: str | None = None
     role: str = "participant"
-    voice_gender: str | None = None
-    voice_hint: str | None = None
-    tts_style: str | None = None
-    voice_fingerprint: str | None = None
     behavioral_triggers: str | None = None
     emotional_arc: str | None = None
     key_positions: list[str] = field(default_factory=list)
@@ -287,7 +325,7 @@ class ParticipantProfile:
 # narrative structure. Reused across debates, news shows, podcasts, etc.
 
 @dataclass
-class ShowHostConfig:
+class ShowHostConfig(VoiceProfile):
     """Configuration for a show's narrative host.
 
     The voice that bookends content — intros, transitions, outros.
@@ -322,7 +360,3 @@ class ShowHostConfig:
     name: str = ""
     role: str = "narrator"
     style: str | None = None
-    voice_gender: str | None = None
-    voice_hint: str | None = None
-    tts_style: str | None = None
-    voice_fingerprint: str | None = None

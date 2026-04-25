@@ -30,7 +30,7 @@ from vox_romana.publish.formatter import (
     format_document,
 )
 from vox_romana.publish.models import FormattedDocument, Line, PublishResult
-from vox_romana.publish.renderer import _default_outputs, publish_document, render_txt
+from vox_romana.publish.outputter import _default_outputs, publish_document, render_txt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -452,7 +452,7 @@ class TestHtmlTemplate:
         """render_txt doesn't use the template; render_pdf requires weasyprint.
         We instead test that _render_html produces correct lang attr."""
         try:
-            from vox_romana.publish.renderer import _render_html
+            from vox_romana.publish.outputter import _render_html
         except ImportError:
             pytest.skip("jinja2 not available")
 

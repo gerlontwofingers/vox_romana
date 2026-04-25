@@ -62,6 +62,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
+from .bootstrap import PodcastBootstrap
 from ...core.conductor import BaseConductor, ConductorResult
 from ...core.content_mode import ContentModeClassifier
 from ...core.fact_checker import FactChecker
@@ -197,6 +198,8 @@ class PodcastConductor(BaseConductor):
         _llm_calls:       Counter for direct LLM calls (non-session).
     """
 
+    _bootstrap_cls = PodcastBootstrap
+
     def __init__(
         self,
         config: PodcastConfig,
@@ -246,34 +249,19 @@ class PodcastConductor(BaseConductor):
         api_key: str | None = None,
         target_words: int | None = None,
     ) -> PodcastConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap a PodcastConfig from a brief and create a conductor.
 
-        This is the "one-shot" convenience method: brief → config → conductor.
-
-        Args:
-            brief:              Natural language description of the podcast.
-            reference_material: Factual source text to ground the output.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of PodcastConfig field overrides.
-            client:             Shared DeepSeekClient.
-            api_key:            API key if client is not provided.
-            target_words:       Target word count for the episode.
-
-        Returns:
-            A PodcastConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief`.
         """
-        from .bootstrap import PodcastBootstrap
-
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = PodcastBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
             target_words=target_words,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface implementation

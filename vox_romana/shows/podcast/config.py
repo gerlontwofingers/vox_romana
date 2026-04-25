@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ...core.config import ContentConfig
+from ...core.config import ContentConfig, VoiceProfile
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ from ...core.config import ContentConfig
 # domains, forbidden knowledge, interruption tendency, and REQUIRED gender.
 
 @dataclass
-class PodcastHostProfile:
+class PodcastHostProfile(VoiceProfile):
     """Complete personality profile for a podcast host.
 
     This extends the concept of ParticipantProfile with podcast-specific
@@ -101,13 +101,10 @@ class PodcastHostProfile:
     knowledge_domains: list[str] = field(default_factory=list)
     forbidden_knowledge: list[str] = field(default_factory=list)
     interruption_tendency: Literal["low", "medium", "high"] = "medium"
-    voice_fingerprint: str | None = None
     behavioral_triggers: str | None = None
     emotional_arc: str | None = None
     key_positions: list[str] = field(default_factory=list)
     tangent_topics: list[str] = field(default_factory=list)
-    voice_hint: str | None = None
-    tts_style: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +186,16 @@ class PodcastDirectorBrief:
         compression_interval:  Compress the context summary every N segments.
                                Lower = more frequent compression = smaller
                                context but more LLM calls.
+
+                               .. note::
+                                   Unlike the ``check_interval`` field on
+                                   other shows' ``DirectorBrief`` classes,
+                                   this field drives **context compression**
+                                   (collapsing older turns into a summary),
+                                   *not* director interjections. The podcast
+                                   conductor also uses it as the director
+                                   check-in cadence as a convenience, but the
+                                   primary purpose is context management.
     """
 
     arc: str = ""

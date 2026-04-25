@@ -663,7 +663,7 @@ class TestPublishModeExecution:
 
     def test_publish_format_both_no_pdf_warning(self, tmp_path, capsys):
         """--publish-format both should warn if weasyprint missing."""
-        import vox_romana.publish.renderer as _r
+        import vox_romana.publish.outputter as _r
         src = _write_debate_json(tmp_path)
         orig = _r.PDF_AVAILABLE
         _r.PDF_AVAILABLE = False

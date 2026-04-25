@@ -1,8 +1,25 @@
 """Reproducibility utilities — seed fixing and environment manifest capture.
 
-All stochastic components in the emotion_flow pipeline call freeze_randomness()
-as their first action. build_manifest() records every version that could affect
-results, enabling exact reproduction of any published finding.
+All stochastic components in the emotion_flow pipeline call
+:func:`freeze_randomness` as their first action to pin the global random
+state. :func:`build_manifest` records every version that could affect results,
+enabling exact reproduction of any published finding.
+
+Reproducibility is organised into three tiers:
+
+* **Tier 1 — Seed control:** :func:`freeze_randomness` pins the Python,
+  NumPy, and (optionally) PyTorch random seeds to the requested value.
+  Guarantees identical results from the same input in the same process.
+
+* **Tier 2 — Environment capture:** :func:`build_manifest` snapshots all
+  package versions, Python version, and platform details into a
+  :class:`~.models.ReproducibilityManifest`.  Sharing the manifest alongside
+  results lets a third party reconstruct the exact software environment.
+
+* **Tier 3 — Deterministic models:** Individual pipeline components
+  (tagger, semantic flow, BERTScore) are responsible for passing
+  determinism flags to their underlying models.  The manifest records the
+  seed and model versions so discrepancies can be debugged.
 """
 
 from __future__ import annotations

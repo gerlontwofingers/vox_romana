@@ -1,5 +1,13 @@
 """Renderers — turn a ``FormattedDocument`` into TXT or PDF on disk.
 
+.. note::
+   This module (``vox_romana.publish.outputter``) writes formatted documents
+   to the filesystem as human-readable TXT or print-ready PDF files.
+   It is **completely separate** from ``vox_romana.tts.renderer``, which
+   synthesises speech audio from :class:`~vox_romana.core.models.AudioEvent`
+   sequences.  They share the name "renderer" but operate in different
+   domains and have no shared code.
+
 Plain-text rendering is dependency-free and always available.  PDF
 rendering uses Jinja2 + WeasyPrint; both are imported lazily so that
 ``vox_romana.publish`` itself stays import-cheap and so a missing

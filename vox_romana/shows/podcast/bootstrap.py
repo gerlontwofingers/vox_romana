@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.search import BaseSearchProvider, build_research_provider
 from .config import (
@@ -236,7 +237,7 @@ RULES:
 """
 
 
-class PodcastBootstrap:
+class PodcastBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain for podcasts.
 
     Chain: brief → [Researcher] → Architect → Host profiler(s) → Director → config
@@ -257,7 +258,7 @@ class PodcastBootstrap:
             client:  An existing DeepSeekClient to use. In tests, inject a mock.
             api_key: API key for DeepSeekClient. Only used if client is None.
         """
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
 
     def from_brief(
         self,
@@ -342,9 +343,7 @@ class PodcastBootstrap:
         # ══════════════════════════════════════════════════════════════
         # User gets the last word. Any field in overrides replaces what
         # the agents produced.
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        self._apply_overrides(config, overrides)
 
         return config
 

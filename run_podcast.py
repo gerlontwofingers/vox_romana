@@ -247,7 +247,19 @@ def main() -> None:
       1. Bootstrap: brief → PodcastConfig (Architect + Host Profiler + Director)
       2. Conductor: config → PodcastConductorResult (segment-level generation)
       3. Serialize: result → JSON file
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` auto-routes to the
+        podcast pipeline when the brief is podcast-shaped. ``run_podcast.py``
+        will be removed in a future release.
     """
+    import warnings
+    warnings.warn(
+        "run_podcast.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the podcast pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     # ── Validate the prompt file ─────────────────────────────────────

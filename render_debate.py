@@ -266,7 +266,20 @@ def main(argv: list[str] | None = None) -> None:
 
     Args:
         argv: Arguments (defaults to sys.argv[1:]).
+
+    .. deprecated::
+        Use ``render_show.py`` instead. ``render_show.py`` is content-agnostic
+        and renders any show JSON (debate, news, podcast, audiobook) through
+        the same TTS pipeline. ``render_debate.py`` will be removed in a
+        future release.
     """
+    import warnings
+    warnings.warn(
+        "render_debate.py is deprecated; use 'python render_show.py <json>' "
+        "which works for all show types.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args(argv)
 
     # ── Validate input ───────────────────────────────────────────────

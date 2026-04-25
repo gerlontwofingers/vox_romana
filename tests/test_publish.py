@@ -485,7 +485,7 @@ class TestPublishDocument:
         src = tmp_path / "in.json"
         src.write_text(json.dumps(_news_fixture()), encoding="utf-8")
         # Force the "PDF unavailable" path even if weasyprint is installed.
-        import vox_romana.publish.renderer as r
+        import vox_romana.publish.outputter as r
         monkeypatch.setattr(r, "PDF_AVAILABLE", False)
         result = r.publish_document(
             src, formats=("txt", "pdf"), dest_dir=tmp_path,
