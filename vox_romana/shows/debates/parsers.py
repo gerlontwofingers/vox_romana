@@ -1,3 +1,37 @@
+"""Debate document parsers for vox_romana.
+
+This module provides the parser layer that sits between raw LLM output and the
+in-memory debate representation.  The LLM generates structured text using one
+of two debate templates; the parsers here convert that text into typed Python
+objects.
+
+Two templates, two parsers
+--------------------------
+``DebateTemplate01Parser`` — formal/structured style.  Uses explicit
+``DEBATE_CHUNK_START / DEBATE_CHUNK_END`` delimiters and a fixed key:value
+field set.  Best for long, high-structure debates where each turn is a
+standalone block.
+
+``DebateTemplate02Parser`` — conversational/dynamic style.  Uses
+``SEGMENT_START / SEGMENT_END`` delimiters and supports interruptions,
+overlapping speech, and flexible event kinds.  Best for debates that should
+sound natural rather than formal.
+
+Selecting a template
+--------------------
+The template is chosen at bootstrap time (in ``DebateBootstrap``) based on
+the ``debate_format`` field in the config.  If the LLM embeds a
+``TEMPLATE_ID:`` line in its output, the registry uses that; otherwise it
+auto-detects based on the delimiter pattern.
+
+Data flow
+---------
+Raw LLM text
+  → ``DebateParserRegistry.parse()``          # detect template, parse
+  → ``ParsedDebateDocument``                   # one doc per LLM call
+  → ``DebateDocumentMerger.merge_documents()`` # merge multi-call batches
+  → ``MergedDebate``                           # final in-memory debate
+"""
 from __future__ import annotations
 
 import re
@@ -5,7 +39,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
 from .merge import DebateDocumentMerger
-from .models import DebateEvent, DebateSegment, ParsedDebateDocument
+from .models import DebateEvent, DebateSegment, MergedDebate, ParsedDebateDocument
 
 
 class DebateParserError(ValueError):
@@ -217,6 +251,14 @@ class DebateParserRegistry:
     """Registry-backed parser selector for debate template documents."""
 
     def __init__(self, parsers: Iterable[DebateTemplateParser] | None = None):
+        """Initialise the registry, registering all provided parsers.
+
+        Args:
+            parsers: An iterable of ``DebateTemplateParser`` instances to
+                register.  Pass ``None`` (the default) to load the built-in
+                defaults — ``DebateTemplate01Parser`` and
+                ``DebateTemplate02Parser``.
+        """
         self._parsers: dict[str, DebateTemplateParser] = {}
         for parser in parsers or self.default_parsers():
             self.register(parser)
@@ -258,7 +300,7 @@ class DebateParserRegistry:
     def parse_many(self, texts: Iterable[str]) -> tuple[ParsedDebateDocument, ...]:
         return tuple(self.parse(text) for text in texts)
 
-    def parse_and_merge(self, texts: Iterable[str]):
+    def parse_and_merge(self, texts: Iterable[str]) -> tuple[MergedDebate, ...]:
         documents = self.parse_many(texts)
         return DebateDocumentMerger().merge_documents(documents)
 

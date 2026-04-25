@@ -21,7 +21,9 @@ vox_romana/
 │   └── config.py           #   ContentConfig dataclass (language field)
 ├── shows/                  # Content-type implementations
 │   ├── debates/            #   Debate generation pipeline
-│   └── news/               #   News show pipeline
+│   ├── news/               #   News show pipeline
+│   ├── podcast/            #   Podcast / interview pipeline
+│   └── audiobooks/         #   Long-form chapter narration pipeline
 ├── translate/              # Multi-language translation
 │   ├── __init__.py         #   Translator ABC, TranslationError, re-exports
 │   ├── llm_translator.py   #   LLMTranslator — JSON-array batch protocol
@@ -40,10 +42,17 @@ vox_romana/
     └── ingest.py           #   DocumentIngester (PDF, DOCX, HTML, CSV, …)
 
 run.py                      # Master CLI — coordinates all of the above
+run_show.py                 # Generate script only (no audio render)
+render_show.py              # Render audio from an existing script JSON
 templates/
 └── publish/
     └── _base.html.jinja2   # HTML template (uses {{ doc.language }} for <html lang>)
 ```
+
+`run.py` is the recommended entry point — it chains script generation, TTS
+render, and (optionally) document publishing. Use `run_show.py` /
+`render_show.py` directly when you want to inspect or edit the JSON
+between the two stages.
 
 ## Modes
 
@@ -65,12 +74,21 @@ pip install -r requirements.txt
 # Add your DeepSeek API key to .env
 echo 'DEEPSEEK_API_KEY=sk-...' >> .env
 
-# Generate + render a debate:
-python run.py prompts/ubi_debate.txt
+# Write a brief to a plain-text file (any path you like):
+echo 'A 10-minute debate on universal basic income.' > my_brief.txt
+
+# Generate + render:
+python run.py my_brief.txt
 
 # Publish as a formatted document:
-python run.py --mode publish --script-input output/text/debates/ubi.json
+python run.py --mode publish --script-input output/text/debates/my_brief.json
 ```
+
+> **Note on examples:** Throughout this README you'll see paths like
+> `prompts/ubi_debate.txt` — those are illustrative. The repo ships no
+> sample prompts; create your own plain-text briefs and point the CLI at
+> them. Output paths follow the pattern
+> `output/text/{show_type}/{prompt_stem}_{tag}_{timestamp}.json`.
 
 ## Usage examples
 
@@ -177,8 +195,15 @@ python run.py prompts/ubi_debate.txt --out-lang es \
 
 ### TTS language support
 
-- **Kokoro**: English only. Raises an error if asked for any other language — use Piper for non-English output.
-- **Piper**: Multilingual. Scans the `PIPER_VOICES_DIR` for installed ONNX models; available languages are those with at least one model file. Run `python run.py --out-lang all` to see what's installed.
+> ⚠️ **Kokoro is English-only.** It raises a `ValueError` for any non-`en`
+> language. If you pass `--out-lang es,fr,…` use either `--engine piper`
+> or `--engine both` (the `MultiEngine`, which routes Kokoro for English
+> and Piper for everything else). Forcing `--engine kokoro` with a
+> non-English target language will abort the run.
+
+- **Kokoro**: English only. Best quality on Apple Silicon (MLX-accelerated). Raises an error if asked for any other language.
+- **Piper**: Multilingual. Scans `PIPER_VOICES_DIR` for installed ONNX models; available languages are those with at least one model file. Run `python run.py --out-lang all` to see what's installed.
+- **Both** (`--engine both`): MultiEngine — uses Kokoro for English speakers and Piper for non-English speakers within the same show.
 
 ### Publish i18n
 
@@ -207,10 +232,29 @@ Unknown language codes fall back to English labels.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DEEPSEEK_API_KEY` | Yes (generate/full) | Your DeepSeek API key |
-| `GOOGLE_API_KEY` | No | Enables `--research` web search |
+| `GOOGLE_API_KEY` | No | Enables Google web search for `--research` |
 | `GOOGLE_CSE_ID` | No | Custom Search Engine ID for `--research` |
+| `PIPER_VOICES_DIR` | No | Override the directory scanned for Piper ONNX voice models |
 
 Set these in a `.env` file at the project root (loaded automatically by `python-dotenv`).
+
+### About `--research`
+
+The `--research` flag turns on the bootstrap research stage: before the
+conductor starts generating dialogue, the system gathers factual context
+for the brief. Research uses a three-tier fallback:
+
+1. **Local memory first** — the Chroma vector index + FTS5 store under
+   `output/memory/` (populated via `--mode ingest`) is consulted.
+2. **Google CSE** — if `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` are set,
+   the system performs live web searches and caches the results.
+3. **LLM fallback** — if no Google keys are configured, the LLM answers
+   research questions from its own training data (less reliable; flagged
+   in the run log).
+
+The router auto-enables `--research` for briefs that look factual (news,
+topical debates). Pass `--no-research` to force it off, or `--no-memory`
+to skip the local knowledge base and force web-only lookups.
 
 ## Testing
 

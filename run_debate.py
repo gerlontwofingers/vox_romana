@@ -310,7 +310,7 @@ def main() -> None:
         overrides["debate_format"] = args.debate_format
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 1: BOOTSTRAP — brief → fully populated config
+    # BOOTSTRAP — brief → fully populated config
     # ══════════════════════════════════════════════════════════════════
     # This is pre-production. The brief (your entire prompt file) gets
     # read by a chain of three AI agents:
@@ -342,7 +342,7 @@ def main() -> None:
     # Create a shared client so bootstrap + conductor reuse the same connection.
     client = DeepSeekClient()
 
-    log("Phase 1: Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     bootstrap_kwargs = dict(
@@ -401,17 +401,17 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2: CONDUCTOR — config → live debate
-    # ══════════════════════════════════════════════════════════════════
+    # CONDUCTOR — config → live debate
+    # ══════════════════════════════════════════════════════════════
     # Now we're rolling cameras. The Conductor takes the config from
-    # Phase 1 and runs the actual debate: picking who speaks next,
+    # Bootstrap and runs the actual debate: picking who speaks next,
     # generating their dialogue, having the moderator interject,
     # checking in with the Director for pacing adjustments.
     #
     # Each turn is one LLM call. A 35-turn debate = ~40 LLM calls
     # (turns + moderator interjections + director check-ins).
     # Takes roughly 30-90 seconds depending on the model.
-    log("Phase 2: Conductor (running the debate)...", quiet=args.quiet)
+    log("Conductor (running the debate)...", quiet=args.quiet)
     t2 = time.time()
 
     conductor = DebateConductor(config, client=client)
@@ -423,7 +423,7 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 3: SERIALIZE — save to JSON
+    # SERIALIZE — save to JSON
     # ══════════════════════════════════════════════════════════════════
     # The debate is done. Now we plate the dish — convert the in-memory
     # debate events into a JSON file. This file contains everything:
@@ -432,7 +432,7 @@ def main() -> None:
     #
     # This JSON is the input for the next stage (TTS), or you can just
     # read it to see what the AI came up with.
-    log("Phase 3: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_debate()
     serializer = DebateSerializer()

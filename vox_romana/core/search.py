@@ -215,7 +215,7 @@ class GoogleSearchProvider(BaseSearchProvider):
 # MEMORY + CHAIN PROVIDERS — the local-first / paid-fallback combo
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# Once Phase 1 (ingest) and Phase 2 (Chroma vector index) put domain documents
+# Once the Ingest stage (ingest.py) and Index stage (Chroma vector index) put domain documents
 # and prior catalog runs into our local store, the cheapest, fastest, and most
 # domain-relevant search target is *the stuff we already know*. These two
 # providers turn that store into a first-class SearchProvider so the research

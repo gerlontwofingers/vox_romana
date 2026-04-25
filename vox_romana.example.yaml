@@ -5,6 +5,18 @@
 #
 # vox_romana.yaml is in .gitignore — your local paths won't be committed.
 # ──────────────────────────────────────────────────────────────────────────────
+#
+# CONFIG FILE PRECEDENCE
+# ──────────────────────────────────────────────────────────────────────────────
+# vox_romana looks for configuration in two places, in this order:
+#
+#   1. vox_romana.yaml  (this folder, next to run.py) — takes precedence.
+#      Any key set here overrides the same key in the user config below.
+#
+#   2. ~/.vox_romana/config.yaml  (user home, system-wide) — fallback.
+#      Copy config.yaml.example there for shared defaults across projects.
+#
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 # WHERE ALL OUTPUT AND DATA LIVES

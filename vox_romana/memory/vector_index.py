@@ -2,17 +2,17 @@
 
 Pipeline position
 -----------------
-This module sits in **Phase 2** of the ingest pipeline::
+This module sits in the **Index** stage of the memory pipeline::
 
-    Phase 1 — ingest.py                Phase 2 — vector_index.py
-    ──────────────────────             ──────────────────────────
+    Stage 1: Ingest — ingest.py        Stage 2: Index — vector_index.py
+    ─────────────────────────────    ──────────────────────────
     DocumentIngester                   ChromaVectorIndex
-    └─→ JSONL chunks written           └─→ migrate_documents()
+    └→ JSONL chunks written           └→ migrate_documents()
         to data/memory/                    reads JSONL, embeds chunks,
         documents/                         persists to Chroma on disk
                                                    │
-                                                   ▼
-                                       Phase 3 — recall.py
+                                                   ▾
+                                       Stage 3: Recall — recall.py
                                        MemoryRecall.query()
                                        └─→ MemorySearchProvider
                                            (used by all bootstraps

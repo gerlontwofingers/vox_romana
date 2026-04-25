@@ -132,12 +132,12 @@ class BaseConductor(ABC):
         self._word_lo: int | None = None
         self._word_hi: int | None = None
 
-        # ── Length-contract telemetry (Phase 1+2) ────────────────────
+        # ── Length-contract telemetry ────────────────────────────────
         # Diagnostic strings, one per segment whose actual word count
         # fell outside the target window. Inspected by the renderer/CLI.
         self._length_warnings: list[str] = []
 
-        # ── Checkpoint rendering + budget tracking (Phase 5) ─────────
+        # ── Checkpoint rendering + budget tracking ─────────────────────
         # Both are opt-in. When a CheckpointRenderer is provided, each
         # segment's text can be measured for actual TTS duration. When a
         # BudgetTracker is also provided, those measurements feed back
@@ -360,7 +360,7 @@ class BaseConductor(ABC):
         fair_share = self._remaining_words // remaining_steps
         return max(planned_words, fair_share)
 
-    # ── Hard length contract helpers (Phase 1+2) ───────────────────
+    # ── Hard length contract helpers ──────────────────────────────────
 
     @staticmethod
     def _length_contract_block(
@@ -432,7 +432,7 @@ class BaseConductor(ABC):
             )
         return None
 
-    # ── Checkpoint rendering (Phase 5) ─────────────────────────────
+    # ── Checkpoint rendering ───────────────────────────────────────────
 
     def _checkpoint_segment(
         self,
@@ -495,7 +495,7 @@ class BaseConductor(ABC):
         self._build_agents()
         self._preflight_check_bootstrap()
         raw = self._run_turn_loop()
-        # ── Expansion loop (Phase 7+) ──────────────────────────────
+        # ── Expansion loop ────────────────────────────────────────────
         # If we finished short of target, give the conductor multiple
         # chances to extend the content. Each pass recalculates the
         # remaining deficit from fresh state. Subclasses opt in by

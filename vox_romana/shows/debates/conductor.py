@@ -1058,7 +1058,7 @@ class DebateConductor(BaseConductor):
         sends it through the speaker's session (which manages its own history
         and compression), and parses the JSON response.
         """
-        # ── Compute per-turn word target (Phase 1+2) ────────────────
+        # ── Compute per-turn word target ────────────────
         # Total budget / remaining turns gives a fair share that auto-
         # compensates for prior turns running short or long.
         per_turn_target = 0
@@ -1100,7 +1100,7 @@ class DebateConductor(BaseConductor):
         # ── Parse the JSON response ──────────────────────────────────
         event_dict = self._parse_turn_response(raw_response)
 
-        # ── Length contract validation (Phase 1+2) ──────────────────
+        # ── Length contract validation ──────────────────
         if per_turn_target > 0:
             actual = len((event_dict.get("text") or "").split())
             warning = self._validate_word_count(
@@ -1126,6 +1126,16 @@ class DebateConductor(BaseConductor):
         event_dict["turn"] = turn_number
 
         # ── Fact-check gate (blocking) ────────────────────────
+        # Policy: when fact-checking is enabled, we run the freshly generated
+        # turn through the fact-checker. If it flags fabrications or
+        # contradictions, we feed those flags back to the *same* AgentSession
+        # so the speaker can restate without losing in-character tone or
+        # session memory. We retry up to `config.max_retries` times. If the
+        # final attempt still fails, we publish anyway and append a
+        # FACT_CHECK_WARN entry to `_length_warnings` so downstream
+        # rendering/CLI can surface the issue. "Blocking" here means we hold
+        # the turn — no other turn runs until this gate either passes or
+        # exhausts retries — but we never silently drop content.
         config = self.config
         if (
             self._fact_checker is not None
@@ -1256,7 +1266,7 @@ class DebateConductor(BaseConductor):
         if budget_status:
             parts.append(budget_status)
 
-        # ── Hard length contract for THIS turn (Phase 1+2) ───────────
+        # ── Hard length contract for THIS turn ───────────
         # Wrap-up turns and the moderator's opening get a shorter target.
         turn_target = target_words
         if wrapping_up:

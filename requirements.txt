@@ -30,7 +30,7 @@ espeakng_loader==0.2.4
 
 # ── Memory / vector search ───────────────────────────────────────────────
 numpy>=1.26             # direct dep: _CosineFallbackIndex in memory/vector_index.py
-chromadb>=0.5           # persistent vector index (Phase 2 knowledge base)
+chromadb>=0.5           # persistent vector index for the memory/recall pipeline
                         # Includes DefaultEmbeddingFunction (all-MiniLM-L6-v2 via onnxruntime)
 
 # ── Document ingest (--mode ingest) — OPTIONAL ──────────────────────────

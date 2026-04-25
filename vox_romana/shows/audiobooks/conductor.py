@@ -359,7 +359,7 @@ class AudiobookConductor(BaseConductor):
         return all_events
 
     # ═══════════════════════════════════════════════════════════════════
-    # EXPANSION PASS (Phase 7+8) — narrative continuation, not meta
+    # EXPANSION PASS — narrative continuation, not meta
     # ═══════════════════════════════════════════════════════════════════
 
     def _expansion_pass(
@@ -571,7 +571,21 @@ class AudiobookConductor(BaseConductor):
         num_beats = max(1, chapter.target_beats)
         events: list[dict] = []
 
-        # Define beat labels.
+        # ── Beat label assignment ──────────────────────────────────────
+        # Each chapter is generated as a sequence of "beats" — discrete
+        # narration calls to the LLM. We label each beat to give the
+        # narrator agent positional context inside the chapter so it can
+        # adjust pacing (set the scene early, deepen mid-chapter, land a
+        # close at the end). Pattern by beat count:
+        #
+        #     1 beat:  ["full"]                              # whole chapter in one call
+        #     2 beats: ["opening", "body"]                   # setup + payoff
+        #     N beats: ["opening", "body_1", … "body_{N-2}", "closing"]
+        #
+        # The body indices start at 1 (not 0) and stop at `num_beats - 1`
+        # (exclusive upper bound) so we leave the final slot for "closing".
+        # The labels are passed to the prompt so the LLM knows whether
+        # it's opening, sustaining, or wrapping a chapter.
         if num_beats == 1:
             beat_labels = ["full"]
         elif num_beats == 2:
@@ -579,7 +593,12 @@ class AudiobookConductor(BaseConductor):
         else:
             beat_labels = ["opening"] + [f"body_{i}" for i in range(1, num_beats - 1)] + ["closing"]
 
-        # Distribute key_points across beats.
+        # ── Key-point distribution ─────────────────────────────────────
+        # `_distribute_points` slices `chapter.key_points` across the beats
+        # so each beat carries roughly `len(key_points) / num_beats` points
+        # (with leftovers absorbed by the earlier beats). The result is a
+        # list-of-lists indexed by `beat_idx`, used inside the loop below
+        # to scope each beat's prompt to its share of plot/argument beats.
         points_per_beat = self._distribute_points(chapter.key_points, num_beats)
 
         for beat_idx, beat_label in enumerate(beat_labels):
@@ -678,7 +697,7 @@ class AudiobookConductor(BaseConductor):
             event_dict["local_order"] = beat_idx
             event_dict["beat_label"] = beat_label
 
-            # ── Length contract validation (Phase 1+2) ──────────────
+            # ── Length contract validation ──────────────
             if words_per_beat > 0:
                 actual = len((event_dict.get("text") or "").split())
                 warning = self._validate_word_count(

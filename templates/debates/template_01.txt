@@ -1,5 +1,14 @@
 DEBATE TEMPLATE 01
 
+WHEN TO USE THIS TEMPLATE
+Use template_01 for formal, structured debates where each speaker delivers
+complete, uninterrupted turns.  Best for:
+  - Academic or policy debates with long, reasoned speeches
+  - Debates where emotional restraint and logical structure matter
+  - Situations where you want minimal cross-talk or interruptions
+For more conversational, dynamic debates with interruptions and reactions,
+use template_02 instead.
+
 PURPOSE
 This template is designed for a debate script that will be generated in pieces by an LLM, then parsed by Python, and later used in a speech-to-text exercise.
 

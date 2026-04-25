@@ -289,7 +289,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "E.g. --tolerance 5 means ±5%%."
         ),
     )
-    # ── Checkpoint rendering (Phase 6) ────────────────────────────
+    # ── Checkpoint rendering ────────────────────────────
     # When enabled, the conductor renders each segment's text through
     # TTS as it's generated, measures the actual audio duration, and
     # rebalances remaining-segment word targets in real time.
@@ -505,7 +505,7 @@ def _log_length_summary(
             )
 
 
-# ── Checkpoint plumbing (Phase 6) ─────────────────────────────────
+# ── Checkpoint plumbing ─────────────────────────────────
 
 
 def _should_use_checkpoint(args: argparse.Namespace, content_type: str,
@@ -640,7 +640,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
-    log("Phase 2: Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     reference_text: str | None = None
@@ -678,7 +678,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     print()
 
     # ── Conductor ────────────────────────────────────────────────────
-    log("Phase 3: Conductor (running the debate)...", quiet=args.quiet)
+    log("Conductor (running the debate)...", quiet=args.quiet)
     t2 = time.time()
 
     checkpoint_kwargs = _build_checkpoint_kwargs(
@@ -704,7 +704,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
-    log("Phase 4: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
     serializer = DebateSerializer()
@@ -754,7 +754,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
-    log("Phase 2: Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
+    log("Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
     t0 = time.time()
 
     reference_text_news: str | None = None
@@ -793,7 +793,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     print()
 
     # ── Conductor ────────────────────────────────────────────────────
-    log("Phase 3: Conductor (generating the broadcast)...", quiet=args.quiet)
+    log("Conductor (generating the broadcast)...", quiet=args.quiet)
     t2 = time.time()
 
     checkpoint_kwargs = _build_checkpoint_kwargs(
@@ -819,7 +819,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
-    log("Phase 4: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
     serializer = NewsSerializer()
@@ -873,7 +873,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
-    log("Phase 2: Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     reference_text_podcast: str | None = None
@@ -915,7 +915,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     print()
 
     # ── Conductor ────────────────────────────────────────────────────
-    log("Phase 3: Conductor (generating the episode)...", quiet=args.quiet)
+    log("Conductor (generating the episode)...", quiet=args.quiet)
     t2 = time.time()
 
     checkpoint_kwargs = _build_checkpoint_kwargs(
@@ -941,7 +941,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     print()
 
     # ── Serialize ────────────────────────────────────────────────────
-    log("Phase 4: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
     serializer = PodcastSerializer()
@@ -1007,7 +1007,7 @@ def main(argv: list[str] | None = None) -> None:
             print("   The show will still be generated. Verify these facts before publishing.\n")
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 1: ROUTE — classify the brief → pick the right studio
+    # ROUTE — classify the brief → pick the right studio
     # ══════════════════════════════════════════════════════════════════
     # The router makes a single LLM call to decide: debate or news?
     # If you passed --type, we skip this entirely.
@@ -1032,9 +1032,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.show_type:
         show_type = args.show_type
-        log(f"Phase 1: Show type forced → {show_type}", quiet=args.quiet)
+        log(f"Show type forced → {show_type}", quiet=args.quiet)
     else:
-        log("Phase 1: Classifying brief...", quiet=args.quiet)
+        log("Classifying brief...", quiet=args.quiet)
         t_route = time.time()
 
         router = ShowRouter(client)
@@ -1059,10 +1059,10 @@ def main(argv: list[str] | None = None) -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2–4: RUN THE PIPELINE — bootstrap → conductor → serialize
+    # RUN THE PIPELINE — bootstrap → conductor → serialize
     # ══════════════════════════════════════════════════════════════════
     # The dispatch table routes to the right studio floor based on the
-    # classified show type. Each runner handles its own phases internally.
+    # classified show type. Each runner handles its own steps internally.
     runner = _RUNNERS[show_type]
     t_start = time.time()
     output_path = runner(brief, client, args)

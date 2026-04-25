@@ -286,7 +286,7 @@ def main() -> None:
         overrides["show_name"] = args.show_name
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 1: BOOTSTRAP — brief → fully populated PodcastConfig
+    # BOOTSTRAP — brief → fully populated PodcastConfig
     # ══════════════════════════════════════════════════════════════════
     # Pre-production. Three AI agents read your brief:
     #   ARCHITECT:      Decides show name, host cast, segment structure.
@@ -305,7 +305,7 @@ def main() -> None:
     # Shared client for bootstrap + conductor.
     client = DeepSeekClient()
 
-    log("Phase 1: Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     bootstrap_kwargs = dict(
@@ -360,7 +360,7 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2: CONDUCTOR — config → live podcast episode
+    # CONDUCTOR — config → live podcast episode
     # ══════════════════════════════════════════════════════════════════
     # Recording studio is live. The Conductor generates each segment
     # by asking the LLM to write dialogue for the full host cast at
@@ -368,7 +368,7 @@ def main() -> None:
     #
     # After every few segments, it compresses the context window and
     # optionally checks in with the Director for pacing adjustments.
-    log("Phase 2: Conductor (generating the episode)...", quiet=args.quiet)
+    log("Conductor (generating the episode)...", quiet=args.quiet)
     t2 = time.time()
 
     conductor = PodcastConductor(config, client=client)
@@ -380,12 +380,12 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 3: SERIALIZE — save to JSON
+    # SERIALIZE — save to JSON
     # ══════════════════════════════════════════════════════════════════
     # Convert the in-memory podcast to a JSON file. This file contains
     # every line of dialogue, segment structure, host metadata, voice
     # casting info — everything TTS needs to render audio.
-    log("Phase 3: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_podcast()
     serializer = PodcastSerializer()

@@ -498,7 +498,7 @@ class PodcastConductor(BaseConductor):
                 global_order_start=global_order,
             )
 
-            # ── Length contract validation (Phase 1+2) ──────────────
+            # ── Length contract validation ──────────────
             actual_words = sum(
                 len((evt.get("text") or "").split()) for evt in segment_events
             )
@@ -506,6 +506,22 @@ class PodcastConductor(BaseConductor):
             # The model often under-shoots the LENGTH REQUIREMENT block.
             # One follow-up that explicitly cites the deficit reliably
             # adds 60-90% of the missing content without altering tone.
+            #
+            # Threshold (70%): empirically, segments in the 70-100% band
+            # of target read fine — we accept those rather than risk a
+            # tone-breaking continuation. Below 70%, the deficit is
+            # severe enough that continuing is worth the risk.
+            #
+            # Deficit math: `max(50, target - actual)` floors the ask at
+            # 50 words so we don't request a useless 5-word stub when
+            # the gap is small but still under-threshold.
+            #
+            # Extend, don't replace: we APPEND the continuation events to
+            # the existing `segment_events` rather than discarding the
+            # original. The original is already valid speech — throwing
+            # it out would waste a successful generation and force the
+            # model to start a new arc cold. Continuation preserves the
+            # in-character voice and conversational momentum.
             if (
                 self._session is not None
                 and target_words > 0
@@ -672,7 +688,21 @@ class PodcastConductor(BaseConductor):
                 self._compress_context()
 
             # ── Director check-in ────────────────────────────────────
-            # Check in every few segments for pacing guidance.
+            # Periodically pause segment generation to ask the Director
+            # agent for pacing/tone guidance. The note feeds into the next
+            # segment's prompt so the show can self-correct mid-run.
+            #
+            # Cadence:
+            #   * `check_interval` defaults to 3 segments. The director
+            #     brief can override it (e.g. shorter for tight 10-segment
+            #     shows, longer for sprawling 20+).
+            #   * `seg_idx > 0` skips the very first segment — there's
+            #     nothing produced yet for the Director to react to.
+            #   * `(seg_idx + 1) % check_interval == 0` fires at the end
+            #     of segment N, N+check_interval, N+2*check_interval, …
+            #     We use `seg_idx + 1` (the 1-based count of completed
+            #     segments) so that with check_interval=3 the first
+            #     check-in happens AFTER segment 3, not 4.
             check_interval = 3
             if config.director_brief and config.director_brief.compression_interval:
                 check_interval = config.director_brief.compression_interval
@@ -686,7 +716,7 @@ class PodcastConductor(BaseConductor):
         return all_events
 
     # ═══════════════════════════════════════════════════════════════════
-    # EXPANSION PASS (Phase 7)
+    # EXPANSION PASS
     # ═══════════════════════════════════════════════════════════════════
 
     def _expansion_pass(

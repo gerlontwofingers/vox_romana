@@ -695,7 +695,7 @@ class NewsConductor(BaseConductor):
             event_dict["local_order"] = beat_idx
             event_dict["beat_label"] = beat_label
 
-            # ── Length contract validation (Phase 1+2) ──────────────
+            # ── Length contract validation ──────────────
             if words_per_beat > 0:
                 actual = len((event_dict.get("text") or "").split())
                 warning = self._validate_word_count(

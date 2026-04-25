@@ -1,5 +1,8 @@
 # Cross-Lingual Emotion Flow in Political Oratory: Paper Outline
 
+> **STATUS: DRAFT** — Results sections contain placeholders (`[to be filled from actual runs]`).
+> Do not treat any quantitative claims in this document as final until confirmed by experimental runs.
+
 **Working title (draft):**
 *Mapping the Affective Dynamics of Political Speech: A Cross-Lingual,
 Reproducible Pipeline for Emotion-Flow Analysis*
