@@ -36,8 +36,12 @@ DISPATCH RULES:
 
 from __future__ import annotations
 
+import logging
+
 from ..engine import BaseTTSEngine, SynthesizedAudio
 from ..voice_catalog import UNIFIED_VOICE_CATALOG
+
+logger = logging.getLogger(__name__)
 
 
 class MultiEngine(BaseTTSEngine):
@@ -53,9 +57,16 @@ class MultiEngine(BaseTTSEngine):
         if not engines:
             raise ValueError("MultiEngine needs at least one wrapped engine.")
         self._engines: tuple[BaseTTSEngine, ...] = tuple(engines)
-        self._by_name: dict[str, BaseTTSEngine] = {
-            e.name.lower(): e for e in self._engines
-        }
+        self._by_name: dict[str, BaseTTSEngine] = {}
+        for e in self._engines:
+            key = e.name.lower()
+            if key in self._by_name:
+                logger.warning(
+                    "MultiEngine: duplicate engine name %r; keeping first, ignoring second.",
+                    key,
+                )
+            else:
+                self._by_name[key] = e
         self._voice_owner_cache: dict[str, BaseTTSEngine] = {}
 
     @classmethod
@@ -64,6 +75,9 @@ class MultiEngine(BaseTTSEngine):
 
         Lazily imports each engine so users without a backend installed
         only pay the import cost for the engines they actually request.
+
+        Valid names: ``"kokoro"``, ``"piper"``.
+        Duplicates are silently deduplicated.
         """
         instances: list[BaseTTSEngine] = []
         seen: set[str] = set()
@@ -79,7 +93,10 @@ class MultiEngine(BaseTTSEngine):
                 from .piper_engine import PiperEngine
                 instances.append(PiperEngine())
             else:
-                raise ValueError(f"Unknown engine name: {name!r}")
+                raise ValueError(
+                    f"Unknown engine name: {name!r}. "
+                    f"Valid names: 'kokoro', 'piper'"
+                )
         return cls(instances)
 
     # ── BaseTTSEngine interface ──────────────────────────────────────
@@ -111,12 +128,13 @@ class MultiEngine(BaseTTSEngine):
         voice: str = "default",
         emotion: str = "",
         speed: float = 1.0,
+        language: str = "en",
         **kwargs,
     ) -> SynthesizedAudio:
         """Dispatch to whichever wrapped engine owns the requested voice."""
         engine = self._engine_for_voice(voice)
         return engine.synthesize(
-            text, voice=voice, emotion=emotion, speed=speed, **kwargs,
+            text, voice=voice, emotion=emotion, speed=speed, language=language, **kwargs,
         )
 
     # ── Dispatch ─────────────────────────────────────────────────────
@@ -140,7 +158,11 @@ class MultiEngine(BaseTTSEngine):
         for engine in self._engines:
             try:
                 voices = engine.available_voices()
-            except Exception:  # noqa: BLE001 — engine probe should never crash dispatch
+            except Exception as exc:  # noqa: BLE001 — engine probe should never crash dispatch
+                logger.warning(
+                    "MultiEngine: available_voices() failed on %r while probing for %r: %s",
+                    engine.name, voice_id, exc,
+                )
                 continue
             if voice_id in voices:
                 self._voice_owner_cache[voice_id] = engine

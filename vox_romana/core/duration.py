@@ -254,6 +254,14 @@ class SpeechRateAdvisor:
 
     def __init__(self, catalog: Catalog | None = None) -> None:
         self._catalog = catalog
+        # Cache the WPMModel so we don't hit disk on every effective_wpm() call.
+        self._wpm_model = None
+        if catalog is not None:
+            try:
+                from vox_romana.data.wpm_model import WPMModel
+                self._wpm_model = WPMModel.load()
+            except Exception:
+                pass
 
     def effective_wpm(self, content_type: str, word_count: int | None = None) -> int:
         """Return the best WPM estimate for a content type.
@@ -276,12 +284,10 @@ class SpeechRateAdvisor:
             Best available WPM estimate (integer).
         """
         # Try ML model first (requires sklearn + enough data).
-        if self._catalog is not None and word_count is not None:
+        if self._wpm_model is not None and word_count is not None:
             try:
-                from vox_romana.data.wpm_model import WPMModel
-                model = WPMModel.load()
-                if model is not None and model.n_samples >= 5:
-                    prediction = model.predict(content_type, word_count)
+                if self._wpm_model.n_samples >= 5:
+                    prediction = self._wpm_model.predict(content_type, word_count)
                     if prediction is not None:
                         return round(prediction)
             except Exception:
@@ -301,7 +307,11 @@ class SpeechRateAdvisor:
         content_type: str = "debate",
     ) -> int:
         """Estimate word count using the best available WPM."""
-        wpm = self.effective_wpm(content_type)
+        # Two-pass: use static/catalog WPM for an approximate word count,
+        # then feed that count into the ML model for refinement (if available).
+        wpm_base = self.effective_wpm(content_type)
+        approx_words = round(duration_minutes * wpm_base)
+        wpm = self.effective_wpm(content_type, word_count=approx_words)
         return round(duration_minutes * wpm)
 
     def tolerance_window(

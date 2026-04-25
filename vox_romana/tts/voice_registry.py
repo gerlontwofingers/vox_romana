@@ -55,6 +55,7 @@ THREAD SAFETY:
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +93,11 @@ class VoiceRegistry:
             db_path = _DEFAULT_DB_PATH
 
         self._db_path: str | Path = db_path
+        # In-process lock guards transactions when callers share a registry
+        # across threads (sqlite3.connect was opened with check_same_thread=False,
+        # which lets multiple threads use the connection but does NOT serialize
+        # them — `with self._conn:` transactions can otherwise interleave).
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(
             str(db_path),
             check_same_thread=False,
@@ -103,7 +109,7 @@ class VoiceRegistry:
 
     def _ensure_schema(self) -> None:
         """Create tables if they don't exist (idempotent)."""
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS character_voices (
                     character_name TEXT NOT NULL,
@@ -141,11 +147,12 @@ class VoiceRegistry:
             The locked voice_id string, or None if this character has
             never been assigned a voice in this series.
         """
-        row = self._conn.execute(
-            "SELECT voice_id FROM character_voices "
-            "WHERE character_name = ? AND series_key = ?",
-            (character_name, series_key),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT voice_id FROM character_voices "
+                "WHERE character_name = ? AND series_key = ?",
+                (character_name, series_key),
+            ).fetchone()
         return row["voice_id"] if row else None
 
     def register(
@@ -166,8 +173,9 @@ class VoiceRegistry:
             series_key:     The series/show scope key.
         """
         now = _now_iso()
-        with self._conn:
-            # INSERT OR IGNORE preserves an existing assignment.
+        with self._lock, self._conn:
+            # ON CONFLICT DO UPDATE preserves the existing voice_id and only
+            # refreshes last_seen — a character's voice never changes once set.
             self._conn.execute(
                 """
                 INSERT INTO character_voices
@@ -192,7 +200,7 @@ class VoiceRegistry:
             voice_id: The voice_id that was just assigned (e.g. "am_echo").
         """
         now = _now_iso()
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO voice_usage (voice_id, usage_count, last_used)
@@ -214,9 +222,10 @@ class VoiceRegistry:
         Returns:
             Dict mapping voice_id → total times used.
         """
-        rows = self._conn.execute(
-            "SELECT voice_id, usage_count FROM voice_usage"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT voice_id, usage_count FROM voice_usage"
+            ).fetchall()
         return {row["voice_id"]: row["usage_count"] for row in rows}
 
     # ─────────────────────────────────────────────────────────────────
@@ -225,7 +234,8 @@ class VoiceRegistry:
 
     def close(self) -> None:
         """Close the database connection."""
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def __enter__(self) -> "VoiceRegistry":
         return self

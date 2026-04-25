@@ -80,10 +80,10 @@ APPLE SILICON ONLY:
 from __future__ import annotations
 
 import io
-import struct
 import tempfile
-import wave
 from pathlib import Path
+
+from pydub import AudioSegment
 
 from ..engine import BaseTTSEngine, SynthesizedAudio
 
@@ -251,16 +251,23 @@ class KokoroEngine(BaseTTSEngine):
 
             if not wav_path.exists():
                 # Fallback: check for numbered segments (clip_000.wav, etc.)
+                # join_audio=True should produce a single clip.wav, but some
+                # Kokoro versions write clip_000.wav, clip_001.wav, etc. for
+                # long texts.  Concatenate ALL segments to avoid truncation.
                 wav_files = sorted(Path(tmp_dir).glob("clip*.wav"))
-                if wav_files:
-                    wav_path = wav_files[0]
-                else:
+                if not wav_files:
                     raise RuntimeError(
                         f"Kokoro generated no audio files in {tmp_dir}. "
                         f"Text was: {text[:100]!r}"
                     )
-
-            wav_bytes = wav_path.read_bytes()
+                combined = AudioSegment.from_wav(str(wav_files[0]))
+                for wf in wav_files[1:]:
+                    combined += AudioSegment.from_wav(str(wf))
+                buf = io.BytesIO()
+                combined.export(buf, format="wav")
+                wav_bytes = buf.getvalue()
+            else:
+                wav_bytes = wav_path.read_bytes()
 
         return SynthesizedAudio(
             audio=wav_bytes,

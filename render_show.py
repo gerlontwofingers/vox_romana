@@ -99,6 +99,7 @@ ENVIRONMENT:
 
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -107,7 +108,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.tts.engine import VoiceConfig
-from vox_romana.tts.renderer import TTSRenderer
+from vox_romana.tts.renderer import TTSRenderer, strip_stage_directions
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,13 +150,14 @@ def _count_event_words(show_data: dict) -> int:
     """Count total spoken words across all events in the show JSON.
 
     Events live under the "events" key. Each event has a "text" field
-    containing the spoken dialogue. We split on whitespace and count.
+    containing the spoken dialogue. Stage directions are stripped before
+    counting so the WPM estimate reflects only the words actually spoken.
 
     Returns:
         Total word count across all events (0 if no events found).
     """
     return sum(
-        len(event.get("text", "").split())
+        len(strip_stage_directions(event.get("text", "")).split())
         for event in show_data.get("events", [])
     )
 
@@ -470,7 +474,11 @@ def main(argv: list[str] | None = None) -> None:
         engine_kwargs["model_dir"] = args.model_dir
     elif args.engine == "kokoro" and args.model:
         engine_kwargs["model"] = args.model
-
+    elif args.engine == "both":
+        if args.model_dir:
+            engine_kwargs["model_dir"] = args.model_dir
+        if args.model:
+            engine_kwargs["model"] = args.model
     if not args.quiet:
         print(f"\n  Engine: {args.engine}")
 
@@ -486,8 +494,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         from vox_romana.tts.voice_registry import VoiceRegistry
         registry = VoiceRegistry()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("VoiceRegistry unavailable, voice locking disabled: %s", exc)
 
     renderer = TTSRenderer(
         engine,

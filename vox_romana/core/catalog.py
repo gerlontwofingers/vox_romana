@@ -560,6 +560,27 @@ class Catalog:
             "max_wpm": row["max_wpm"],
         }
 
+    def get_wpm_stats_all(self) -> list[dict]:
+        """Return all rows from wpm_stats as a list of dicts.
+
+        Used by WPMModel.update_from_catalog() to retrain the ML predictor
+        without poking the private _conn attribute.
+
+        Returns:
+            List of dicts with keys ``content_type``, ``word_count``, ``wpm``.
+        """
+        rows = self._conn.execute(
+            "SELECT content_type, word_count, wpm FROM wpm_stats"
+        ).fetchall()
+        return [
+            {
+                "content_type": row["content_type"],
+                "word_count": row["word_count"],
+                "wpm": row["wpm"],
+            }
+            for row in rows
+        ]
+
     # ═══════════════════════════════════════════════════════════════════
     # INTERNALS
     # ═══════════════════════════════════════════════════════════════════

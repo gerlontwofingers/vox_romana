@@ -94,6 +94,7 @@ EXAMPLE:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,6 +102,8 @@ from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -111,14 +114,39 @@ from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
 #   (laughs)  (dramatic pause)  (Leaning in, voice low)
 # These are LLM-generated performance directions. Standard TTS engines
 # have no way to act on them, so they end up spoken literally.
-_STAGE_DIR_RE = re.compile(r'\([^)]*\)')
+_STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
+
+
+def _is_stage_direction(content: str) -> bool:
+    """Return True if a parenthetical looks like a performance direction.
+
+    Stage directions contain no digits and no acronyms (two or more
+    consecutive uppercase letters).  Numeric asides and acronym expansions
+    are treated as prose and left untouched.  Long prose explanations with
+    conjunctions and verb phrases are also left untouched.
+    """
+    stripped = content.strip()
+    # Numeric asides: "(3.5 million)", "(down 12%)"
+    if re.search(r'\d', stripped):
+        return False
+    # Acronym expansions: "(UBI)", "(GDP growth)"
+    if re.search(r'[A-Z]{2,}', stripped):
+        return False
+    # Long prose parentheticals with conjunctions/relative clauses are not cues
+    if len(stripped.split()) > 15:
+        return False
+    return True
 
 
 def strip_stage_directions(text: str) -> str:
     """Remove parenthetical stage directions from TTS text.
 
-    Strips all (parenthetical) blocks regardless of their position in the
-    string, then collapses any resulting runs of whitespace.  Adjacent
+    Only strips parentheticals that look like performance cues (short,
+    no digits, no acronyms).  Prose parentheticals such as acronym
+    expansions ``(UBI)`` or numeric asides ``(down 3%)`` are preserved.
+
+    Strips all matching (parenthetical) blocks regardless of their position in
+    the string, then collapses any resulting runs of whitespace.  Adjacent
     ellipsis and em-dash artifacts created by the removal are also merged.
 
     Examples::
@@ -129,8 +157,15 @@ def strip_stage_directions(text: str) -> str:
         'Let me tell you... Gold.'
         >>> strip_stage_directions("Just plain dialogue.")
         'Just plain dialogue.'
+        >>> strip_stage_directions("Universal Basic Income (UBI) proposals")
+        'Universal Basic Income (UBI) proposals'
     """
-    cleaned = _STAGE_DIR_RE.sub('', text)
+    def _replace(m: re.Match) -> str:
+        if _is_stage_direction(m.group(1)):
+            return ''
+        return m.group(0)  # keep prose parentheticals intact
+
+    cleaned = _STAGE_DIR_RE.sub(_replace, text)
     # Collapse ALL whitespace runs — including \n from removed inline directions
     cleaned = re.sub(r'\s+', ' ', cleaned)
     # Merge adjacent-ellipsis artifacts left by "... (direction) ...": "... ..." → "..."
@@ -316,6 +351,15 @@ class TTSRenderer:
             registry=self._registry, series_key=series_key,
         )
 
+        # Build a VoiceConfig map covering all auto-assigned speakers so that
+        # engine-specific extras (e.g. Piper speaker-id) are populated even
+        # when the voice was chosen automatically.  Manual overrides from
+        # self._voice_map (which carry extras set by the caller) take precedence.
+        voice_cfg_map: dict[str, VoiceConfig] = {
+            speaker: self._voice_map.get(speaker, VoiceConfig(voice_id=vid))
+            for speaker, vid in voice_map.items()
+        }
+
         if not quiet:
             print(f"  Voice assignments:")
             for speaker, voice_id in voice_map.items():
@@ -349,7 +393,9 @@ class TTSRenderer:
                 continue
 
             speaker = event.get("speaker_name", "Unknown")
-            voice_id = voice_map.get(speaker, self._default_voice())
+            voice_id = voice_map.get(speaker)
+            if voice_id is None:
+                voice_id = self._default_voice()
 
             # ── Build the emotion hint from event metadata ────────
             # We combine tone, pace, volume, and nonverbal cues into
@@ -363,6 +409,7 @@ class TTSRenderer:
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))
+            pause_after = mixer.resolve_pause(event.get("pause_after")) if event.get("pause_after") else 0
             overlap = 0
             if event.get("interruption"):
                 overlap = DEFAULT_OVERLAP_MS
@@ -372,7 +419,7 @@ class TTSRenderer:
                 pause_before = 0
 
             # Get engine-specific extras from the voice config.
-            voice_cfg = self._voice_map.get(speaker, VoiceConfig(voice_id=voice_id))
+            voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
             extras = voice_cfg.extras
 
             # ── Synthesize! ───────────────────────────────────────
@@ -395,10 +442,22 @@ class TTSRenderer:
                     result.audio,
                     sample_rate=result.sample_rate,
                     pause_before=pause_before,
+                    pause_after=pause_after,
                     overlap=overlap,
                     speaker=speaker,
                 )
                 rendered += 1
+
+                # Bump the voice's global usage counter only after a
+                # successful synthesis.  This way, voices that fail to
+                # render (missing model, engine error, etc.) don't get
+                # penalised by the gender-fallback's least-used picker.
+                if self._registry is not None and voice_id and voice_id != "default":
+                    try:
+                        self._registry.record_usage(voice_id)
+                    except Exception:
+                        # Registry failures must never break a render.
+                        pass
 
             except Exception as e:
                 # If one clip fails, skip it rather than crashing the
@@ -414,7 +473,7 @@ class TTSRenderer:
             print(f"\n  Mixing {rendered} clips...")
 
         final_path = mixer.export(output_path, format=format, normalize=normalize)
-        duration_ms = mixer.duration_ms
+        duration_ms = mixer.last_mix_duration_ms or mixer.duration_ms
 
         return RenderResult(
             output_path=final_path,
@@ -713,15 +772,15 @@ class TTSRenderer:
         # ── Persist assignments to the registry ──────────────────
         # register() is idempotent: it locks the voice on first sight and
         # only refreshes last_seen on subsequent calls (never overwrites).
-        # record_usage() always increments — the next render's gender
-        # fallback will see the bumped count and prefer other voices.
+        # NOTE: usage counts are NOT bumped here — only after a clip is
+        # successfully synthesized (see the main render loop).  Counting
+        # at assignment time would penalise voices for failed renders.
         if registry is not None and series_key:
             for name, voice_id in result.items():
                 if not voice_id or voice_id == "default":
                     continue
                 try:
                     registry.register(name, voice_id, series_key)
-                    registry.record_usage(voice_id)
                 except Exception:
                     # Registry failures must never break a render.
                     pass

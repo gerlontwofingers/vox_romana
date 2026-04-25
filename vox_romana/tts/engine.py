@@ -230,11 +230,13 @@ class BaseTTSEngine(ABC):
         """Human-readable name of this engine.
 
         Override this if you want a custom name. Defaults to the class
-        name without 'Engine' suffix:
-            PiperEngine → "Piper"
+        name with common suffixes stripped:
+            PiperEngine  → "Piper"
             KokoroEngine → "Kokoro"
+            OpenAITTS    → "OpenAI"
         """
         cls_name = type(self).__name__
-        if cls_name.endswith("Engine"):
-            return cls_name[:-6]
+        for suffix in ("Engine", "TTS"):
+            if cls_name.endswith(suffix):
+                return cls_name[: -len(suffix)]
         return cls_name
