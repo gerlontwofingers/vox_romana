@@ -44,11 +44,14 @@ EXAMPLE:
 
 from __future__ import annotations
 
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote_plus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -496,4 +499,34 @@ def build_research_provider(
     return ChainSearchProvider(
         [mem_provider, search_provider], min_results=min_results
     )
+
+
+def build_fact_check_provider() -> BaseSearchProvider | None:
+    """Return a web search provider for the FactChecker, or ``None``.
+
+    The FactChecker uses a search provider to verify claims it cannot
+    resolve from ``reference_material`` alone (the "thorough" mode).
+    Because search credentials are optional — many users run locally
+    without a Google API key — this helper swallows the ``ValueError``
+    that :class:`GoogleSearchProvider` raises when env vars are absent
+    and returns ``None`` instead.  A ``None`` return means the
+    FactChecker falls back to LLM-only verification ("quick" behaviour)
+    rather than crashing.
+
+    This mirrors the ``_enable_research`` fallback ladder in
+    ``run_show.py``: try Google, silently degrade to LLM-only on
+    any configuration error.
+
+    Returns:
+        A :class:`GoogleSearchProvider` if ``GOOGLE_API_KEY`` and
+        ``GOOGLE_CSE_ID`` are set; ``None`` otherwise.
+    """
+    try:
+        return GoogleSearchProvider()
+    except (ValueError, ImportError):
+        logger.debug(
+            "build_fact_check_provider: Google credentials not available; "
+            "FactChecker will use LLM-only verification."
+        )
+        return None
 

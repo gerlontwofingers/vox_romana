@@ -489,6 +489,7 @@ class BaseConductor(ABC):
             A ConductorResult with all generated events.
         """
         self._build_agents()
+        self._preflight_check_bootstrap()
         raw = self._run_turn_loop()
         # ── Expansion loop (Phase 7+) ──────────────────────────────
         # If we finished short of target, give the conductor multiple
@@ -584,6 +585,17 @@ class BaseConductor(ABC):
             subclass declines or cannot extend further.
         """
         return []
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check bootstrap output before the generation loop begins.
+
+        Called in ``run()`` after ``_build_agents()`` (so
+        ``self._fact_checker`` and ``self._content_mode`` are set) but
+        before ``_run_turn_loop()``. The base implementation is a no-op.
+        Subclasses that produce bootstrap output (PodcastConductor,
+        NewsConductor, etc.) override this to scan the generated config
+        for fabricated claims and abort or warn accordingly.
+        """
 
     @abstractmethod
     def _build_agents(self) -> None:

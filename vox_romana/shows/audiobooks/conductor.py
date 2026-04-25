@@ -43,11 +43,16 @@ USAGE:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 
+logger = logging.getLogger(__name__)
+
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.content_mode import ContentModeClassifier
+from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
 from .config import AudiobookConfig, ChapterConfig, NarratorConfig
 from .models import AudiobookChapter, AudiobookEvent, MergedAudiobook
@@ -163,6 +168,9 @@ class AudiobookConductor(BaseConductor):
         self._director_note: str = ""
         self._llm_calls: int = 0
         self._audiobook_id: str = ""
+        self._content_mode: str = "factual"
+        self._fact_checker: FactChecker | None = None
+        self._approved_chapter_texts: list[str] = []
 
     @classmethod
     def from_brief(
@@ -219,6 +227,86 @@ class AudiobookConductor(BaseConductor):
         self._narrator_session = self._create_session(
             self._narrator_prompt, recent_window=DEFAULT_RECENT_WINDOW,
         )
+
+        # Classify content mode and build FactChecker (only when needed).
+        if config.fact_check != "off":
+            # Use explicitly-set content_mode; only call classifier when
+            # config.content_mode is still the default ("factual") meaning
+            # the user hasn't overridden it and auto-detection should run.
+            if config.content_mode != "factual":
+                self._content_mode = config.content_mode
+            else:
+                self._content_mode = ContentModeClassifier(self._client).classify(
+                    brief=config.brief,
+                    show_type="audiobook",
+                )
+            self._fact_checker = FactChecker.build_default(self._client)
+        else:
+            self._content_mode = "factual"
+            self._fact_checker = None
+        self._approved_chapter_texts = []
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check the bootstrap output before generation begins.
+
+        Scans chapter titles/synopses and the director arc for fabricated
+        claims and aborts (or warns) based on
+        ``config.allow_bootstrap_fabrications``.
+        """
+        if self._fact_checker is None:
+            return
+        config = self.config
+        if not isinstance(config, AudiobookConfig):
+            return
+        surfaces: list[str] = []
+        if config.topic:
+            surfaces.append(config.topic)
+        for ch in config.chapters:
+            if ch.title:
+                surfaces.append(ch.title)
+            if ch.synopsis:
+                surfaces.append(ch.synopsis)
+        if config.director_brief and config.director_brief.narrative_arc:
+            surfaces.append(config.director_brief.narrative_arc)
+        bootstrap_text = " ".join(surfaces).strip()
+        if not bootstrap_text:
+            return
+        try:
+            report = self._fact_checker.check_chunk(
+                bootstrap_text,
+                chunk_id="bootstrap",
+                reference_material=config.reference_material,
+                mode=config.fact_check,
+                content_mode=self._content_mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AudiobookConductor: bootstrap preflight raised: %r", exc)
+            return
+        if report.has_fabrications:
+            print(
+                "\n\u26a0  BOOTSTRAP PRE-FLIGHT: Fabricated facts detected in "
+                "the generated outline."
+            )
+            print(
+                "   The fact-checker flagged the following based on LLM knowledge:"
+            )
+            for r in report.fabricated_claims:
+                print(f"   \u2022 {r.claim}")
+                print(f"     \u2192 {r.explanation}")
+            if not config.allow_bootstrap_fabrications:
+                print(
+                    "   Generation aborted. Fix your brief or supply "
+                    "--reference-material."
+                )
+                print(
+                    "   Use --allow-bootstrap-fabrications to override "
+                    "(not recommended).\n"
+                )
+                raise SystemExit(1)
+            else:
+                print(
+                    "   Continuing anyway (--allow-bootstrap-fabrications is set).\n"
+                )
 
     def _run_turn_loop(self) -> list[dict]:
         """Run the chapter-by-chapter generation loop.
@@ -634,7 +722,104 @@ class AudiobookConductor(BaseConductor):
 
             events.append(event_dict)
 
+        # ── Fact-check gate (whole chapter, blocking) ─────────────────
+        if (
+            self._fact_checker is not None
+            and isinstance(config, AudiobookConfig)
+            and config.fact_check != "off"
+        ):
+            ch_text = " ".join(
+                (e.get("text") or "").strip() for e in events
+            ).strip()
+            for fc_attempt in range(config.max_retries):
+                try:
+                    fc_report = self._fact_checker.check_chunk(
+                        ch_text,
+                        chunk_id=ch_id,
+                        reference_material=config.reference_material,
+                        mode=config.fact_check,
+                        content_mode=self._content_mode,
+                        prior_context=self._build_prior_context(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "AudiobookConductor: fact-check raised for %s: %r",
+                        ch_id, exc,
+                    )
+                    break
+
+                if not (fc_report.has_fabrications or fc_report.has_contradictions):
+                    break  # Chapter passed.
+
+                blocking = (
+                    fc_report.fabricated_claims + fc_report.contradicted_claims
+                )
+                if fc_attempt < config.max_retries - 1:
+                    claims_lines = "\n".join(
+                        f"  • {r.claim}: {r.explanation}"
+                        for r in blocking
+                    )
+                    rejection_msg = (
+                        f"FACT-CHECK REJECTION (attempt {fc_attempt + 1}/"
+                        f"{config.max_retries}): The previous chapter "
+                        f"narration contained fabricated facts or contradictions "
+                        f"with earlier content:\n{claims_lines}\n\n"
+                        f"Please re-narrate this chapter. Remove all fabricated "
+                        f"claims and ensure consistency with what has already "
+                        f"been narrated."
+                    )
+                    print(
+                        f"  [chapter {chapter_number}/{total_chapters}] "
+                        f"fact-check fail ({len(blocking)} issue(s)) "
+                        f"— retry {fc_attempt + 1}/{config.max_retries}",
+                        flush=True,
+                    )
+                    try:
+                        retry_raw = self._narrator_session.send(rejection_msg)
+                        retry_event = self._parse_response(retry_raw)
+                        retry_event["speaker"] = (
+                            narrator.name if narrator else "Narrator"
+                        )
+                        retry_event["role"] = "narrator"
+                        retry_event["event_kind"] = "narration"
+                        retry_event["chapter_id"] = ch_id
+                        # Replace last beat with the regenerated version.
+                        if events:
+                            events[-1] = retry_event
+                        ch_text = " ".join(
+                            (e.get("text") or "").strip() for e in events
+                        ).strip()
+                    except Exception as exc:
+                        logger.warning(
+                            "AudiobookConductor: fact-check retry failed "
+                            "for %s: %r", ch_id, exc,
+                        )
+                        break
+                else:
+                    for r in blocking:
+                        self._length_warnings.append(
+                            f"[{ch_id}] FACT_CHECK_WARN: Published with "
+                            f"unresolved claim after "
+                            f"{config.max_retries} attempts: {r.claim}"
+                        )
+                    print(
+                        f"  [chapter {chapter_number}/{total_chapters}] "
+                        f"fact-check EXHAUSTED — {len(blocking)} issue(s) remain",
+                        flush=True,
+                    )
+                    break
+
+            # Record approved chapter text for future consistency checks.
+            if ch_text:
+                self._approved_chapter_texts.append(ch_text)
+
         return events
+
+    def _build_prior_context(self) -> str | None:
+        """Return concatenated approved chapter texts for consistency checking."""
+        if not self._approved_chapter_texts:
+            return None
+        return "\n---\n".join(self._approved_chapter_texts)
 
     @staticmethod
     def _distribute_points(key_points: list[str], num_beats: int) -> list[list[str]]:

@@ -1,14 +1,15 @@
 """Data models for the editing pipeline.
 
 These are the building blocks for the Director outline, Editor verdicts,
-and chunk results. All are plain dataclasses — no behavior, just data.
+chunk results, and fact-check reports. All are plain dataclasses — no
+behavior, just data.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -115,3 +116,157 @@ class ChunkResult:
         if self.editor_verdict:
             data["editor_verdict"] = self.editor_verdict.to_dict()
         return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fact-check models
+# ─────────────────────────────────────────────────────────────────────────────
+# These three dataclasses represent the output of the FactChecker agent.
+# They flow from the FactChecker → ChunkEditor → conductor retry loop.
+#
+# FlaggedClaim   — a specific assertion extracted from generated text that
+#                  the FactChecker needs to verify (e.g. a date, a statistic,
+#                  a person's name or cause of death).
+#
+# FactCheckResult — the verdict on one claim after checking it against the
+#                   reference_material (quick mode) and/or a web search
+#                   (thorough mode).
+#
+# ChunkFactCheckReport — the full report for one generated segment/chunk.
+#                        has_fabrications drives the blocking retry logic.
+
+
+@dataclass
+class FlaggedClaim:
+    """A concrete factual assertion extracted from generated text.
+
+    Attributes:
+        text:         The verbatim claim as it appears in the output
+                      (e.g. "Dosio died on August 12, 2022").
+        reason:       Why this claim was flagged for checking
+                      (e.g. "specific date about a named real person").
+        search_query: An optional web-search query to verify this claim
+                      in thorough mode (e.g. "Ernie Dosio death date Gabon").
+    """
+
+    text: str
+    reason: str
+    search_query: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FlaggedClaim:
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
+
+@dataclass
+class FactCheckResult:
+    """The verdict on a single flagged claim.
+
+    Attributes:
+        claim:       The original claim text (mirrors FlaggedClaim.text).
+        verdict:     One of:
+                       "verified"          — confirmed by reference_material or search.
+                       "unverifiable"      — no reference material or search result
+                                            addressed this claim; cannot confirm or deny.
+                       "fabricated"        — directly contradicted by reference_material,
+                                            search results, or established canon
+                                            (for content_mode="fictional-universe").
+                       "contradicts_prior" — contradicts a fact previously asserted in
+                                            an EARLIER approved segment/turn/chapter of
+                                            the SAME show. Drives the intra-show
+                                            consistency gate.
+        explanation: Human-readable explanation of the verdict. Flows into the
+                     regeneration rejection note so the LLM knows exactly what
+                     to correct.
+        source:      Where the verification (or contradiction) came from —
+                     e.g. "reference_material", "google: <url>",
+                     "prior_context", "none".
+    """
+
+    claim: str
+    verdict: Literal["verified", "unverifiable", "fabricated", "contradicts_prior"]
+    explanation: str
+    source: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FactCheckResult:
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
+
+@dataclass
+class ChunkFactCheckReport:
+    """Full fact-check report for one generated segment or chunk.
+
+    Attributes:
+        chunk_id:  Identifier matching the chunk being checked.
+        mode:      The fact-check mode used ("quick" or "thorough").
+        results:   One FactCheckResult per extracted claim.
+        summary:   A one-paragraph prose summary of findings, suitable
+                   for injection into a rejection note.
+
+    Properties:
+        has_fabrications: True if any result has verdict == "fabricated".
+                          This is the boolean that drives the blocking retry
+                          logic in the conductor.
+    """
+
+    chunk_id: str
+    mode: str
+    results: list[FactCheckResult] = field(default_factory=list)
+    summary: str = ""
+
+    @property
+    def has_fabrications(self) -> bool:
+        """Return True if any claim was found to be fabricated."""
+        return any(r.verdict == "fabricated" for r in self.results)
+
+    @property
+    def fabricated_claims(self) -> list[FactCheckResult]:
+        """Return only the results with verdict == 'fabricated'."""
+        return [r for r in self.results if r.verdict == "fabricated"]
+
+    @property
+    def has_contradictions(self) -> bool:
+        """Return True if any claim contradicts prior approved content.
+
+        Drives the intra-show consistency gate in the conductor retry loop —
+        treated equivalently to ``has_fabrications`` for blocking purposes
+        when ``content_mode == "factual"``.
+        """
+        return any(r.verdict == "contradicts_prior" for r in self.results)
+
+    @property
+    def contradicted_claims(self) -> list[FactCheckResult]:
+        """Return only the results with verdict == 'contradicts_prior'."""
+        return [r for r in self.results if r.verdict == "contradicts_prior"]
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            "chunk_id": self.chunk_id,
+            "mode": self.mode,
+            "results": [r.to_dict() for r in self.results],
+            "summary": self.summary,
+            "has_fabrications": self.has_fabrications,
+            "has_contradictions": self.has_contradictions,
+        }
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ChunkFactCheckReport:
+        results = [
+            FactCheckResult.from_dict(r) for r in data.get("results", [])
+        ]
+        return cls(
+            chunk_id=data.get("chunk_id", ""),
+            mode=data.get("mode", "quick"),
+            results=results,
+            summary=data.get("summary", ""),
+        )

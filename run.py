@@ -413,6 +413,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Max editor retry attempts per chunk (default: 3).",
     )
 
+    gen_group.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="thorough",
+        dest="fact_check",
+        help=(
+            "Fact-check mode (default: thorough). "
+            "'off': no checking. "
+            "'quick': LLM-only verification. "
+            "'thorough': LLM + web search for flagged claims."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material.",
+    )
+
+    gen_group.add_argument(
+        "--content-mode",
+        choices=["auto", "factual", "fictional-universe", "pure-fiction"],
+        default="auto",
+        dest="content_mode",
+        help=(
+            "Content truth-mode (default: auto — detected from the brief). "
+            "'factual': fabrications block publication. "
+            "'fictional-universe': canon violations are warnings. "
+            "'pure-fiction': fact-checking is skipped entirely."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--allow-bootstrap-fabrications",
+        action="store_true",
+        default=False,
+        dest="allow_bootstrap_fabrications",
+        help=(
+            "Skip the bootstrap preflight abort when fabricated facts are detected "
+            "in the generated outline/rundown. Prints a warning and continues. "
+            "Not recommended."
+        ),
+    )
+
     # ── Duration control (forwarded to run_show.py) ──────────────────
     dur_group = parser.add_argument_group("duration control")
 
@@ -757,6 +803,15 @@ def _build_generate_argv(args: argparse.Namespace) -> list[str]:
     # Forward the TTS engine choice so word-budget math uses per-engine WPM.
     if args.engine:
         argv += ["--engine", args.engine]
+    # Fact-check and content mode.
+    if hasattr(args, "fact_check") and args.fact_check:
+        argv += ["--fact-check", args.fact_check]
+    if hasattr(args, "reference_material") and args.reference_material:
+        argv += ["--reference-material", str(args.reference_material)]
+    if hasattr(args, "content_mode") and args.content_mode and args.content_mode != "auto":
+        argv += ["--content-mode", args.content_mode]
+    if getattr(args, "allow_bootstrap_fabrications", False):
+        argv.append("--allow-bootstrap-fabrications")
 
     return argv
 

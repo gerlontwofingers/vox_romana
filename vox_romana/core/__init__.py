@@ -33,7 +33,7 @@ from .archive import AgentNote, AgentNoteStore, EditorNote, NoteArchive, Outline
 from .catalog import Catalog, RunRecord, StudyRecord
 from .client import DeepSeekClient
 from .conductor import BaseConductor, ConductorResult
-from .config import ContentConfig, FactCheckMode, ParticipantProfile, ShowHostConfig
+from .config import ContentConfig, ContentMode, FactCheckMode, ParticipantProfile, ShowHostConfig
 from .data_researcher import DataResearcher, StudyResult
 from .duration import (
     SpeechRateAdvisor,
@@ -60,7 +60,7 @@ from .json_retry import JsonParseError, json_retry, parse_json_response
 from .librarian import Librarian, LibrarianResult
 from .models import AgentResponse, AudioEvent, FactCard
 from .router import RouterResult, ShowRouter, parse_router_response
-from .search import BaseSearchProvider, GoogleSearchProvider, SearchResult
+from .search import BaseSearchProvider, GoogleSearchProvider, SearchResult, build_fact_check_provider
 from .session import AgentSession
 
 __all__ = [
@@ -71,6 +71,7 @@ __all__ = [
     "AudioEvent",
     "BaseConductor",
     "BaseSearchProvider",
+    "build_fact_check_provider",
     "Catalog",
     "ChunkEditor",
     "ChunkResult",
@@ -84,6 +85,7 @@ __all__ = [
     "EditorNote",
     "EditorVerdict",
     "FactCard",
+    "ContentMode",
     "FactCheckMode",
     "GoogleSearchProvider",
     "JsonParseError",

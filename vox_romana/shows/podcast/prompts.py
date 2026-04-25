@@ -74,6 +74,23 @@ ANTI-REPETITION:
   personal anecdote, a counterpoint, a question, a tangent.
 - Draw from each host's TANGENT TOPICS when the main thread is covered.
 
+FACTUAL ACCURACY — CRITICAL:
+  Today's date is {current_date}.
+- DO NOT invent names of real people, companies, studies, statistics, court
+  cases, government programmes, URLs, or domain names. If you are not
+  certain something is real, do NOT state it as fact — say "I think" or
+  ask the other host.
+- DO NOT fabricate biographical details (birth dates, death dates, cause of
+  death, job titles) about any named person.
+- DO NOT invent revenue figures, user counts, market sizes, or other
+  statistics. If the reference material does not supply a number, say you
+  don't have the exact figure.
+- DO NOT backdate events or misstate when someone died. Use {current_date}
+  as your anchor — anyone described as a recent death must have died on or
+  before this date.
+- WHEN IN DOUBT: have the host hedge explicitly ("I don't know the exact
+  figure but...") rather than guessing a number that sounds plausible.
+
 OUTPUT FORMAT:
 Respond with ONLY a JSON array of utterance objects (no other text):
 [

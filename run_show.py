@@ -122,6 +122,7 @@ load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
+from vox_romana.core.fact_checker import FactChecker
 from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.core.router import ShowRouter
 
@@ -339,6 +340,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "The editor reviews each chunk for quality (speaker clarity, "
             "repetition, narrative coherence). Failed chunks are regenerated "
             "with detailed feedback. Set to 0 for no editor review."
+        ),
+    )
+    editing_group.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="thorough",
+        dest="fact_check",
+        help=(
+            "Fact-check mode (default: thorough). "
+            "'off': no checking. "
+            "'quick': verify against --reference-material. "
+            "'thorough': also web-searches unverifiable claims. "
+            "Fabricated facts and cross-segment contradictions trigger "
+            "regeneration up to max_retries."
+        ),
+    )
+    editing_group.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material for fact-checking.",
+    )
+    editing_group.add_argument(
+        "--content-mode",
+        choices=["auto", "factual", "fictional-universe", "pure-fiction"],
+        default="auto",
+        dest="content_mode",
+        help=(
+            "Content truth-mode (default: auto — detected from the brief). "
+            "'factual': real-world claims, fabrications block publication. "
+            "'fictional-universe': established canon (Star Wars, Tolkien, …), "
+            "violations are WARNINGS not blockers. "
+            "'pure-fiction': original fiction, fact-checking is skipped entirely."
+        ),
+    )
+
+    editing_group.add_argument(
+        "--allow-bootstrap-fabrications",
+        action="store_true",
+        default=False,
+        dest="allow_bootstrap_fabrications",
+        help=(
+            "Skip the bootstrap preflight abort when fabricated facts are detected "
+            "in the generated outline/rundown. Prints a warning and continues. "
+            "Not recommended — use only when you have verified the content manually."
         ),
     )
 
@@ -589,17 +636,33 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides["debate_format"] = args.debate_format
     if args.max_retries is not None:
         overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Phase 2: Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
+    reference_text: str | None = None
+    if args.reference_material is not None:
+        if not args.reference_material.exists():
+            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+            sys.exit(1)
+        reference_text = args.reference_material.read_text().strip()
+
+    if args.content_mode != "auto":
+        overrides["content_mode"] = args.content_mode
+
     bootstrap_kwargs = dict(
-        reference_material=None,
-        fact_check="off",
+        reference_material=reference_text,
+        fact_check=args.fact_check,
         overrides=overrides,
         auto_research=False,
     )
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    if args.content_mode != "auto":
+        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
 
     if args.research:
         _enable_research(bootstrap_kwargs, args)
@@ -687,17 +750,33 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         overrides["tone"] = args.tone
     if args.max_retries is not None:
         overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Phase 2: Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
     t0 = time.time()
 
+    reference_text_news: str | None = None
+    if args.reference_material is not None:
+        if not args.reference_material.exists():
+            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+            sys.exit(1)
+        reference_text_news = args.reference_material.read_text().strip()
+
+    if args.content_mode != "auto":
+        overrides["content_mode"] = args.content_mode
+
     bootstrap_kwargs = dict(
-        reference_material=None,
-        fact_check="off",
+        reference_material=reference_text_news,
+        fact_check=args.fact_check,
         overrides=overrides,
         auto_research=False,
     )
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    if args.content_mode != "auto":
+        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
 
     if args.research:
         _enable_research(bootstrap_kwargs, args)
@@ -790,17 +869,35 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides["tone"] = args.tone
     if args.max_retries is not None:
         overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Phase 2: Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
+    reference_text_podcast: str | None = None
+    if args.reference_material is not None:
+        if not args.reference_material.exists():
+            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+            sys.exit(1)
+        reference_text_podcast = args.reference_material.read_text().strip()
+
+    if args.content_mode != "auto":
+        overrides["content_mode"] = args.content_mode
+
     bootstrap_kwargs = dict(
         overrides=overrides,
         auto_research=False,
+        fact_check=args.fact_check,
+        reference_material=reference_text_podcast,
     )
     if target_words is not None:
         bootstrap_kwargs["target_words"] = target_words
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    if args.content_mode != "auto":
+        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
 
     if args.research:
         _enable_research(bootstrap_kwargs, args)
@@ -894,6 +991,20 @@ def main(argv: list[str] | None = None) -> None:
     # One client for the whole run so bootstrap + conductor + editor
     # all share the same connection pool.
     client = DeepSeekClient()
+
+    # ── Pre-flight: validate brief for factual accuracy ──────────────
+    if args.fact_check != "off":
+        _preflight_checker = FactChecker.build_default(client)
+        _preflight_report = _preflight_checker.check_chunk(
+            brief, chunk_id="brief", mode="quick", content_mode="factual"
+        )
+        if _preflight_report.has_fabrications:
+            print("\n\u26a0  PRE-FLIGHT WARNING: Your brief may contain incorrect claims.")
+            print("   The fact-checker flagged the following based on LLM knowledge:")
+            for _r in _preflight_report.fabricated_claims:
+                print(f"   \u2022 {_r.claim}")
+                print(f"     \u2192 {_r.explanation}")
+            print("   The show will still be generated. Verify these facts before publishing.\n")
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 1: ROUTE — classify the brief → pick the right studio

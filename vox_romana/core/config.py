@@ -68,6 +68,30 @@ from typing import Literal
 FactCheckMode = Literal["off", "quick", "thorough"]
 
 
+# ── Content modes for fact-checking behaviour ──────────────────────────────
+# These tell the FactChecker WHAT KIND of truth a given show is committing to:
+#
+#   "factual"             — Real-world content. Every concrete claim must be
+#                            verifiable against reality (or reference_material).
+#                            Fabrications BLOCK publication and trigger rewrites.
+#                            News and debates are always this mode.
+#
+#   "fictional-universe"  — Content set in an established fictional world
+#                            (Star Wars, Marvel, Tolkien, Harry Potter, …).
+#                            The check is against established CANON, not
+#                            real-world facts. Luke Skywalker cannot be from
+#                            Kansas — he is from Tatooine. Canon violations
+#                            are WARNINGS (CANON_WARN) rather than blockers,
+#                            because storytelling sometimes bends canon.
+#
+#   "pure-fiction"        — Wholly original fiction with no real-world or
+#                            established-canon claims. The FactChecker SKIPS
+#                            entirely (no LLM calls). Use this for original
+#                            short stories, made-up worlds, etc.
+
+ContentMode = Literal["factual", "fictional-universe", "pure-fiction"]
+
+
 @dataclass
 class ContentConfig:
     """Base configuration that every content type shares.
@@ -120,6 +144,7 @@ class ContentConfig:
     brief: str = ""
     reference_material: str | None = None
     fact_check: FactCheckMode = "off"
+    content_mode: ContentMode = "factual"
     title: str | None = None
     language: str = "en"
     estimated_duration_minutes: int | None = None
@@ -128,6 +153,7 @@ class ContentConfig:
     tolerance_percent: float = 10.0
     flexibility_score: float = 0.5
     max_retries: int = 3
+    allow_bootstrap_fabrications: bool = False
 
     def validate(self) -> list[str]:
         """Return a list of problems with this config. Empty list = all good.
@@ -149,6 +175,12 @@ class ContentConfig:
         if self.fact_check not in ("off", "quick", "thorough"):
             problems.append(
                 f"fact_check must be 'off', 'quick', or 'thorough', got '{self.fact_check}'."
+            )
+
+        if self.content_mode not in ("factual", "fictional-universe", "pure-fiction"):
+            problems.append(
+                "content_mode must be 'factual', 'fictional-universe', or "
+                f"'pure-fiction', got '{self.content_mode}'."
             )
 
         # If you're asking for fact-checking but gave no reference material,

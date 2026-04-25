@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
 from .config import NewsConfig, AnchorConfig, SegmentConfig
 from .models import MergedNewsShow, NewsEvent, NewsSegment
@@ -182,6 +183,8 @@ class NewsConductor(BaseConductor):
         self._director_note: str = ""
         self._llm_calls: int = 0
         self._show_id: str = ""
+        self._fact_checker: FactChecker | None = None
+        self._approved_segment_texts: list[str] = []
 
     @classmethod
     def from_brief(
@@ -245,6 +248,74 @@ class NewsConductor(BaseConductor):
             self._anchor_sessions[name] = self._create_session(
                 prompt, recent_window=DEFAULT_RECENT_WINDOW,
             )
+
+        # Build FactChecker (news is always factual).
+        config = self.config
+        if isinstance(config, NewsConfig) and config.fact_check != "off":
+            self._fact_checker = FactChecker.build_default(self._client)
+        else:
+            self._fact_checker = None
+        self._approved_segment_texts = []
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check the bootstrap output before generation begins.
+
+        Scans segment headlines and angles for fabricated claims and aborts
+        (or warns) based on ``config.allow_bootstrap_fabrications``.
+        """
+        if self._fact_checker is None:
+            return
+        config = self.config
+        if not isinstance(config, NewsConfig):
+            return
+        surfaces: list[str] = []
+        for seg in config.segments:
+            if seg.headline:
+                surfaces.append(seg.headline)
+            if seg.angle:
+                surfaces.append(seg.angle)
+        bootstrap_text = " ".join(surfaces).strip()
+        if not bootstrap_text:
+            return
+        try:
+            report = self._fact_checker.check_chunk(
+                bootstrap_text,
+                chunk_id="bootstrap",
+                reference_material=config.reference_material,
+                mode=config.fact_check,
+                content_mode="factual",
+            )
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "NewsConductor: bootstrap preflight raised: %r", exc
+            )
+            return
+        if report.has_fabrications:
+            print(
+                "\n\u26a0  BOOTSTRAP PRE-FLIGHT: Fabricated facts detected in "
+                "the generated rundown."
+            )
+            print(
+                "   The fact-checker flagged the following based on LLM knowledge:"
+            )
+            for r in report.fabricated_claims:
+                print(f"   \u2022 {r.claim}")
+                print(f"     \u2192 {r.explanation}")
+            if not config.allow_bootstrap_fabrications:
+                print(
+                    "   Generation aborted. Fix your brief or supply "
+                    "--reference-material."
+                )
+                print(
+                    "   Use --allow-bootstrap-fabrications to override "
+                    "(not recommended).\n"
+                )
+                raise SystemExit(1)
+            else:
+                print(
+                    "   Continuing anyway (--allow-bootstrap-fabrications is set).\n"
+                )
 
     def _run_turn_loop(self) -> list[dict]:
         """Run the segment-by-segment generation loop.
@@ -668,7 +739,110 @@ class NewsConductor(BaseConductor):
 
             events.append(event_dict)
 
+        # ── Fact-check gate (whole segment, blocking) ─────────────────
+        # News is always factual. Check after all beats are generated so
+        # the rejection note can trigger a full segment regeneration.
+        if self._fact_checker is not None and isinstance(config, NewsConfig) and config.fact_check != "off":
+            seg_text = " ".join(
+                (e.get("text") or "").strip() for e in events
+            ).strip()
+            for fc_attempt in range(config.max_retries):
+                try:
+                    fc_report = self._fact_checker.check_chunk(
+                        seg_text,
+                        chunk_id=seg_id,
+                        reference_material=config.reference_material,
+                        mode=config.fact_check,
+                        content_mode="factual",
+                        prior_context=self._build_prior_context(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "NewsConductor: fact-check raised for %s: %r",
+                        seg_id, exc,
+                    )
+                    break
+
+                if not (fc_report.has_fabrications or fc_report.has_contradictions):
+                    break  # Segment passed.
+
+                blocking = (
+                    fc_report.fabricated_claims + fc_report.contradicted_claims
+                )
+                if fc_attempt < config.max_retries - 1:
+                    claims_lines = "\n".join(
+                        f"  • {r.claim}: {r.explanation}"
+                        for r in blocking
+                    )
+                    rejection_msg = (
+                        f"FACT-CHECK REJECTION (attempt {fc_attempt + 1}/"
+                        f"{config.max_retries}): The previous delivery "
+                        f"contained fabricated facts or contradictions:\n"
+                        f"{claims_lines}\n\n"
+                        f"Please re-deliver this segment. Remove all fabricated "
+                        f"claims and ensure consistency with what has been "
+                        f"reported in earlier segments."
+                    )
+                    print(
+                        f"  [seg {segment_number}/{total_segments}] "
+                        f"fact-check fail ({len(blocking)} issue(s)) "
+                        f"— retry {fc_attempt + 1}/{config.max_retries}",
+                        flush=True,
+                    )
+                    session = self._anchor_sessions.get(anchor.name)
+                    try:
+                        retry_raw = (
+                            session.send(rejection_msg)
+                            if session is not None
+                            else self._client.chat(
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": rejection_msg},
+                                ]
+                            )
+                        )
+                        retry_event = self._parse_response(retry_raw)
+                        retry_event["speaker"] = anchor.name
+                        retry_event["role"] = "anchor"
+                        retry_event["event_kind"] = "utterance"
+                        retry_event["segment_id"] = seg_id
+                        # Replace last beat with the regenerated version.
+                        if events:
+                            events[-1] = retry_event
+                        seg_text = " ".join(
+                            (e.get("text") or "").strip() for e in events
+                        ).strip()
+                    except Exception as exc:
+                        logger.warning(
+                            "NewsConductor: fact-check retry failed for %s: %r",
+                            seg_id, exc,
+                        )
+                        break
+                else:
+                    for r in blocking:
+                        self._length_warnings.append(
+                            f"[{seg_id}] FACT_CHECK_WARN: Published with "
+                            f"unresolved claim after "
+                            f"{config.max_retries} attempts: {r.claim}"
+                        )
+                    print(
+                        f"  [seg {segment_number}/{total_segments}] "
+                        f"fact-check EXHAUSTED — {len(blocking)} issue(s) remain",
+                        flush=True,
+                    )
+                    break
+
+            # Record approved segment text for future consistency checks.
+            if seg_text:
+                self._approved_segment_texts.append(seg_text)
+
         return events
+
+    def _build_prior_context(self) -> str | None:
+        """Return concatenated approved segment texts for consistency checking."""
+        if not self._approved_segment_texts:
+            return None
+        return "\n---\n".join(self._approved_segment_texts)
 
     def _generate_host_event(self, *, beat: str, context_hint: str) -> dict:
         """Generate one narration event from the show host."""

@@ -170,7 +170,8 @@ def parse_args() -> argparse.Namespace:
         help="Auto-research the topic before generating. Uses Google if API "
         "keys are set (GOOGLE_API_KEY + GOOGLE_CSE_ID), falls back to LLM "
         "knowledge otherwise.",
-    )    parser.add_argument(
+    )
+    parser.add_argument(
         "--no-memory",
         action="store_false",
         dest="memory",
@@ -192,6 +193,27 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Override the show name (e.g. 'Trash Pandas')",
+    )
+
+    # ── Fact-checking ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="off",
+        dest="fact_check",
+        help=(
+            "Fact-check mode for generated content (default: off). "
+            "'quick': verify claims against --reference-material only. "
+            "'thorough': also web-searches unverifiable claims. "
+            "Segments with fabricated facts are regenerated up to --max-retries times."
+        ),
+    )
+    parser.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material for fact-checking.",
     )
 
     # ── Tagging ──────────────────────────────────────────────────────
@@ -279,9 +301,24 @@ def main() -> None:
         auto_research=False,
     )
 
+    # ── Fact-check configuration ─────────────────────────────────────
+    if args.fact_check != "off":
+        reference_text: str | None = None
+        if args.reference_material is not None:
+            if not args.reference_material.exists():
+                print(f"Error: reference material file not found: {args.reference_material}", file=sys.stderr)
+                sys.exit(1)
+            reference_text = args.reference_material.read_text().strip()
+        bootstrap_kwargs["fact_check"] = args.fact_check
+        bootstrap_kwargs["reference_material"] = reference_text
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    else:
+        bootstrap_kwargs["fact_check"] = "off"
+
     # ── Optional: auto-research ──────────────────────────────────────
     if args.research:
-        bootstrap_kwargs["auto_research"] = True        if args.memory:
+        bootstrap_kwargs["auto_research"] = True
+        if args.memory:
             try:
                 from vox_romana.core.catalog import Catalog
                 from vox_romana.memory.recall import MemoryRecall
@@ -290,7 +327,8 @@ def main() -> None:
                 bootstrap_kwargs["memory"] = memory
                 log("  Memory-first search: ON", quiet=args.quiet)
             except Exception as e:
-                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)        try:
+                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
+        try:
             from vox_romana.core.search import GoogleSearchProvider
             search_provider = GoogleSearchProvider()
             bootstrap_kwargs["search_provider"] = search_provider

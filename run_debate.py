@@ -220,6 +220,28 @@ def parse_args() -> argparse.Namespace:
     #
     # Later, when you have a payload/ directory full of JSON files,
     # this tag makes grep/sort/filter trivial.
+    # ── Fact-checking ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="off",
+        dest="fact_check",
+        help=(
+            "Fact-check mode (default: off). "
+            "'quick': verify against --reference-material. "
+            "'thorough': also web-searches unverifiable claims. "
+            "Fabricated facts trigger regeneration up to max_retries."
+        ),
+    )
+    parser.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material for fact-checking.",
+    )
+
+    # ── Tagging ─────────────────────────────────────────────────
     parser.add_argument(
         "--tag", "-t",
         type=str,
@@ -315,6 +337,20 @@ def main() -> None:
         overrides=overrides,
         auto_research=False,
     )
+
+    # ── Fact-check configuration ───────────────────────────────────────
+    if args.fact_check != "off":
+        reference_text: str | None = None
+        if args.reference_material is not None:
+            if not args.reference_material.exists():
+                print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+                sys.exit(1)
+            reference_text = args.reference_material.read_text().strip()
+        bootstrap_kwargs["fact_check"] = args.fact_check
+        bootstrap_kwargs["reference_material"] = reference_text
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    else:
+        bootstrap_kwargs["fact_check"] = "off"
 
     # ── Optional: auto-research ──────────────────────────────────────
     if args.research:
