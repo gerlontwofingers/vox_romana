@@ -91,7 +91,10 @@ torch>=2.4,<2.6
 sentence-transformers>=3.0,<3.2
 # Music generation: MusicGenEngine uses MusicgenForConditionalGeneration from transformers.
 # WAV conversion uses scipy (listed above). Tensor ops use torch (listed above).
-# No new pip installs needed — all dependencies already present.
+# hf_transfer is optional but strongly recommended for large model downloads
+# (musicgen-large is ~13.7 GB): Rust-based multi-part downloader with stall detection.
+# MusicGenEngine sets HF_HUB_ENABLE_HF_TRANSFER=1 automatically when it is present.
+hf_transfer>=0.1.8
 transformers>=4.44,<4.46
 peft>=0.12,<0.14            # LoRA fine-tuning for memory system
 datasets>=3.0,<3.2          # dataset loading for memory trainer

@@ -1,44 +1,7 @@
-"""run_university.py — command-line interface for the University research system.
+"""University deep-research CLI.
 
-USAGE
------
-
-::
-
-    # Run a new deep-research study
-    python run_university.py study "Roman aqueducts and hydraulic engineering"
-
-    # Study with explicit budget
-    python run_university.py study "Universal Basic Income" --hours 2.0
-
-    # List all sessions (from index.json)
-    python run_university.py list
-
-    # Inspect a session (synthesis + notes)
-    python run_university.py inspect a1b2c3d4e5f6
-
-    # One-shot question against a completed session
-    python run_university.py ask a1b2c3d4e5f6 "What materials did Roman roads use?"
-
-    # Interactive chat REPL against a session
-    python run_university.py chat a1b2c3d4e5f6
-
-    # Extend a paused/interrupted session
-    python run_university.py extend a1b2c3d4e5f6 --hours 1.0
-
-    # Export session to Markdown or JSONL
-    python run_university.py export a1b2c3d4e5f6
-    python run_university.py export a1b2c3d4e5f6 --format jsonl
-
-SUBCOMMANDS
------------
-study      Run a new Scholar on one topic.
-ask        Answer a one-shot question grounded in a session's notes.
-chat       Interactive Q&A REPL against a session.
-list       List all sessions from the session registry.
-inspect    Print synthesis and notes for a session.
-extend     Resume a paused/interrupted session for more research time.
-export     Write a session to Markdown or JSONL.
+Invoked via ``python run.py --mode university SUBCOMMAND [ARGS…]``.
+Subcommands: study, ask, chat, list, inspect, extend, export.
 """
 
 from __future__ import annotations
@@ -64,7 +27,7 @@ def _load_session(session_id: str):
     except FileNotFoundError:
         print(
             f"Error: session '{session_id}' not found in {UNIVERSITY_ROOT}.\n"
-            "Run `python run_university.py list` to see available sessions.",
+            "Run `python run.py --mode university list` to see available sessions.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -132,7 +95,7 @@ def _cmd_study(args: argparse.Namespace) -> None:
         print("Synthesis:")
         print(f"  {session.synthesis[:500]}{'…' if len(session.synthesis) > 500 else ''}")
     print()
-    print(f"Session saved.  Inspect: python run_university.py inspect {session.session_id}")
+    print(f"Session saved.  Inspect: python run.py --mode university inspect {session.session_id}")
 
 
 def _cmd_ask(args: argparse.Namespace) -> None:
@@ -162,7 +125,7 @@ def _cmd_list(args: argparse.Namespace) -> None:
 
     index_path = UNIVERSITY_ROOT / "index.json"
     if not index_path.exists():
-        print("No sessions found.  Run `python run_university.py study <topic>` to start.")
+        print("No sessions found.  Run `python run.py --mode university study <topic>` to start.")
         return
 
     try:
@@ -176,7 +139,6 @@ def _cmd_list(args: argparse.Namespace) -> None:
         print("No sessions found.")
         return
 
-    # Filter by status if requested.
     status_filter = getattr(args, "status", None)
     if status_filter:
         records = [r for r in records if r.get("status") == status_filter]
@@ -364,21 +326,21 @@ def _export_jsonl(session) -> str:
 # Argument parser
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run_university.py",
+        prog="run.py --mode university",
         description="University deep-research CLI — powered by a local Ollama/Scholar agent.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python run_university.py study 'Roman aqueducts'\n"
-            "  python run_university.py study 'Universal Basic Income' --hours 2.0\n"
-            "  python run_university.py list\n"
-            "  python run_university.py inspect a1b2c3d4e5f6\n"
-            "  python run_university.py ask a1b2c3d4e5f6 'What did Roman roads use?'\n"
-            "  python run_university.py chat a1b2c3d4e5f6\n"
-            "  python run_university.py extend a1b2c3d4e5f6 --hours 1.0\n"
-            "  python run_university.py export a1b2c3d4e5f6 --format markdown\n"
+            "  python run.py --mode university study 'Roman aqueducts'\n"
+            "  python run.py --mode university study 'UBI' --hours 2.0\n"
+            "  python run.py --mode university list\n"
+            "  python run.py --mode university inspect a1b2c3d4e5f6\n"
+            "  python run.py --mode university ask a1b2c3d4e5f6 'What did Roman roads use?'\n"
+            "  python run.py --mode university chat a1b2c3d4e5f6\n"
+            "  python run.py --mode university extend a1b2c3d4e5f6 --hours 1.0\n"
+            "  python run.py --mode university export a1b2c3d4e5f6 --format markdown\n"
         ),
     )
 
@@ -420,7 +382,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_ask.add_argument(
         "session_id",
         type=str,
-        help="12-char session ID (from `run_university.py list`).",
+        help="12-char session ID (from `run.py --mode university list`).",
     )
     sp_ask.add_argument(
         "question",
@@ -530,15 +492,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
-
 def main(argv: list[str] | None = None) -> None:
-    parser = _build_parser()
+    parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)
-
-
-if __name__ == "__main__":
-    main()

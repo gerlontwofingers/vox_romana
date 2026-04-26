@@ -310,7 +310,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music"],
+        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -796,6 +796,181 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Analysis flags (--mode analysis) ─────────────────────────────
+    analysis_group = parser.add_argument_group(
+        "rhetorical analysis (--mode analysis)"
+    )
+    analysis_group.add_argument(
+        "--analysis-file-b",
+        dest="analysis_file_b",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Second speaker text file.  When supplied, the positional "
+            "prompt arg is treated as speaker A's text file (text-pair "
+            "mode).  Ignored when --script-input points to a debate JSON."
+        ),
+    )
+    analysis_group.add_argument(
+        "--speaker-a",
+        dest="speaker_a",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Speaker A name or substring (case-insensitive).",
+    )
+    analysis_group.add_argument(
+        "--speaker-b",
+        dest="speaker_b",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Speaker B name or substring (case-insensitive).",
+    )
+    analysis_group.add_argument(
+        "--analysis-output",
+        dest="analysis_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory for the HTML analysis report "
+            "(default: output/text/analysis/)."
+        ),
+    )
+    analysis_group.add_argument(
+        "--n-topics",
+        dest="analysis_n_topics",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of LDA topics (default: 10).",
+    )
+    analysis_group.add_argument(
+        "--permutations",
+        dest="analysis_permutations",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Permutation test count (default: 1000).",
+    )
+    analysis_group.add_argument(
+        "--no-llm",
+        dest="analysis_no_llm",
+        action="store_true",
+        default=False,
+        help="Skip DeepSeek LLM stance extraction.",
+    )
+    analysis_group.add_argument(
+        "--no-html",
+        dest="analysis_no_html",
+        action="store_true",
+        default=False,
+        help="Print text summary to stdout only; do not save HTML.",
+    )
+    analysis_group.add_argument(
+        "--min-words",
+        dest="analysis_min_words",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Minimum words per utterance (default: 3).",
+    )
+
+    # ── Emotion-flow flags (--mode emotion-flow) ──────────────────────
+    ef_group = parser.add_argument_group(
+        "emotion flow analysis (--mode emotion-flow)"
+    )
+    ef_group.add_argument(
+        "--leader",
+        dest="ef_leader",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Speaker/leader name filter for emotion-flow analysis.  "
+            "Required for multi-speaker JSON.  Inferred from filename "
+            "when omitted."
+        ),
+    )
+    ef_group.add_argument(
+        "--emotion-output",
+        dest="emotion_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Output directory for emotion-flow reports (default: output/emotion_flow/).",
+    )
+    ef_group.add_argument(
+        "--no-translate",
+        dest="ef_no_translate",
+        action="store_true",
+        default=False,
+        help="Skip translation step (treat corpus as already English).",
+    )
+    ef_group.add_argument(
+        "--no-semantic",
+        dest="ef_no_semantic",
+        action="store_true",
+        default=False,
+        help="Skip semantic-flow correlation (no sentence-transformers needed).",
+    )
+    ef_group.add_argument(
+        "--ef-permutations",
+        dest="ef_permutations",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Permutation draws for emotion-flow null-hypothesis test (default: 1000).",
+    )
+    ef_group.add_argument(
+        "--ef-seed",
+        dest="ef_seed",
+        type=int,
+        default=42,
+        metavar="N",
+        help="RNG seed for emotion-flow analysis (default: 42).",
+    )
+    ef_group.add_argument(
+        "--ef-cache-dir",
+        dest="ef_cache_dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="HuggingFace model cache directory override for emotion-flow.",
+    )
+    ef_group.add_argument(
+        "--to-show",
+        dest="ef_to_show",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a report.json produced by emotion-flow analysis.  "
+            "Switches into show-adapter mode: converts the report to a "
+            "NewsConfig (and optionally runs the show pipeline)."
+        ),
+    )
+    ef_group.add_argument(
+        "--run-show",
+        dest="ef_run_show",
+        action="store_true",
+        default=False,
+        help=(
+            "When --to-show is set, also run the show pipeline to generate "
+            "show.json (requires DEEPSEEK_API_KEY)."
+        ),
+    )
+    ef_group.add_argument(
+        "--n-segments",
+        dest="ef_n_segments",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Segment count for the adapted emotion-flow show (default: 6).",
+    )
+
     # ── Language / localisation flags ────────────────────────────────
     lang_group = parser.add_argument_group(
         "language / localisation"
@@ -1201,6 +1376,261 @@ def _mode_music(args: argparse.Namespace) -> Path:
     return out_path
 
 
+def _mode_analysis(args: argparse.Namespace) -> None:
+    """Run analysis mode: rhetorical comparison of two speaker corpora.
+
+    Loads two speaker corpora (from a vox_romana debate JSON via
+    ``--script-input``, or from two text files via the positional
+    ``prompt`` and ``--analysis-file-b``), runs the full analysis
+    pipeline, and writes a self-contained HTML report.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.analysis.corpus import CorpusLoader
+    from vox_romana.analysis.reporter import AnalysisReporter
+    from vox_romana.core.paths import OUTPUT_DIR as _ANALYSIS_OUTPUT_DIR
+
+    # ── Resolve input files ──────────────────────────────────────────
+    json_path: Path | None = None
+    text_a: Path | None = None
+    text_b: Path | None = None
+
+    if args.script_input is not None and args.script_input.suffix.lower() == ".json":
+        json_path = args.script_input
+    elif args.analysis_file_b is not None and args.prompt is not None:
+        text_a = args.prompt
+        text_b = args.analysis_file_b
+    elif args.script_input is not None:
+        # Single non-JSON file via --script-input is invalid here
+        print(
+            "Error: --mode analysis requires either a debate JSON "
+            "(--script-input PATH.json) or two text files "
+            "(positional FILE_A and --analysis-file-b FILE_B).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    else:
+        print(
+            "Error: --mode analysis requires either --script-input "
+            "pointing at a debate JSON, or a positional FILE_A plus "
+            "--analysis-file-b FILE_B.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    min_words = args.analysis_min_words
+
+    # ── Load corpora ─────────────────────────────────────────────────
+    if json_path is not None:
+        corpora = CorpusLoader.from_vox_romana_json(json_path, min_words=min_words)
+        speakers = list(corpora.keys())
+        if len(speakers) < 2:
+            print(
+                f"Error: found only {len(speakers)} speaker(s) in {json_path}; "
+                "need at least 2 to compare.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        def _resolve(hint: str | None, exclude: str | None) -> str:
+            if hint is not None:
+                matches = [s for s in speakers if hint.lower() in s.lower()]
+                if not matches:
+                    print(
+                        f"Error: no speaker matching {hint!r} in {speakers}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                return matches[0]
+            for s in speakers:
+                if s != exclude:
+                    return s
+            return speakers[0]
+
+        name_a = _resolve(args.speaker_a, None)
+        name_b = _resolve(args.speaker_b, name_a)
+        if name_a == name_b:
+            print(
+                f"Error: speaker A and B resolved to the same speaker: {name_a!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        corpus_a = corpora[name_a]
+        corpus_b = corpora[name_b]
+    else:
+        assert text_a is not None and text_b is not None
+        name_a = args.speaker_a or text_a.stem
+        name_b = args.speaker_b or text_b.stem
+        corpus_a = CorpusLoader.from_text_file(
+            text_a, speaker_name=name_a, min_words=min_words
+        )
+        corpus_b = CorpusLoader.from_text_file(
+            text_b, speaker_name=name_b, min_words=min_words
+        )
+
+    if not args.quiet:
+        print(
+            f"  Loaded corpora: {corpus_a.name} ({corpus_a.utterance_count} utts) "
+            f"vs. {corpus_b.name} ({corpus_b.utterance_count} utts)"
+        )
+
+    # ── Build report ─────────────────────────────────────────────────
+    if args.analysis_no_html:
+        output_dir = None
+    else:
+        output_dir = args.analysis_output or (
+            _ANALYSIS_OUTPUT_DIR / "text" / "analysis"
+        )
+
+    reporter = AnalysisReporter(output_dir=output_dir)
+    report = reporter.build(
+        corpus_a,
+        corpus_b,
+        n_topics=args.analysis_n_topics,
+        n_permutations=args.analysis_permutations,
+        use_llm=not args.analysis_no_llm,
+    )
+
+    # ── Output ───────────────────────────────────────────────────────
+    if args.analysis_no_html:
+        summary = reporter.render_text(report, corpus_a=corpus_a, corpus_b=corpus_b)
+        print(summary)
+
+    if not args.quiet:
+        if report.report_path:
+            print(f"  HTML report \u2192 {report.report_path}")
+        if report.hypothesis is not None:
+            verdict = report.hypothesis.verdict
+            tests_passed = report.hypothesis.tests_passed
+            total = report.hypothesis.total_tests
+            print(
+                f"  Hypothesis verdict: {verdict}  "
+                f"({tests_passed}/{total} tests)"
+            )
+
+
+def _mode_emotion_flow(args: argparse.Namespace) -> None:
+    """Run emotion-flow mode: cross-lingual emotion analysis or show adaptation.
+
+    Without ``--to-show``: loads speech segments from ``--script-input`` (or
+    the positional ``prompt``), runs the full EmotionFlowPipeline, and writes
+    HTML/JSON/CSV/PNG reports.
+
+    With ``--to-show``: loads a ``report.json`` produced by the analysis pass
+    and converts it into a NewsConfig via EmotionFlowShowAdapter.  If
+    ``--run-show`` is also set, the show pipeline is executed to produce a
+    full show.json.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.core.paths import OUTPUT_DIR as _EF_OUTPUT_DIR
+
+    if args.ef_to_show is not None:
+        # ── Show-adapter mode ────────────────────────────────────────
+        import json as _json
+        from dataclasses import asdict
+        from vox_romana.emotion_flow.show_adapter import EmotionFlowShowAdapter
+
+        report_path = args.ef_to_show
+
+        adapter = EmotionFlowShowAdapter(
+            n_segments=args.ef_n_segments,
+        )
+
+        if not args.quiet:
+            print(f"  Loading emotion-flow report: {report_path}")
+
+        config = adapter.adapt_from_file(report_path)
+
+        output_dir = args.emotion_output or (
+            _EF_OUTPUT_DIR / "shows" / "emotion_flow"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        config_path = output_dir / "show_config.json"
+        config_dict = asdict(config)
+        config_path.write_text(
+            _json.dumps(config_dict, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        if not args.quiet:
+            print(f"  Show config \u2192 {config_path}")
+
+        if args.ef_run_show:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+
+            from vox_romana.core.client import DeepSeekClient
+            from vox_romana.shows.news.conductor import NewsConductor
+            from vox_romana.shows.news.serializer import NewsSerializer
+
+            if not args.quiet:
+                print("  Running show pipeline\u2026")
+
+            client = DeepSeekClient()
+            conductor = NewsConductor(config, client=client)  # type: ignore[arg-type]
+            result = conductor.run()
+            merged = result.to_merged_news_show()
+
+            show_path = output_dir / "show.json"
+            NewsSerializer().save(merged, show_path)
+
+            if not args.quiet:
+                print(f"  Show \u2192 {show_path}")
+
+    else:
+        # ── Analysis mode ────────────────────────────────────────────
+        source = args.script_input or args.prompt
+        if source is None:
+            print(
+                "Error: --mode emotion-flow requires --script-input pointing "
+                "to a text file, directory, or debate JSON (or use --to-show "
+                "PATH for show-adapter mode).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from vox_romana.emotion_flow.pipeline import EmotionFlowPipeline
+
+        output_dir = args.emotion_output or (_EF_OUTPUT_DIR / "emotion_flow")
+
+        pipeline = EmotionFlowPipeline(
+            output_dir=output_dir,
+            seed=args.ef_seed,
+            cache_dir=str(args.ef_cache_dir) if args.ef_cache_dir else None,
+            n_permutations=args.ef_permutations,
+            run_semantic=not args.ef_no_semantic,
+            run_translation=not args.ef_no_translate,
+        )
+
+        if not args.quiet:
+            leader_display = args.ef_leader or source.stem
+            print(f"  Source:       {source}")
+            print(f"  Leader:       {leader_display}")
+            print(f"  Output dir:   {output_dir}")
+            print(f"  Seed:         {args.ef_seed}  |  Permutations: {args.ef_permutations}")
+            if args.ef_no_translate:
+                print("  Translation:  OFF")
+            if args.ef_no_semantic:
+                print("  Semantic:     OFF")
+            print()
+
+        report = pipeline.run(
+            source,
+            leader=args.ef_leader,
+        )
+
+        if not args.quiet and report.report_path:
+            print(f"  Report \u2192 {report.report_path}")
+
+
 def _mode_publish(
     json_path: str | Path,
     args: argparse.Namespace,
@@ -1426,6 +1856,23 @@ def _run_language_matrix(
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_university_argv(argv: list[str]) -> list[str] | None:
+    """If ``--mode university`` (or ``-m university``) is in ``argv``, return
+    everything after ``university`` as the argv to forward to the University
+    CLI; otherwise return None.
+
+    University mode uses a subcommand grammar (study/list/inspect/ask/chat/
+    extend/export) that does not fit run.py's flat namespace, so we intercept
+    early and hand the remainder off to ``vox_romana.university.cli.main``.
+    """
+    for i, tok in enumerate(argv):
+        if tok in ("--mode", "-m") and i + 1 < len(argv) and argv[i + 1] == "university":
+            return list(argv[i + 2:])
+        if tok in ("--mode=university", "-m=university"):
+            return list(argv[i + 1:])
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the vox_romana master pipeline.
 
@@ -1436,6 +1883,15 @@ def main(argv: list[str] | None = None) -> None:
         argv: CLI arguments. Defaults to sys.argv[1:] if None.
               Exposed as a parameter so tests can call main() directly.
     """
+    # University mode has its own subcommand grammar and is dispatched
+    # before the master parser runs.
+    raw_argv = list(sys.argv[1:]) if argv is None else list(argv)
+    uni_argv = _extract_university_argv(raw_argv)
+    if uni_argv is not None:
+        from vox_romana.university.cli import main as university_main
+        university_main(uni_argv)
+        return
+
     args = parse_args(argv)
 
     # ── Music mode: apply quality defaults before validation ──────────
@@ -1525,6 +1981,73 @@ def main(argv: list[str] | None = None) -> None:
             )
             sys.exit(1)
 
+    if args.mode == "analysis":
+        # analysis takes either --script-input PATH.json or
+        # positional FILE_A + --analysis-file-b FILE_B.
+        if args.script_input is None and args.analysis_file_b is None:
+            print(
+                "Error: --mode analysis requires --script-input PATH.json "
+                "or a positional FILE_A plus --analysis-file-b FILE_B.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.script_input is not None and not args.script_input.exists():
+            print(
+                f"Error: script file not found: {args.script_input}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.analysis_file_b is not None:
+            if args.prompt is None:
+                print(
+                    "Error: --analysis-file-b requires a positional FILE_A "
+                    "as the first argument.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not args.prompt.exists():
+                print(
+                    f"Error: speaker A file not found: {args.prompt}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not args.analysis_file_b.exists():
+                print(
+                    f"Error: speaker B file not found: {args.analysis_file_b}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    if args.mode == "emotion-flow":
+        # Requires either --script-input / positional prompt (analysis),
+        # or --to-show PATH (show-adapter).  The two are mutually exclusive.
+        if args.ef_to_show is not None:
+            if not args.ef_to_show.exists():
+                print(
+                    f"Error: emotion-flow report not found: {args.ef_to_show}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if args.ef_run_show and args.script_input is not None:
+                # --script-input is irrelevant in to-show mode; warn rather
+                # than hard-error to stay friendly.
+                pass
+        else:
+            source = args.script_input or args.prompt
+            if source is None:
+                print(
+                    "Error: --mode emotion-flow requires --script-input PATH "
+                    "(or a positional prompt file), or --to-show report.json.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not source.exists():
+                print(
+                    f"Error: source path not found: {source}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
     # ── Validate and normalise language args ─────────────────────────
     # Normalise root_lang
     args.root_lang = args.root_lang.strip().lower()
@@ -1581,8 +2104,35 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Publish format: {fmt_label}")
             if args.publish_output:
                 print(f"  Publish output: {args.publish_output}")
-        # Language matrix (not shown for music mode — language-agnostic)
-        if args.mode != "music":
+        if args.mode == "analysis":
+            if args.script_input:
+                print(f"  Source: {args.script_input}")
+            elif args.prompt and args.analysis_file_b:
+                print(f"  Speaker A: {args.prompt}")
+                print(f"  Speaker B: {args.analysis_file_b}")
+            print(f"  Topics: {args.analysis_n_topics}  Permutations: {args.analysis_permutations}")
+            if args.analysis_no_llm:
+                print("  LLM stance extraction: off")
+            if args.analysis_no_html:
+                print("  HTML output: off (text summary only)")
+        if args.mode == "emotion-flow":
+            if args.ef_to_show is not None:
+                print(f"  Mode:         show-adapter")
+                print(f"  Report:       {args.ef_to_show}")
+                if args.ef_n_segments:
+                    print(f"  Segments:     {args.ef_n_segments}")
+                if args.ef_run_show:
+                    print("  Run show:     yes")
+            else:
+                source = args.script_input or args.prompt
+                print(f"  Source:       {source}")
+                print(f"  Permutations: {args.ef_permutations}  Seed: {args.ef_seed}")
+                if args.ef_no_translate:
+                    print("  Translation:  OFF")
+                if args.ef_no_semantic:
+                    print("  Semantic:     OFF")
+        # Language matrix (not shown for music/analysis/emotion-flow — language-agnostic)
+        if args.mode not in ("music", "analysis", "emotion-flow"):
             if len(args.out_lang_list) == 1 and args.out_lang_list[0] == args.root_lang:
                 print(f"  Language: {language_display([args.root_lang])}")
             else:
@@ -1599,6 +2149,22 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n{'═' * 60}")
             print(f"  Music generation complete!")
             print(f"  Audio → {out_path}")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "analysis":
+        # Standalone rhetorical analysis — two corpora → HTML report.
+        _mode_analysis(args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Analysis complete!")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "emotion-flow":
+        # Cross-lingual emotion flow analysis or show adaptation.
+        _mode_emotion_flow(args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Emotion-flow complete!")
             print(f"{'═' * 60}\n")
 
     elif args.mode == "publish":
