@@ -1,4 +1,4 @@
-"""Tests for the ChunkEditor — non-interactive quality gating agent.
+"""Tests for the ContentEditor — non-interactive quality gating agent.
 
 Tests:
     1. Review parses clean JSON verdict (pass)
@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ChunkEditor
+from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ContentEditor
 from vox_romana.core.editing.models import OutlineSection, OutlineSnapshot
 from vox_romana.core.session import AgentSession
 
@@ -39,7 +39,7 @@ def editor_session(mock_client):
 
 @pytest.fixture
 def editor(editor_session):
-    return ChunkEditor(editor_session)
+    return ContentEditor(editor_session)
 
 
 @pytest.fixture
@@ -69,9 +69,9 @@ class TestPassVerdict:
             "issues": [],
             "recommendations": [],
         })
-        verdict = editor.review("Alex: Great opening!", sample_snapshot, chunk_id="intro")
+        verdict = editor.review("Alex: Great opening!", sample_snapshot, content_id="intro")
         assert verdict.status == "pass"
-        assert verdict.chunk_id == "intro"
+        assert verdict.content_id == "intro"
         assert verdict.outline_version == 1
         assert "quality standards" in verdict.summary
         assert verdict.issues == []
@@ -91,7 +91,7 @@ class TestFailVerdict:
         verdict = editor.review(
             "Someone said something...",
             sample_snapshot,
-            chunk_id="main",
+            content_id="main",
         )
         assert verdict.status == "fail"
         assert "speaker_clarity" in verdict.issues
@@ -105,7 +105,7 @@ class TestJsonParsing:
             '{"status": "pass", "summary": "Good.", "issues": [], "recommendations": []}\n'
             "```"
         )
-        verdict = editor.review("chunk text", sample_snapshot, chunk_id="c1")
+        verdict = editor.review("chunk text", sample_snapshot, content_id="c1")
         assert verdict.status == "pass"
 
     def test_preamble_text(self, editor, mock_client, sample_snapshot):
@@ -113,13 +113,13 @@ class TestJsonParsing:
             'Here is my review:\n\n'
             '{"status": "fail", "summary": "Bad.", "issues": ["bland"], "recommendations": ["spice it up"]}'
         )
-        verdict = editor.review("chunk text", sample_snapshot, chunk_id="c2")
+        verdict = editor.review("chunk text", sample_snapshot, content_id="c2")
         assert verdict.status == "fail"
         assert verdict.issues == ["bland"]
 
     def test_garbage_fallback(self, editor, mock_client, sample_snapshot):
         mock_client.chat.return_value = "I am confused and cannot review this"
-        verdict = editor.review("chunk text", sample_snapshot, chunk_id="c3")
+        verdict = editor.review("chunk text", sample_snapshot, content_id="c3")
         # Garbage → conservative pass with warning
         assert verdict.status == "pass"
         assert "editor_parse_failure" in verdict.issues
@@ -131,7 +131,7 @@ class TestJsonParsing:
             "issues": [],
             "recommendations": [],
         })
-        verdict = editor.review("chunk text", sample_snapshot, chunk_id="c4")
+        verdict = editor.review("chunk text", sample_snapshot, content_id="c4")
         assert verdict.status == "pass"
 
 
@@ -143,8 +143,8 @@ class TestSessionAccumulation:
             "issues": [],
             "recommendations": [],
         })
-        editor.review("Chunk A", sample_snapshot, chunk_id="c1")
-        editor.review("Chunk B", sample_snapshot, chunk_id="c2")
+        editor.review("Chunk A", sample_snapshot, content_id="c1")
+        editor.review("Chunk B", sample_snapshot, content_id="c2")
         # Session should have accumulated messages (2 per review: user + assistant)
         assert editor.session.message_count >= 4
 
@@ -152,7 +152,7 @@ class TestSessionAccumulation:
         mock_client.chat.return_value = json.dumps({
             "status": "pass", "summary": "OK", "issues": [], "recommendations": [],
         })
-        editor.review("Test chunk", sample_snapshot, chunk_id="c1")
+        editor.review("Test chunk", sample_snapshot, content_id="c1")
         # Check that the prompt sent to LLM includes outline info
         call_args = mock_client.chat.call_args[0][0]
         user_messages = [m["content"] for m in call_args if m["role"] == "user"]

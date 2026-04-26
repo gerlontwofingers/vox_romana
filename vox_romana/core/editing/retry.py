@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .editor import ChunkEditor
-from .models import ChunkResult, EditorVerdict
+from .editor import ContentEditor
+from .models import ContentResult, EditorVerdict
 from .outline import DirectorOutline
 
 
@@ -39,7 +39,7 @@ class RetryLoop:
     attempt) and returns a tuple of (chunk_content_text, raw_events_list).
     """
 
-    def __init__(self, editor: ChunkEditor, *, max_retries: int = 3) -> None:
+    def __init__(self, editor: ContentEditor, *, max_retries: int = 3) -> None:
         self._editor = editor
         self._max_retries = max_retries
 
@@ -52,7 +52,7 @@ class RetryLoop:
         generate_fn: Callable[[str], tuple[str, list[dict]]],
         chunk_id: str,
         outline: DirectorOutline,
-    ) -> ChunkResult:
+    ) -> ContentResult:
         """Execute chunk generation with editor review and retry.
 
         Args:
@@ -62,9 +62,9 @@ class RetryLoop:
             outline: Current director outline for context.
 
         Returns:
-            ChunkResult with the final content, verdict, and optional warning.
+            ContentResult with the final content, verdict, and optional warning.
         """
-        best_result: ChunkResult | None = None
+        best_result: ContentResult | None = None
         best_verdict: EditorVerdict | None = None
         feedback = ""
 
@@ -75,11 +75,11 @@ class RetryLoop:
                 summary=f"Review for {chunk_id} attempt {attempt}"
             )
             verdict = self._editor.review(
-                chunk_text, snapshot, chunk_id=chunk_id
+                chunk_text, snapshot, content_id=chunk_id
             )
 
-            result = ChunkResult(
-                chunk_id=chunk_id,
+            result = ContentResult(
+                content_id=chunk_id,
                 content=raw_events,
                 outline_version=outline.version,
                 attempt_number=attempt,

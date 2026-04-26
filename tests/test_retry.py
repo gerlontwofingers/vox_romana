@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ChunkEditor
+from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ContentEditor
 from vox_romana.core.editing.models import OutlineSection
 from vox_romana.core.editing.outline import DirectorOutline
 from vox_romana.core.editing.retry import RetryLoop
@@ -47,14 +47,14 @@ def sample_outline():
 
 
 def _make_editor(mock_client, responses):
-    """Helper: create a ChunkEditor whose session returns canned responses."""
+    """Helper: create a ContentEditor whose session returns canned responses."""
     mock_client.chat.side_effect = list(responses)
     session = AgentSession(
         client=mock_client,
         system_prompt=EDITOR_SYSTEM_PROMPT,
         recent_window=20,
     )
-    return ChunkEditor(session)
+    return ContentEditor(session)
 
 
 def _pass_json(summary="Good."):
@@ -84,7 +84,7 @@ class TestPassOnFirstAttempt:
 
         result = loop.execute(gen_fn, "seg1", sample_outline)
 
-        assert result.chunk_id == "seg1"
+        assert result.content_id == "seg1"
         assert result.attempt_number == 1
         assert result.editor_verdict.status == "pass"
         assert result.warning is None
@@ -197,12 +197,12 @@ class TestRetriesExhausted:
 class TestMaxRetriesConfig:
     def test_default_max_retries(self, mock_client):
         session = AgentSession(client=mock_client, system_prompt="test")
-        editor = ChunkEditor(session)
+        editor = ContentEditor(session)
         loop = RetryLoop(editor)
         assert loop.max_retries == 3
 
     def test_custom_max_retries(self, mock_client):
         session = AgentSession(client=mock_client, system_prompt="test")
-        editor = ChunkEditor(session)
+        editor = ContentEditor(session)
         loop = RetryLoop(editor, max_retries=5)
         assert loop.max_retries == 5

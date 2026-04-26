@@ -81,7 +81,7 @@ class TestPreflightBriefValidation:
 
     def test_preflight_warns_on_fabricated_claim_in_brief(self, tmp_path, capsys):
         """When the fact-checker finds fabrications in the brief, a WARNING is printed."""
-        from vox_romana.core.editing.models import ChunkFactCheckReport, FactCheckResult
+        from vox_romana.core.editing.models import FactCheckReport, FactCheckResult
 
         fabricated = FactCheckResult(
             claim="The Earth is flat",
@@ -89,15 +89,15 @@ class TestPreflightBriefValidation:
             explanation="The Earth is an oblate spheroid, not flat.",
             source="llm_knowledge",
         )
-        report = ChunkFactCheckReport(
-            chunk_id="brief",
+        report = FactCheckReport(
+            content_id="brief",
             mode="quick",
             results=[fabricated],
             summary="One fabricated claim found.",
         )
 
         mock_checker = MagicMock()
-        mock_checker.check_chunk.return_value = report
+        mock_checker.check_content.return_value = report
 
         args = _make_preflight_args(tmp_path, fact_check="quick")
         args.output.mkdir(parents=True, exist_ok=True)
@@ -151,7 +151,7 @@ class TestPreflightBriefValidation:
 
     def test_preflight_no_warning_when_brief_is_accurate(self, tmp_path, capsys):
         """When fact-checker finds no fabrications, no WARNING is printed."""
-        from vox_romana.core.editing.models import ChunkFactCheckReport, FactCheckResult
+        from vox_romana.core.editing.models import FactCheckReport, FactCheckResult
 
         verified = FactCheckResult(
             claim="Water is H2O",
@@ -159,15 +159,15 @@ class TestPreflightBriefValidation:
             explanation="Confirmed by llm knowledge.",
             source="llm_knowledge",
         )
-        report = ChunkFactCheckReport(
-            chunk_id="brief",
+        report = FactCheckReport(
+            content_id="brief",
             mode="quick",
             results=[verified],
             summary="No fabrications.",
         )
 
         mock_checker = MagicMock()
-        mock_checker.check_chunk.return_value = report
+        mock_checker.check_content.return_value = report
 
         args = _make_preflight_args(tmp_path, fact_check="quick")
         args.output.mkdir(parents=True, exist_ok=True)

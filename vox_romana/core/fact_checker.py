@@ -15,7 +15,7 @@ concrete factual claims it contains, and checks each one against:
 HOW IT INTEGRATES:
 
   The FactChecker is called by the conductor's segment loop (podcast) or the
-  ChunkEditor (debates). When has_fabrications is True, the conductor discards
+  ContentEditor (debates). When has_fabrications is True, the conductor discards
   the segment and regenerates, injecting the fabricated claims as a rejection
   note so the LLM knows exactly what went wrong.
 
@@ -75,9 +75,9 @@ USAGE:
         search_provider=GoogleSearchProvider(),
     )
 
-    report = checker.check_chunk(
-        chunk_text="Dr. Priya Nair said Pacific AgriLands reported $304,954...",
-        chunk_id="seg_002",
+    report = checker.check_content(
+        content_text="Dr. Priya Nair said Pacific AgriLands reported $304,954...",
+        content_id="seg_002",
         reference_material="Ernie Dosio died April 24, 2026 in a car accident.",
         mode="thorough",
     )
@@ -95,7 +95,7 @@ import logging
 
 from .client import DeepSeekClient
 from .config import ContentMode
-from .editing.models import ChunkFactCheckReport, FactCheckResult, FlaggedClaim
+from .editing.models import FactCheckReport, FactCheckResult, FlaggedClaim
 from .search import BaseSearchProvider, SearchResult, build_fact_check_provider
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ _EXTRACTOR_USER_TEMPLATE = """\
 Extract all checkable factual claims from the following generated text:
 
 GENERATED TEXT:
-{chunk_text}
+{content_text}
 """
 
 CLAIM_VERIFIER_PROMPT = """\
@@ -301,7 +301,7 @@ WEB SEARCH RESULTS:
 # NOT real-world facts. Luke Skywalker is from Tatooine, not Kansas.
 #
 # Verdicts mirror the factual verifier so the downstream report shape stays
-# the same. The ChunkEditor decides whether to BLOCK on "fabricated" (factual
+# the same. The ContentEditor decides whether to BLOCK on "fabricated" (factual
 # mode) or only WARN (fictional-universe mode).
 
 CANON_VERIFIER_PROMPT = """\
@@ -449,21 +449,21 @@ class FactChecker:
 
     # ── Public API ──────────────────────────────────────────────────────
 
-    def check_chunk(
+    def check_content(
         self,
-        chunk_text: str,
+        content_text: str,
         *,
-        chunk_id: str = "",
+        content_id: str = "",
         reference_material: str | None = None,
         mode: str = "quick",
         content_mode: ContentMode = "factual",
         prior_context: str | None = None,
-    ) -> ChunkFactCheckReport:
-        """Check a generated chunk for fabricated factual claims.
+    ) -> FactCheckReport:
+        """Check generated content for fabricated factual claims.
 
         Args:
-            chunk_text:         The full generated text to check.
-            chunk_id:           Identifier for logging and the report.
+            content_text:       The full generated text to check.
+            content_id:         Identifier for logging and the report.
             reference_material: Factual source text to verify against.
                                 If None, all claims come back "unverifiable".
             mode:               "quick" \u2014 reference_material only.
@@ -482,29 +482,29 @@ class FactChecker:
                                 prompt size bounded.
 
         Returns:
-            ChunkFactCheckReport. Check ``report.has_fabrications`` and
+            FactCheckReport. Check ``report.has_fabrications`` and
             ``report.has_contradictions`` to decide whether to block.
         """
         # Pure fiction: no real-world or canon claims to check, no prior-show
         # consistency contract to enforce. Skip entirely \u2014 zero LLM calls.
         if content_mode == "pure-fiction":
-            return ChunkFactCheckReport(
-                chunk_id=chunk_id,
+            return FactCheckReport(
+                content_id=content_id,
                 mode=mode,
-                summary=f"[{chunk_id}] content_mode='pure-fiction' \u2014 fact-check skipped.",
+                summary=f"[{content_id}] content_mode='pure-fiction' \u2014 fact-check skipped.",
             )
 
-        if not chunk_text.strip():
-            return ChunkFactCheckReport(chunk_id=chunk_id, mode=mode, summary="Empty chunk \u2014 nothing to check.")
+        if not content_text.strip():
+            return FactCheckReport(content_id=content_id, mode=mode, summary="Empty content \u2014 nothing to check.")
 
         # \u2500\u2500 Step 1: Extract checkable claims \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        flagged = self.extract_claims(chunk_text)
+        flagged = self.extract_claims(content_text)
         if not flagged:
-            return ChunkFactCheckReport(
-                chunk_id=chunk_id,
+            return FactCheckReport(
+                content_id=content_id,
                 mode=mode,
                 results=[],
-                summary="No checkable factual claims found in this chunk.",
+                summary="No checkable factual claims found in this content.",
             )
 
         # \u2500\u2500 Step 2a: Verify against reference material / canon \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -533,9 +533,9 @@ class FactChecker:
             results = self._merge_consistency_results(results, consistency_results)
 
         # \u2500\u2500 Build the report \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        summary = self._build_summary(results, chunk_id)
-        return ChunkFactCheckReport(
-            chunk_id=chunk_id,
+        summary = self._build_summary(results, content_id)
+        return FactCheckReport(
+            content_id=content_id,
             mode=mode,
             results=results,
             summary=summary,
@@ -543,19 +543,19 @@ class FactChecker:
 
     # ── Extraction ──────────────────────────────────────────────────────
 
-    def extract_claims(self, chunk_text: str) -> list[FlaggedClaim]:
+    def extract_claims(self, content_text: str) -> list[FlaggedClaim]:
         """Extract checkable factual claims from generated text.
 
         One LLM call. Returns an empty list on parse errors (conservative:
         don't block on extractor failures).
 
         Args:
-            chunk_text: The generated text to extract claims from.
+            content_text: The generated text to extract claims from.
 
         Returns:
             List of FlaggedClaim objects.
         """
-        user_msg = _EXTRACTOR_USER_TEMPLATE.format(chunk_text=chunk_text)
+        user_msg = _EXTRACTOR_USER_TEMPLATE.format(content_text=content_text)
         try:
             raw = self._client.chat(
                 messages=[
@@ -969,14 +969,14 @@ class FactChecker:
     # \u2500\u2500 Summary builder \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
     @staticmethod
-    def _build_summary(results: list[FactCheckResult], chunk_id: str) -> str:
+    def _build_summary(results: list[FactCheckResult], content_id: str) -> str:
         """Build a human-readable summary of the fact-check results.
 
         The summary is injected into the conductor's rejection note so
         the regeneration LLM call knows exactly what to fix.
         """
         if not results:
-            return f"[{chunk_id}] No checkable claims found."
+            return f"[{content_id}] No checkable claims found."
 
         fabricated = [r for r in results if r.verdict == "fabricated"]
         contradicted = [r for r in results if r.verdict == "contradicts_prior"]
@@ -984,7 +984,7 @@ class FactChecker:
         unverifiable = [r for r in results if r.verdict == "unverifiable"]
 
         parts: list[str] = [
-            f"[{chunk_id}] Checked {len(results)} claim(s): "
+            f"[{content_id}] Checked {len(results)} claim(s): "
             f"{len(verified)} verified, "
             f"{len(unverifiable)} unverifiable, "
             f"{len(fabricated)} FABRICATED, "

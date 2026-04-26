@@ -85,7 +85,7 @@ class EditorVerdict:
     """The Editor's judgment on a single chunk."""
 
     status: str  # "pass" or "fail"
-    chunk_id: str
+    content_id: str
     outline_version: int
     summary: str
     issues: list[str] = field(default_factory=list)
@@ -101,10 +101,10 @@ class EditorVerdict:
 
 
 @dataclass
-class ChunkResult:
+class ContentResult:
     """The result of generating (and optionally retrying) a single chunk."""
 
-    chunk_id: str
+    content_id: str
     content: list[dict[str, Any]]
     outline_version: int
     attempt_number: int
@@ -122,7 +122,7 @@ class ChunkResult:
 # Fact-check models
 # ─────────────────────────────────────────────────────────────────────────────
 # These three dataclasses represent the output of the FactChecker agent.
-# They flow from the FactChecker → ChunkEditor → conductor retry loop.
+# They flow from the FactChecker → ContentEditor → conductor retry loop.
 #
 # FlaggedClaim   — a specific assertion extracted from generated text that
 #                  the FactChecker needs to verify (e.g. a date, a statistic,
@@ -132,8 +132,8 @@ class ChunkResult:
 #                   reference_material (quick mode) and/or a web search
 #                   (thorough mode).
 #
-# ChunkFactCheckReport — the full report for one generated segment/chunk.
-#                        has_fabrications drives the blocking retry logic.
+# FactCheckReport — the full report for one generated segment/chunk.
+#                   has_fabrications drives the blocking retry logic.
 
 
 @dataclass
@@ -202,11 +202,11 @@ class FactCheckResult:
 
 
 @dataclass
-class ChunkFactCheckReport:
+class FactCheckReport:
     """Full fact-check report for one generated segment or chunk.
 
     Attributes:
-        chunk_id:  Identifier matching the chunk being checked.
+        content_id: Identifier matching the content being checked.
         mode:      The fact-check mode used ("quick" or "thorough").
         results:   One FactCheckResult per extracted claim.
         summary:   A one-paragraph prose summary of findings, suitable
@@ -218,7 +218,7 @@ class ChunkFactCheckReport:
                           logic in the conductor.
     """
 
-    chunk_id: str
+    content_id: str
     mode: str
     results: list[FactCheckResult] = field(default_factory=list)
     summary: str = ""
@@ -250,7 +250,7 @@ class ChunkFactCheckReport:
 
     def to_dict(self) -> dict[str, Any]:
         data = {
-            "chunk_id": self.chunk_id,
+            "content_id": self.content_id,
             "mode": self.mode,
             "results": [r.to_dict() for r in self.results],
             "summary": self.summary,
@@ -260,12 +260,12 @@ class ChunkFactCheckReport:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ChunkFactCheckReport:
+    def from_dict(cls, data: dict[str, Any]) -> FactCheckReport:
         results = [
             FactCheckResult.from_dict(r) for r in data.get("results", [])
         ]
         return cls(
-            chunk_id=data.get("chunk_id", ""),
+            content_id=data.get("content_id", ""),
             mode=data.get("mode", "quick"),
             results=results,
             summary=data.get("summary", ""),

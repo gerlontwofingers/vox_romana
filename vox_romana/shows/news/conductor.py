@@ -270,7 +270,7 @@ class NewsConductor(BaseConductor):
         if not bootstrap_text:
             return
         try:
-            report = self._fact_checker.check_chunk(
+            report = self._fact_checker.check_content(
                 bootstrap_text,
                 chunk_id="bootstrap",
                 reference_material=config.reference_material,
@@ -740,7 +740,7 @@ class NewsConductor(BaseConductor):
             ).strip()
             for fc_attempt in range(config.max_retries):
                 try:
-                    fc_report = self._fact_checker.check_chunk(
+                    fc_report = self._fact_checker.check_content(
                         seg_text,
                         chunk_id=seg_id,
                         reference_material=config.reference_material,

@@ -20,12 +20,12 @@ Architecture at a glance:
     models.py        — AudioEvent, AgentResponse, FactCard.
     "archive.py"       — NoteArchive + AgentNoteStore + OutlineArchive (JSONL).
     librarian.py     — Librarian: ephemeral search agent for the archive.
-    editing/         — ChunkEditor, DirectorOutline, RetryLoop (quality gating).
+    editing/         — ContentEditor, DirectorOutline, RetryLoop (quality gating).
     planner.py       — ContentPlanner (placeholder for episodic splitting).
     runsheet.py      — Runsheet entries for broadcast-style shows.
 
 All public symbols are re-exported here for convenience:
-    from vox_romana.core import DeepSeekClient, AgentSession, ChunkEditor
+    from vox_romana.core import DeepSeekClient, AgentSession, ContentEditor
 """
 
 from .agent import DeepSeekAgent
@@ -48,8 +48,8 @@ from .duration import (
 )
 from .editing import (
     EDITOR_SYSTEM_PROMPT,
-    ChunkEditor,
-    ChunkResult,
+    ContentEditor,
+    ContentResult,
     DirectorOutline,
     EditorVerdict,
     OutlineSection,
@@ -73,8 +73,8 @@ __all__ = [
     "BaseSearchProvider",
     "build_fact_check_provider",
     "Catalog",
-    "ChunkEditor",
-    "ChunkResult",
+    "ContentEditor",
+    "ContentResult",
     "ConductorResult",
     "ContentConfig",
     "DataResearcher",

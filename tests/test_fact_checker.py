@@ -11,9 +11,9 @@ TEST PLAN:
   TestVerifyClaims        — verify_claims() quick mode: ref material vs claims
   TestThoroughWithSearch  — _upgrade_with_search() searches unverifiable claims
   TestThoroughFallback    — thorough mode without search_provider falls back to quick
-  TestCheckChunk          — check_chunk() end-to-end integration (all modes)
-  TestChunkFactCheckReport— has_fabrications, fabricated_claims, to_dict/from_dict
-  TestChunkEditorBlocking — ChunkEditor injects FactChecker result into EditorVerdict
+  TestCheckContent        — check_content() end-to-end integration (all modes)
+  TestFactCheckReport— has_fabrications, fabricated_claims, to_dict/from_dict
+  TestContentEditorBlocking — ContentEditor injects FactChecker result into EditorVerdict
   TestLLMFailureSafety    — all parse errors and LLM exceptions → conservative fallback
   [v2] TestContentModeCheck    — pure-fiction skip, fictional-universe canon prompt
   [v2] TestPriorContextConsistency — _check_consistency, _merge_consistency_results
@@ -34,9 +34,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ChunkEditor
+from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ContentEditor
 from vox_romana.core.editing.models import (
-    ChunkFactCheckReport,
+    FactCheckReport,
     EditorVerdict,
     FlaggedClaim,
     FactCheckResult,
@@ -401,14 +401,14 @@ class TestThoroughFallback:
         )
         import logging
         with caplog.at_level(logging.WARNING, logger="vox_romana.core.fact_checker"):
-            report = checker.check_chunk(
+            report = checker.check_content(
                 "Some claim text",
-                chunk_id="seg_001",
+                content_id="seg_001",
                 reference_material="Some ref",
                 mode="thorough",
             )
         assert "no search_provider" in caplog.text.lower() or "falling back" in caplog.text.lower()
-        assert isinstance(report, ChunkFactCheckReport)
+        assert isinstance(report, FactCheckReport)
         assert not report.has_fabrications
 
     def test_quick_result_returned(self):
@@ -424,9 +424,9 @@ class TestThoroughFallback:
             client=_make_client(extractor_resp, verifier_resp),
             search_provider=None,
         )
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Claim A is notable",
-            chunk_id="seg_002",
+            content_id="seg_002",
             reference_material=None,
             mode="thorough",
         )
@@ -436,22 +436,22 @@ class TestThoroughFallback:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TEST: check_chunk (full integration)
+# TEST: check_content (full integration)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestCheckChunk:
-    """check_chunk() end-to-end with mocked LLM calls."""
+    """check_content() end-to-end with mocked LLM calls."""
 
     def test_empty_chunk_returns_empty_report(self):
         checker = FactChecker(client=Mock())
-        report = checker.check_chunk("   ", chunk_id="seg_000")
+        report = checker.check_content("   ", content_id="seg_000")
         assert not report.has_fabrications
         assert report.results == []
         assert "empty" in report.summary.lower()
 
     def test_no_claims_extracted_returns_clean_report(self):
         checker = FactChecker(client=_make_client("[]"))
-        report = checker.check_chunk("Just opinions and vibes.", chunk_id="seg_001")
+        report = checker.check_content("Just opinions and vibes.", content_id="seg_001")
         assert not report.has_fabrications
         assert "no checkable" in report.summary.lower()
 
@@ -464,9 +464,9 @@ class TestCheckChunk:
              "explanation": "Reference says 2026", "source": "reference_material"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Ernie Dosio died in 2022.",
-            chunk_id="seg_002",
+            content_id="seg_002",
             reference_material="Dosio died April 24, 2026.",
             mode="quick",
         )
@@ -484,9 +484,9 @@ class TestCheckChunk:
              "explanation": "Confirmed in ref", "source": "reference_material"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "The company was founded in 2003.",
-            chunk_id="seg_003",
+            content_id="seg_003",
             reference_material="Founded 2003.",
             mode="quick",
         )
@@ -494,22 +494,22 @@ class TestCheckChunk:
         assert len(report.results) == 1
         assert report.results[0].verdict == "verified"
 
-    def test_chunk_id_in_report(self):
+    def test_content_id_in_report(self):
         checker = FactChecker(client=_make_client("[]"))
-        report = checker.check_chunk("some text", chunk_id="unique_seg_id")
-        assert report.chunk_id == "unique_seg_id"
+        report = checker.check_content("some text", content_id="unique_seg_id")
+        assert report.content_id == "unique_seg_id"
 
     def test_mode_stored_in_report(self):
         checker = FactChecker(client=_make_client("[]"))
-        report = checker.check_chunk("text", mode="thorough")
+        report = checker.check_content("text", mode="thorough")
         assert report.mode == "thorough"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TEST: ChunkFactCheckReport
+# TEST: FactCheckReport
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestChunkFactCheckReport:
+class TestFactCheckReport:
     """has_fabrications, fabricated_claims, to_dict/from_dict."""
 
     def test_has_fabrications_true(self):
@@ -517,7 +517,7 @@ class TestChunkFactCheckReport:
             FactCheckResult(claim="c1", verdict="fabricated", explanation="e", source="s"),
             FactCheckResult(claim="c2", verdict="verified", explanation="e", source="s"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         assert report.has_fabrications is True
 
     def test_has_fabrications_false(self):
@@ -525,7 +525,7 @@ class TestChunkFactCheckReport:
             FactCheckResult(claim="c1", verdict="verified", explanation="e", source="s"),
             FactCheckResult(claim="c2", verdict="unverifiable", explanation="e", source="s"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         assert report.has_fabrications is False
 
     def test_fabricated_claims_filters_correctly(self):
@@ -533,7 +533,7 @@ class TestChunkFactCheckReport:
             FactCheckResult(claim="fab", verdict="fabricated", explanation="e", source="s"),
             FactCheckResult(claim="ok", verdict="verified", explanation="e", source="s"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         fab = report.fabricated_claims
         assert len(fab) == 1
         assert fab[0].claim == "fab"
@@ -542,34 +542,34 @@ class TestChunkFactCheckReport:
         results = [
             FactCheckResult(claim="c", verdict="fabricated", explanation="e", source="s"),
         ]
-        report = ChunkFactCheckReport(
-            chunk_id="seg_001", mode="quick", results=results, summary="Test summary"
+        report = FactCheckReport(
+            content_id="seg_001", mode="quick", results=results, summary="Test summary"
         )
         d = report.to_dict()
-        assert d["chunk_id"] == "seg_001"
+        assert d["content_id"] == "seg_001"
         assert d["mode"] == "quick"
         assert d["has_fabrications"] is True
 
-        r2 = ChunkFactCheckReport.from_dict(d)
-        assert r2.chunk_id == "seg_001"
+        r2 = FactCheckReport.from_dict(d)
+        assert r2.content_id == "seg_001"
         assert r2.has_fabrications is True
         assert r2.results[0].claim == "c"
 
     def test_empty_results_no_fabrications(self):
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=[])
+        report = FactCheckReport(content_id="x", mode="quick", results=[])
         assert report.has_fabrications is False
         assert report.fabricated_claims == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TEST: ChunkEditor blocking hook
+# TEST: ContentEditor blocking hook
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestChunkEditorBlocking:
-    """ChunkEditor injects FactChecker result into EditorVerdict."""
+class TestContentEditorBlocking:
+    """ContentEditor injects FactChecker result into EditorVerdict."""
 
     def _make_editor(self, fact_checker=None, reference_material=None):
-        """Build a ChunkEditor with a mock session that always passes."""
+        """Build a ContentEditor with a mock session that always passes."""
         pass_verdict = json.dumps({
             "status": "pass",
             "summary": "Looks good.",
@@ -577,7 +577,7 @@ class TestChunkEditorBlocking:
             "recommendations": [],
         })
         session = _make_editor_session(pass_verdict)
-        return ChunkEditor(
+        return ContentEditor(
             session,
             fact_checker=fact_checker,
             reference_material=reference_material,
@@ -642,7 +642,7 @@ class TestChunkEditorBlocking:
     def test_fact_checker_exception_does_not_block(self):
         """FactChecker raises unexpectedly → editor still returns a verdict."""
         bad_checker = Mock(spec=FactChecker)
-        bad_checker.check_chunk = Mock(side_effect=RuntimeError("Unexpected!"))
+        bad_checker.check_content = Mock(side_effect=RuntimeError("Unexpected!"))
         editor = self._make_editor(fact_checker=bad_checker)
         verdict = editor.review("Some text.", _make_snapshot(), "seg_001")
         # Should not propagate exception — returns the LLM verdict.
@@ -659,9 +659,9 @@ class TestLLMFailureSafety:
     def test_extractor_bad_json_returns_no_fabrications(self):
         """Extractor returns garbage JSON → empty claims → no fabrications."""
         checker = FactChecker(client=_make_client("this is not json"))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Some text with possible claims.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material="Some ref",
             mode="quick",
         )
@@ -674,9 +674,9 @@ class TestLLMFailureSafety:
             {"claim": "Some claim", "reason": "r", "search_query": None},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, "GARBAGE"))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Some claim is real.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material="ref text",
             mode="quick",
         )
@@ -689,30 +689,30 @@ class TestLLMFailureSafety:
         client = Mock()
         client.chat = Mock(side_effect=RuntimeError("Both calls dead"))
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Claim about something real.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material="ref",
             mode="quick",
         )
-        assert isinstance(report, ChunkFactCheckReport)
+        assert isinstance(report, FactCheckReport)
         assert not report.has_fabrications
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# [v2] TEST: content_mode in check_chunk
+# [v2] TEST: content_mode in check_content
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestContentModeCheck:
-    """check_chunk() behaves correctly for each content_mode."""
+    """check_content() behaves correctly for each content_mode."""
 
     def test_pure_fiction_skips_all_llm_calls(self):
         """content_mode='pure-fiction' returns immediately with zero LLM calls."""
         client = Mock()
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "A dragon flew over the Crystal Mountains.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             mode="quick",
             content_mode="pure-fiction",
         )
@@ -723,9 +723,9 @@ class TestContentModeCheck:
     def test_pure_fiction_empty_results(self):
         """pure-fiction report has empty results list."""
         checker = FactChecker(client=Mock())
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Zara the elf cast a spell.",
-            chunk_id="seg_x",
+            content_id="seg_x",
             content_mode="pure-fiction",
         )
         assert report.results == []
@@ -744,9 +744,9 @@ class TestContentModeCheck:
         ])
         client = _make_client(extractor_resp, verifier_resp)
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Luke Skywalker grew up on a farm in Kansas.",
-            chunk_id="seg_sw",
+            content_id="seg_sw",
             reference_material="Luke Skywalker is from Tatooine.",
             mode="quick",
             content_mode="fictional-universe",
@@ -768,9 +768,9 @@ class TestContentModeCheck:
              "explanation": "Canon says Tatooine", "source": "reference_material"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Luke grew up in Kansas.",
-            chunk_id="seg_sw",
+            content_id="seg_sw",
             reference_material="Luke is from Tatooine.",
             content_mode="fictional-universe",
         )
@@ -790,9 +790,9 @@ class TestContentModeCheck:
         ])
         client = _make_client(extractor_resp, verifier_resp)
         checker = FactChecker(client=client)
-        checker.check_chunk(
+        checker.check_content(
             "Dosio died in 2022.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material="Dosio died 2026.",
             content_mode="factual",
         )
@@ -825,9 +825,9 @@ class TestPriorContextConsistency:
         ])
         client = _make_client(extractor_resp, verifier_resp, consistency_resp)
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "The trial began in 2017.",
-            chunk_id="seg_002",
+            content_id="seg_002",
             mode="quick",
             prior_context="In segment 1, we reported the trial started in 2019.",
         )
@@ -846,9 +846,9 @@ class TestPriorContextConsistency:
         ])
         client = _make_client(extractor_resp, verifier_resp)
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Revenue was $1M.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             mode="quick",
             prior_context=None,
         )
@@ -866,9 +866,9 @@ class TestPriorContextConsistency:
         ])
         client = _make_client(extractor_resp, verifier_resp)
         checker = FactChecker(client=client)
-        checker.check_chunk(
+        checker.check_content(
             "Dosio died in 2026.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             prior_context="   ",
         )
         assert client.chat.call_count == 2
@@ -930,9 +930,9 @@ class TestPriorContextConsistency:
             RuntimeError("LLM down"),
         ])
         checker = FactChecker(client=client)
-        report = checker.check_chunk(
+        report = checker.check_content(
             "X was 32.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             prior_context="Earlier we said X was 40.",
         )
         # Consistency failure → no contradictions, no crash.
@@ -1014,11 +1014,11 @@ class TestBuildDefault:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# [v2] TEST: has_contradictions + contradicted_claims on ChunkFactCheckReport
+# [v2] TEST: has_contradictions + contradicted_claims on FactCheckReport
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestContradictionReport:
-    """ChunkFactCheckReport.has_contradictions and .contradicted_claims."""
+    """FactCheckReport.has_contradictions and .contradicted_claims."""
 
     def test_has_contradictions_false_when_no_contradicts_prior(self):
         results = [
@@ -1026,7 +1026,7 @@ class TestContradictionReport:
             FactCheckResult(claim="c2", verdict="unverifiable", explanation="e", source="s"),
             FactCheckResult(claim="c3", verdict="fabricated", explanation="e", source="s"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         assert report.has_contradictions is False
 
     def test_has_contradictions_true_when_contradicts_prior_present(self):
@@ -1034,7 +1034,7 @@ class TestContradictionReport:
             FactCheckResult(claim="c1", verdict="contradicts_prior",
                             explanation="earlier said otherwise", source="prior_context"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         assert report.has_contradictions is True
 
     def test_contradicted_claims_filters_correctly(self):
@@ -1043,7 +1043,7 @@ class TestContradictionReport:
             FactCheckResult(claim="bad", verdict="contradicts_prior",
                             explanation="prior conflict", source="prior_context"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         contradicted = report.contradicted_claims
         assert len(contradicted) == 1
         assert contradicted[0].claim == "bad"
@@ -1053,7 +1053,7 @@ class TestContradictionReport:
             FactCheckResult(claim="bad", verdict="contradicts_prior",
                             explanation="conflict", source="prior_context"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         d = report.to_dict()
         assert "has_contradictions" in d
         assert d["has_contradictions"] is True
@@ -1064,7 +1064,7 @@ class TestContradictionReport:
             FactCheckResult(claim="contra", verdict="contradicts_prior",
                             explanation="conflict", source="prior_context"),
         ]
-        report = ChunkFactCheckReport(chunk_id="x", mode="quick", results=results)
+        report = FactCheckReport(content_id="x", mode="quick", results=results)
         assert report.has_fabrications is True
         assert report.has_contradictions is True
         assert len(report.fabricated_claims) == 1
@@ -1132,9 +1132,9 @@ class TestKnowledgeVerifier:
              "explanation": "Training data shows he died in April 2026", "source": "llm_knowledge"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Ernie Dosio passed away in 2022.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material=None,
             mode="quick",
         )
@@ -1151,9 +1151,9 @@ class TestKnowledgeVerifier:
              "explanation": "Consistent with business records", "source": "llm_knowledge"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Pacific AgriLands is in Galt, CA.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material=None,
         )
         assert not report.has_fabrications
@@ -1170,9 +1170,9 @@ class TestKnowledgeVerifier:
              "source": "llm_knowledge"},
         ])
         checker = FactChecker(client=_make_client(extractor_resp, verifier_resp))
-        report = checker.check_chunk(
+        report = checker.check_content(
             "Revenue was $304,954.",
-            chunk_id="seg_001",
+            content_id="seg_001",
             reference_material=None,
         )
         assert not report.has_fabrications

@@ -1103,9 +1103,9 @@ class TestBootstrapPreflight:
         return config
 
     def _make_fc_report(self, *, has_fabrications: bool):
-        """Return a mock ChunkFactCheckReport."""
+        """Return a mock FactCheckReport."""
         from vox_romana.core.editing.models import (
-            ChunkFactCheckReport,
+            FactCheckReport,
             FactCheckResult,
         )
         if has_fabrications:
@@ -1120,7 +1120,7 @@ class TestBootstrapPreflight:
                 explanation="Confirmed by multiple sources.",
                 verdict="verified",
             )
-        return ChunkFactCheckReport(chunk_id="bootstrap", mode="quick", results=[result])
+        return FactCheckReport(content_id="bootstrap", mode="quick", results=[result])
 
     def test_bootstrap_preflight_blocks_on_fabrication(self, capsys):
         """When bootstrap has fabrications and allow=False, raises SystemExit(1)."""
@@ -1131,7 +1131,7 @@ class TestBootstrapPreflight:
 
         bad_report = self._make_fc_report(has_fabrications=True)
         mock_fc = MagicMock()
-        mock_fc.check_chunk.return_value = bad_report
+        mock_fc.check_content.return_value = bad_report
 
         conductor = PodcastConductor(config, client=client)
         conductor._fact_checker = mock_fc
@@ -1154,7 +1154,7 @@ class TestBootstrapPreflight:
 
         clean_report = self._make_fc_report(has_fabrications=False)
         mock_fc = MagicMock()
-        mock_fc.check_chunk.return_value = clean_report
+        mock_fc.check_content.return_value = clean_report
 
         conductor = PodcastConductor(config, client=client)
         conductor._fact_checker = mock_fc
@@ -1188,7 +1188,7 @@ class TestBootstrapPreflight:
 
         bad_report = self._make_fc_report(has_fabrications=True)
         mock_fc = MagicMock()
-        mock_fc.check_chunk.return_value = bad_report
+        mock_fc.check_content.return_value = bad_report
 
         conductor = PodcastConductor(config, client=client)
         conductor._fact_checker = mock_fc

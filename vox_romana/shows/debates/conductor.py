@@ -426,7 +426,7 @@ class DebateConductor(BaseConductor):
         if not bootstrap_text:
             return
         try:
-            report = self._fact_checker.check_chunk(
+            report = self._fact_checker.check_content(
                 bootstrap_text,
                 chunk_id="bootstrap",
                 reference_material=config.reference_material,
@@ -1145,7 +1145,7 @@ class DebateConductor(BaseConductor):
             turn_text = event_dict.get("text") or ""
             for fc_attempt in range(config.max_retries):
                 try:
-                    fc_report = self._fact_checker.check_chunk(
+                    fc_report = self._fact_checker.check_content(
                         turn_text,
                         chunk_id=f"turn_{turn_number}_{speaker_name}",
                         reference_material=config.reference_material,

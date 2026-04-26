@@ -348,7 +348,7 @@ class PodcastConductor(BaseConductor):
         if not bootstrap_text:
             return
         try:
-            report = self._fact_checker.check_chunk(
+            report = self._fact_checker.check_content(
                 bootstrap_text,
                 chunk_id="bootstrap",
                 reference_material=config.reference_material,
@@ -577,7 +577,7 @@ class PodcastConductor(BaseConductor):
                         (evt.get("text") or "").strip() for evt in segment_events
                     ).strip()
                     try:
-                        fc_report = self._fact_checker.check_chunk(
+                        fc_report = self._fact_checker.check_content(
                             seg_text_for_check,
                             chunk_id=seg_id,
                             reference_material=config.reference_material,

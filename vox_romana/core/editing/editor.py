@@ -14,8 +14,8 @@ The Editor's review lens:
 
 USAGE:
     session = AgentSession(client, EDITOR_SYSTEM_PROMPT)
-    editor = ChunkEditor(session)
-    verdict = editor.review(chunk_text, outline_snapshot)
+    editor = ContentEditor(session)
+    verdict = editor.review(content_text, outline_snapshot)
 """
 
 from __future__ import annotations
@@ -60,22 +60,22 @@ ALWAYS respond with valid JSON only. No text outside the JSON block.\
 """
 
 _REVIEW_PROMPT = """\
-CHUNK TO REVIEW (chunk_id: {chunk_id}):
+CONTENT TO REVIEW (content_id: {content_id}):
 
 OUTLINE CONTEXT (v{outline_version}):
 {outline_text}
 
-CHUNK CONTENT:
-{chunk_text}
+CONTENT:
+{content_text}
 
 Review this chunk against the outline and quality standards. Respond with JSON.\
 """
 
 
-class ChunkEditor:
+class ContentEditor:
     """Non-interactive editor that reviews chunks via a persistent LLM session.
 
-    One ChunkEditor per broadcast. The session accumulates context so later
+    One ContentEditor per broadcast. The session accumulates context so later
     reviews are informed by earlier ones.
     """
 
@@ -97,17 +97,17 @@ class ChunkEditor:
 
     def review(
         self,
-        chunk_text: str,
+        content_text: str,
         outline_snapshot: OutlineSnapshot,
-        chunk_id: str = "",
+        content_id: str = "",
         prior_context: str | None = None,
     ) -> EditorVerdict:
         """Review a chunk and return a verdict.
 
         Args:
-            chunk_text:       The full text of the generated chunk.
+            content_text:     The full text of the generated content.
             outline_snapshot: Current outline version for context.
-            chunk_id:         Identifier for the chunk being reviewed.
+            content_id:       Identifier for the content being reviewed.
             prior_context:    Optional concatenated text of earlier approved
                               segments/turns/chapters in this same show.
                               Passed to the FactChecker for intra-show
@@ -117,15 +117,15 @@ class ChunkEditor:
             EditorVerdict with status, issues, and recommendations.
         """
         prompt = _REVIEW_PROMPT.format(
-            chunk_id=chunk_id,
+            content_id=content_id,
             outline_version=outline_snapshot.version,
             outline_text=outline_snapshot.to_broadcast_text(),
-            chunk_text=chunk_text,
+            content_text=content_text,
         )
 
         raw_response = self._session.send(prompt)
         verdict = self._parse_verdict(
-            raw_response, chunk_id, outline_snapshot.version
+            raw_response, content_id, outline_snapshot.version
         )
 
         # ── Fact-check hook ──────────────────────────────────────────
@@ -137,9 +137,9 @@ class ChunkEditor:
         #   pure-fiction        — FactChecker returns empty report; nothing to do
         if self._fact_checker is not None:
             try:
-                report = self._fact_checker.check_chunk(
-                    chunk_text,
-                    chunk_id=chunk_id,
+                report = self._fact_checker.check_content(
+                    content_text,
+                    content_id=content_id,
                     reference_material=self._reference_material,
                     mode="quick",
                     content_mode=self._content_mode,
@@ -164,10 +164,10 @@ class ChunkEditor:
                         )
                     if report.fabricated_claims or report.contradicted_claims:
                         logger.info(
-                            "ChunkEditor: chunk %r has %d canon warn(s) and "
+                            "ContentEditor: content %r has %d canon warn(s) and "
                             "%d intra-show canon contradiction(s) — non-blocking "
                             "(fictional-universe mode).",
-                            chunk_id,
+                            content_id,
                             len(report.fabricated_claims),
                             len(report.contradicted_claims),
                         )
@@ -188,23 +188,23 @@ class ChunkEditor:
                                 f"{fc_result.claim}: {fc_result.explanation}"
                             )
                         logger.warning(
-                            "ChunkEditor: chunk %r failed fact-check — "
+                            "ContentEditor: content %r failed fact-check — "
                             "%d fabricated, %d contradicting prior.",
-                            chunk_id,
+                            content_id,
                             len(report.fabricated_claims),
                             len(report.contradicted_claims),
                         )
             except Exception as exc:
                 logger.warning(
-                    "ChunkEditor: fact-check raised unexpectedly for chunk %r: %r. "
+                    "ContentEditor: fact-check raised unexpectedly for content %r: %r. "
                     "Continuing without blocking.",
-                    chunk_id, exc,
+                    content_id, exc,
                 )
 
         return verdict
 
     def _parse_verdict(
-        self, raw: str, chunk_id: str, outline_version: int
+        self, raw: str, content_id: str, outline_version: int
     ) -> EditorVerdict:
         """Parse LLM response into an EditorVerdict.
 
@@ -223,7 +223,7 @@ class ChunkEditor:
             data = json.loads(cleaned)
             return EditorVerdict(
                 status=data.get("status", "pass"),
-                chunk_id=chunk_id,
+                content_id=content_id,
                 outline_version=outline_version,
                 summary=data.get("summary", ""),
                 issues=data.get("issues", []),
@@ -233,7 +233,7 @@ class ChunkEditor:
             # Can't parse → conservative: pass with a warning
             return EditorVerdict(
                 status="pass",
-                chunk_id=chunk_id,
+                content_id=content_id,
                 outline_version=outline_version,
                 summary=(
                     f"Editor response could not be parsed. "

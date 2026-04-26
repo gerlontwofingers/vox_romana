@@ -1158,7 +1158,7 @@ def main(argv: list[str] | None = None) -> None:
     # ── Pre-flight: validate brief for factual accuracy ──────────────
     if args.fact_check != "off":
         _preflight_checker = FactChecker.build_default(client)
-        _preflight_report = _preflight_checker.check_chunk(
+        _preflight_report = _preflight_checker.check_content(
             brief, chunk_id="brief", mode="quick", content_mode="factual"
         )
         if _preflight_report.has_fabrications:
