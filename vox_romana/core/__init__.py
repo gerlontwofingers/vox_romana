@@ -56,7 +56,7 @@ from .editing import (
     OutlineSnapshot,
     RetryLoop,
 )
-from .json_retry import JsonParseError, json_retry, parse_json_response
+from .json_retry import JsonParseError, json_retry, parse_json_array_response, parse_json_response
 from .librarian import Librarian, LibrarianResult
 from .models import AgentResponse, AudioEvent, FactCard
 from .router import RouterResult, ShowRouter, parse_router_response
@@ -111,6 +111,7 @@ __all__ = [
     "get_wpm",
     "json_retry",
     "parse_duration_from_text",
+    "parse_json_array_response",
     "parse_json_response",
     "parse_router_response",
     "seconds_to_mmss",

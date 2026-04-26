@@ -182,7 +182,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news", "podcast"],
+        choices=["debate", "news", "podcast", "audiobook"],
         dest="show_type",
         help="Force a show type (skip the router).",
     )
@@ -956,11 +956,129 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     return output_path
 
 
+def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
+    """Run the audiobook pipeline, return the output path.
+
+    Audiobook studio floor. The brief has been classified as an audiobook by
+    the router — this function handles bootstrap → conductor → serializer.
+
+    Audiobook generation is chapter-by-chapter: the narrator agent delivers
+    each chapter in sequence, maintaining continuity via sliding-window
+    session compression.
+
+    Args:
+        brief:  The full text of the user's prompt file.
+        client: Shared DeepSeek API client.
+        args:   Parsed CLI arguments (overrides, research, tag, etc.).
+
+    Returns:
+        Path to the saved JSON output file.
+    """
+    from vox_romana.shows.audiobooks.bootstrap import AudiobookBootstrap
+    from vox_romana.shows.audiobooks.conductor import AudiobookConductor
+    from vox_romana.shows.audiobooks.serializer import AudiobookSerializer
+
+    # ── Build overrides from CLI flags ───────────────────────────────
+    overrides = _resolve_duration(args, brief)
+    target_words = None
+    if "target_duration_minutes" in overrides:
+        target_words = estimate_total_words(
+            overrides["target_duration_minutes"], "audiobook",
+            engine=args.engine,
+        )
+        overrides["target_words"] = target_words
+    if args.tone is not None:
+        overrides["tone"] = args.tone
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
+
+    # ── Bootstrap ────────────────────────────────────────────────────
+    log("Bootstrap (planning chapters, profiling narrator, directing)...", quiet=args.quiet)
+    t0 = time.time()
+
+    reference_text_audiobook: str | None = None
+    if args.reference_material is not None:
+        if not args.reference_material.exists():
+            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+            sys.exit(1)
+        reference_text_audiobook = args.reference_material.read_text().strip()
+
+    bootstrap_kwargs = dict(
+        overrides=overrides,
+        auto_research=False,
+        fact_check=args.fact_check,
+        reference_material=reference_text_audiobook,
+    )
+    if target_words is not None:
+        bootstrap_kwargs["target_words"] = target_words
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+
+    if args.research:
+        _enable_research(bootstrap_kwargs, args)
+
+    bootstrap = AudiobookBootstrap(client=client)
+    config = bootstrap.from_brief(brief, **bootstrap_kwargs)
+
+    t1 = time.time()
+    log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
+    log(f"  Title:    {config.title}", quiet=args.quiet)
+    log(f"  Genre:    {config.genre}", quiet=args.quiet)
+    narrator_name = config.narrator.name if config.narrator else "(no narrator)"
+    log(f"  Narrator: {narrator_name}", quiet=args.quiet)
+    log(f"  Chapters: {len(config.chapters)}", quiet=args.quiet)
+    print()
+
+    # ── Conductor ────────────────────────────────────────────────────
+    log("Conductor (generating the audiobook)...", quiet=args.quiet)
+    t2 = time.time()
+
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "audiobook",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.chapters),
+        quiet=args.quiet,
+    )
+    conductor = AudiobookConductor(config, client=client, **checkpoint_kwargs)
+    result = conductor.run()
+
+    t3 = time.time()
+    log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
+    log(f"  Generated {len(result.audiobook_events)} events across {len(result.audiobook_chapters)} chapters", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.audiobook_events),
+        target_words=overrides.get("target_words") or target_words,
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="audiobook",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+    )
+    print()
+
+    # ── Serialize ────────────────────────────────────────────────────
+    log("Saving output...", quiet=args.quiet)
+
+    merged = result.to_merged_audiobook()
+    serializer = AudiobookSerializer()
+
+    stem = args.prompt.stem
+    tag_part = f"_{args.tag}" if args.tag else ""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"audiobook_{stem}{tag_part}_{timestamp}.json"
+    output_path = args.output / filename
+
+    serializer.save(merged, output_path)
+    return output_path
+
+
 # ── Dispatch table ───────────────────────────────────────────────────────
 _RUNNERS = {
     "debate": _run_debate,
     "news": _run_news,
     "podcast": _run_podcast,
+    "audiobook": _run_audiobook,
 }
 
 

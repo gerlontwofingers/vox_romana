@@ -71,9 +71,8 @@ COST:
 
 from __future__ import annotations
 
-import json
-
 from ...core.client import DeepSeekClient
+from ...core.json_retry import JsonParseError, parse_json_array_response
 from ...core.search import BaseSearchProvider, SearchResult
 
 
@@ -273,8 +272,9 @@ class DebateResearcher:
     def formulate_queries(self, brief: str) -> list[str]:
         """Turn a brief into targeted search queries.
 
-        One LLM call. The LLM reads the brief and produces 3-5 search queries
-        designed to find balanced factual evidence.
+        One LLM call (with up to 2 retries on malformed JSON). The LLM reads
+        the brief and produces 3-5 search queries designed to find balanced
+        factual evidence.
 
         Separated from run() for testability — pass a canned brief, get
         deterministic queries back.
@@ -286,17 +286,34 @@ class DebateResearcher:
             A list of 3-5 search query strings.
 
         Raises:
-            ValueError: If the LLM returns unparseable JSON.
+            ValueError: If the LLM returns unparseable JSON after all retries.
         """
-        raw = self._client.chat(
-            messages=[
-                {"role": "system", "content": self._query_formulator_prompt},
-                {"role": "user", "content": brief},
-            ],
-            temperature=0,
-        )
+        messages = [
+            {"role": "system", "content": self._query_formulator_prompt},
+            {"role": "user", "content": brief},
+        ]
+        last_error: Exception | None = None
 
-        return self.parse_queries(raw)
+        for attempt in range(1, 4):  # up to 3 attempts total
+            raw = self._client.chat(messages=messages, temperature=0)
+            try:
+                return self.parse_queries(raw)
+            except ValueError as exc:
+                last_error = exc
+                feedback = (
+                    f"Your previous response (attempt {attempt}) was not a valid "
+                    f"JSON array. Respond ONLY with a JSON array of strings — "
+                    f"no markdown fences, no explanation, no trailing commas. "
+                    f"Example: [\"query one\", \"query two\"]"
+                )
+                messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": feedback},
+                ]
+
+        raise ValueError(
+            f"Query formulator failed after 3 attempts. Last error: {last_error}"
+        ) from last_error
 
     def parse_queries(self, raw_json: str) -> list[str]:
         """Parse the LLM's query formulation response.
@@ -312,23 +329,24 @@ class DebateResearcher:
         Raises:
             ValueError: If JSON is malformed.
         """
-        cleaned = raw_json.strip()
-
-        # Strip markdown fences if the LLM wraps them.
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]).strip()
-
         try:
-            queries = json.loads(cleaned)
-        except json.JSONDecodeError as e:
+            queries = parse_json_array_response(raw_json)
+        except JsonParseError as e:
+            # Give a clearer error when the LLM returned a JSON object instead
+            # of an array (common mistake: wraps queries in `{"queries": [...]}`).
+            import json as _json
+            try:
+                parsed = _json.loads(raw_json.strip())
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        f"Expected a JSON array of strings, got {type(parsed).__name__}"
+                    )
+            except _json.JSONDecodeError:
+                pass
             raise ValueError(
                 f"Query formulator returned invalid JSON. First 200 chars: "
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
-
-        if not isinstance(queries, list):
-            raise ValueError(f"Expected a JSON array of strings, got {type(queries)}")
 
         # Cap the number of queries to avoid burning through search quota.
         return [str(q) for q in queries[:MAX_QUERIES]]

@@ -166,6 +166,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
         target_words: int | None = None,
+        memory=None,
     ) -> AudiobookConfig:
         """Run the full bootstrap chain: brief → fully populated AudiobookConfig.
 
@@ -185,11 +186,13 @@ class AudiobookBootstrap(BaseShowBootstrap):
 
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
+            from ...core.search import build_research_provider
             from ..debates.researcher import DebateResearcher
-            if search_provider is None:
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────

@@ -342,7 +342,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news", "podcast"],
+        choices=["debate", "news", "podcast", "audiobook"],
         dest="show_type",
         help="Force a show type (skip the router).",
     )
