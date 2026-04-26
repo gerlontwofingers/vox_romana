@@ -71,3 +71,42 @@
 #       encoder/            ← fine-tuned embedding model
 #       lm/                 ← fine-tuned language model adapters
 #       corpus/             ← corpus files
+#     university/           ← Scholar research sessions
+#       index.json          ← session registry
+#       {session_id}/       ← per-session folder
+#         session.json      ← session state
+#         notes.jsonl       ← article notes (DocumentIngester-compatible)
+#     wikipedia_cache/      ← cached Wikipedia article JSON files
+
+
+# ── UNIVERSITY (LOCAL DEEP RESEARCH) ─────────────────────────────────────────
+# Runs a Scholar agent locally via Ollama (free, no API calls).
+# The Scholar iteratively reads Wikipedia (and your local memory corpus)
+# and builds structured research notes and a running synthesis.
+#
+# SETUP:
+#   brew install ollama
+#   ollama pull deepseek-r1:7b    # or whichever size fits your hardware
+#   ollama serve                  # starts the local API on :11434
+#
+# MODEL SIZE GUIDE:
+#   deepseek-r1:1.5b  — CPU-only fallback        (~2  GB RAM)
+#   deepseek-r1:7b    — Apple M 16 GB / RTX 8 GB  (~8  GB RAM)
+#   deepseek-r1:14b   — Apple M 32 GB / RTX 12 GB (~14 GB RAM)
+#   deepseek-r1:32b   — Apple M 64 GB / RTX 24 GB (~32 GB RAM)
+#
+# USAGE:
+#   python run_university.py study "Japanese cars" --hours 3
+#   python run_university.py ask "First car exported to USA?" --session abc123
+#   python run.py prompt.yaml --research --university-session abc123
+
+university:
+  model: deepseek-r1:7b
+  base_url: http://localhost:11434/v1
+  temperature: 0.6
+  timeout_secs: 300          # seconds per LLM call (long articles need more)
+  notes_per_synthesis: 10    # update running synthesis every N articles
+  max_links_per_article: 15  # cap outbound links added to queue per article
+  relevance_threshold: 4.0   # 0–10; links scoring below this are discarded
+  max_queue_size: 500        # prevent unbounded graph traversal
+  wikipedia_cache_ttl_days: 30  # 0 = always re-fetch

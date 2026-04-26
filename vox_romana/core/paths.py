@@ -91,3 +91,5 @@ LM_DIR:           Path = MEMORY_ROOT / "lm"
 CORPUS_ROOT:      Path = MEMORY_ROOT / "corpus"
 HF_CACHE_DIR:     Path = DATA_ROOT / "hf_cache"
 PIPER_VOICES_DIR: Path = _piper_voices_dir(DATA_ROOT)
+UNIVERSITY_ROOT:  Path = DATA_ROOT / "university"
+WIKIPEDIA_CACHE_DIR: Path = DATA_ROOT / "wikipedia_cache"

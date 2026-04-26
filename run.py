@@ -402,6 +402,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     gen_group.add_argument(
+        "--university-session",
+        type=str,
+        default=None,
+        dest="university_session",
+        help=(
+            "Session ID of a completed University deep-research run. "
+            "Grounds the show in Scholar notes (highest-priority search tier). "
+            "E.g. --university-session a1b2c3d4e5f6"
+        ),
+    )
+
+    gen_group.add_argument(
         "--tag", "-t",
         type=str,
         default=None,
@@ -916,6 +928,8 @@ def _build_generate_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--content-mode", args.content_mode]
     if getattr(args, "allow_bootstrap_fabrications", False):
         argv.append("--allow-bootstrap-fabrications")
+    if getattr(args, "university_session", None):
+        argv += ["--university-session", args.university_session]
 
     return argv
 

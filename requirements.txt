@@ -46,6 +46,12 @@ openpyxl>=3.1               # .xlsx / .xls
 python-pptx>=0.6            # .pptx
 ebooklib>=0.18              # .epub (also requires lxml, listed above)
 
+# ── University (local deep research) — OPTIONAL ─────────────────────────
+# Scholar agent uses on-demand Wikipedia API. The local LLM (Ollama) is a
+# system dependency, not a pip package: install via `brew install ollama`
+# then `ollama pull deepseek-r1:7b`.
+wikipedia-api>=0.6          # MediaWiki REST client for WikipediaSource
+
 # ── Data science (DataResearcher agent) — OPTIONAL ───────────────────────
 # Used to run statistical analyses and generate reports with charts.
 # If not installed, DataResearcher gracefully degrades (text-only findings).
