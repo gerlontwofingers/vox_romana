@@ -181,6 +181,17 @@ def parse_args() -> argparse.Namespace:
         "local knowledge base (Chroma + FTS5) is consulted before any web "
         "search; use this flag to force web-only research.",
     )
+    parser.add_argument(
+        "--university-session",
+        type=str,
+        default=None,
+        dest="university_session",
+        help=(
+            "Session ID of a completed University deep-research run. "
+            "When set, Scholar notes are searched first (highest-priority tier). "
+            "E.g. --university-session a1b2c3d4e5f6"
+        ),
+    )
     # ── Overrides ────────────────────────────────────────────────────
     # These are the "actually, change this one thing" flags.
     # They're applied AFTER the Architect reads your prompt and makes
@@ -389,6 +400,28 @@ def main() -> None:
             log("  Research mode ON (Google)", quiet=args.quiet)
         except (ValueError, ImportError):
             log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+
+        # ── Tier 0: Prepend University session (highest priority) ──
+        university_session_id = getattr(args, "university_session", None)
+        if university_session_id:
+            try:
+                from vox_romana.core.search import (
+                    ChainSearchProvider,
+                    build_research_provider,
+                )
+                from vox_romana.university.search_provider import UniversitySearchProvider
+                univ = UniversitySearchProvider(university_session_id)
+                base = build_research_provider(
+                    bootstrap_kwargs.pop("search_provider", None),
+                    bootstrap_kwargs.pop("memory", None),
+                )
+                providers = [univ] + ([base] if base is not None else [])
+                bootstrap_kwargs["search_provider"] = (
+                    ChainSearchProvider(providers) if len(providers) > 1 else providers[0]
+                )
+                log(f"  University session: {university_session_id}", quiet=args.quiet)
+            except Exception as e:
+                log(f"  University session: OFF (load failed: {e})", quiet=args.quiet)
 
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)

@@ -221,6 +221,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--university-session",
+        type=str,
+        default=None,
+        dest="university_session",
+        help=(
+            "Session ID of a completed University deep-research run. When set, "
+            "the Scholar's notes are searched first (before memory or Google), "
+            "grounding the show in your prior deep-research. "
+            "E.g. --university-session a1b2c3d4e5f6"
+        ),
+    )
+
+    parser.add_argument(
         "--tag", "-t",
         type=str,
         default=None,
@@ -412,35 +425,67 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def _enable_research(bootstrap_kwargs: dict, args) -> None:
-    """Wire memory + Google into ``bootstrap_kwargs`` for an auto-research run.
+    """Wire University + Memory + Google into ``bootstrap_kwargs``.
 
-    Centralized here so all three show types (debate / news / podcast) use
-    the exact same fallback ladder:
+    Centralized here so all show types (debate / news / podcast / audiobook)
+    use the exact same tiered fallback ladder:
 
-        Memory (free, local)  →  Google (paid, web)  →  LLM-only (DeepSeek)
+        University (Scholar session notes, if --university-session given)
+            ↓  (if not enough material)
+        Memory (Chroma + FTS5, free, local)
+            ↓  (if still not enough)
+        Google (paid, web)
+            ↓  (last resort)
+        LLM-only (no search at all)
 
-    ``args.memory`` (default ``True``, disabled by ``--no-memory``) controls
-    whether the local knowledge base is consulted; ``args.research`` controls
-    whether web search is consulted. Either failure is non-fatal — we just
-    drop down to the next tier.
+    Any tier failure is non-fatal — we log and continue down the ladder.
     """
     bootstrap_kwargs["auto_research"] = True
+
+    providers: list = []
+
+    # ── Tier 0: University session (pinned deep-research notes) ──────
+    university_session_id = getattr(args, "university_session", None)
+    if university_session_id:
+        try:
+            from vox_romana.university.search_provider import UniversitySearchProvider
+            providers.append(UniversitySearchProvider(university_session_id))
+            log(f"  University session: {university_session_id}", quiet=args.quiet)
+        except Exception as e:
+            log(
+                f"  University session: OFF (load failed: {e})",
+                quiet=args.quiet,
+            )
+
+    # ── Tier 1: Local memory (Chroma + FTS5) ─────────────────────────
     if getattr(args, "memory", True):
         try:
             from vox_romana.core.catalog import Catalog
+            from vox_romana.core.search import MemorySearchProvider
             from vox_romana.memory.recall import MemoryRecall
             catalog = Catalog()
             memory = MemoryRecall(catalog=catalog)
-            bootstrap_kwargs["memory"] = memory
+            providers.append(MemorySearchProvider(memory))
             log("  Memory-first search: ON", quiet=args.quiet)
         except Exception as e:
             log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
+
+    # ── Tier 2: Google Custom Search ──────────────────────────────────
     try:
         from vox_romana.core.search import GoogleSearchProvider
-        bootstrap_kwargs["search_provider"] = GoogleSearchProvider()
+        providers.append(GoogleSearchProvider())
         log("  Research mode ON (Google)", quiet=args.quiet)
     except (ValueError, ImportError):
         log("  Research mode ON (LLM knowledge — no Google keys)", quiet=args.quiet)
+
+    # ── Wire up the provider chain ────────────────────────────────────
+    if len(providers) == 1:
+        bootstrap_kwargs["search_provider"] = providers[0]
+    elif len(providers) > 1:
+        from vox_romana.core.search import ChainSearchProvider
+        bootstrap_kwargs["search_provider"] = ChainSearchProvider(providers)
+    # If 0 providers were loaded successfully, leave search_provider unset
+    # so the bootstrap falls back to LLM-only research.
 
 
 # ── Word/duration accounting helpers ───────────────────────────
