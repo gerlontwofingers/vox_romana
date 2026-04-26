@@ -43,7 +43,10 @@ MUTABILITY:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from vox_romana.animation.models import AnimationConfig
 
 
 # ── The valid fact-check modes ─────────────────────────────────────────────
@@ -160,6 +163,7 @@ class ContentConfig:
     flexibility_score: float = 0.5
     max_retries: int = 3
     allow_bootstrap_fabrications: bool = False
+    animation_config: AnimationConfig | None = None
 
     def validate(self) -> list[str]:
         """Return a list of problems with this config. Empty list = all good.
