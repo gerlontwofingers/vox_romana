@@ -367,6 +367,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--tts-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of TTS worker threads (default: 1, sequential). "
+            "Values > 1 parallelize spoken-event synthesis in the render "
+            "step. Recommended for Piper only — Kokoro (MLX/MPS) parallel "
+            "safety is not yet validated."
+        ),
+    )
+
     # ── Generation flags (forwarded to run_show.py) ──────────────────
     gen_group = parser.add_argument_group("generation (forwarded to run_show.py)")
 
@@ -1037,78 +1049,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Argv builders for sub-scripts
+# Argv builder for render sub-script
 # ─────────────────────────────────────────────────────────────────────────────
-# run_show.py and render_show.py both accept argv: list[str] as their
-# main() parameter. These helpers build the right argv from our parsed
-# args namespace, forwarding only the flags each sub-script knows about.
-
-def _build_generate_argv(args: argparse.Namespace) -> list[str]:
-    """Build an argv list for run_show.main().
-
-    Forwards all generation-related flags to run_show.main(). Only passes
-    --quiet when the user explicitly asked for quiet mode — otherwise
-    run_show.py streams its own progress output (Phase 1-4 logs) directly
-    to the terminal so the user can see what's happening.
-
-    Args:
-        args: Parsed namespace from our parse_args().
-
-    Returns:
-        List of string arguments suitable for run_show.main(argv).
-    """
-    argv = [str(args.prompt)]
-
-    # Only suppress run_show output when the user wants quiet mode.
-    if args.quiet:
-        argv.append("--quiet")
-
-    if args.show_type:
-        argv += ["--type", args.show_type]
-    if args.output != _OUTPUT_DIR:
-        argv += ["--output", str(args.output)]
-    if args.research is True:
-        argv.append("--research")
-    elif args.research is False:
-        argv.append("--no-research")
-    if args.tag:
-        argv += ["--tag", args.tag]
-    if args.turns is not None:
-        argv += ["--turns", str(args.turns)]
-    if args.tone is not None:
-        argv += ["--tone", args.tone]
-    if args.debate_format is not None:
-        argv += ["--format", args.debate_format]
-    if args.segments is not None:
-        argv += ["--segments", str(args.segments)]
-    if args.max_retries is not None:
-        argv += ["--max-retries", str(args.max_retries)]
-    if args.duration is not None:
-        argv += ["--duration", str(args.duration)]
-    if args.tolerance is not None:
-        argv += ["--tolerance", str(args.tolerance)]
-    if args.checkpoint is True:
-        argv.append("--checkpoint")
-    elif args.checkpoint is False:
-        argv.append("--no-checkpoint")
-    # Forward the TTS engine choice so word-budget math uses per-engine WPM.
-    if args.engine:
-        argv += ["--engine", args.engine]
-    # Fact-check and content mode.
-    if hasattr(args, "fact_check") and args.fact_check:
-        argv += ["--fact-check", args.fact_check]
-    if hasattr(args, "reference_material") and args.reference_material:
-        argv += ["--reference-material", str(args.reference_material)]
-    if hasattr(args, "content_mode") and args.content_mode and args.content_mode != "auto":
-        argv += ["--content-mode", args.content_mode]
-    if getattr(args, "allow_bootstrap_fabrications", False):
-        argv.append("--allow-bootstrap-fabrications")
-    if getattr(args, "university_session", None):
-        argv += ["--university-session", args.university_session]
-
-    return argv
-
-
+# render_show.py accepts argv: list[str] as its main() parameter.  This
+# helper builds the right argv from our parsed args namespace, forwarding
+# only the flags render_show knows about.  The generate path no longer uses
+# argv serialization — it calls vox_romana.cli.runners.run_generate directly.
 def _build_render_argv(
     json_path: str | Path,
     args: argparse.Namespace,
@@ -1141,6 +1087,8 @@ def _build_render_argv(
         argv.append("--no-normalize")
     if args.no_log_audio_duration:
         argv.append("--no-log-audio-duration")
+    if args.tts_workers != 1:
+        argv += ["--tts-workers", str(args.tts_workers)]
     if args.no_strip_directions:
         argv.append("--no-strip-directions")
     if args.no_whisper_voices:
@@ -1166,9 +1114,8 @@ def _build_render_argv(
 def _mode_generate(args: argparse.Namespace) -> Path:
     """Run generate mode: prompt → JSON.
 
-    Calls run_show.main() and uses its return value (the output Path).
-    run_show.py streams its own Phase 1-4 progress logs directly to
-    stdout unless the user passed --quiet.
+    Delegates to ``vox_romana.cli.runners.run_generate`` directly,
+    passing the already-parsed args namespace.  No argv serialization.
 
     Args:
         args: Parsed namespace from parse_args().
@@ -1176,11 +1123,8 @@ def _mode_generate(args: argparse.Namespace) -> Path:
     Returns:
         Path to the generated JSON file.
     """
-    import run_show
-
-    argv = _build_generate_argv(args)
-    output_path = run_show.main(argv)
-    return output_path
+    from vox_romana.cli.runners import run_generate
+    return run_generate(args)
 
 
 def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
@@ -1377,258 +1321,15 @@ def _mode_music(args: argparse.Namespace) -> Path:
 
 
 def _mode_analysis(args: argparse.Namespace) -> None:
-    """Run analysis mode: rhetorical comparison of two speaker corpora.
-
-    Loads two speaker corpora (from a vox_romana debate JSON via
-    ``--script-input``, or from two text files via the positional
-    ``prompt`` and ``--analysis-file-b``), runs the full analysis
-    pipeline, and writes a self-contained HTML report.
-
-    Args:
-        args: Parsed namespace from parse_args().
-    """
-    from vox_romana.analysis.corpus import CorpusLoader
-    from vox_romana.analysis.reporter import AnalysisReporter
-    from vox_romana.core.paths import OUTPUT_DIR as _ANALYSIS_OUTPUT_DIR
-
-    # ── Resolve input files ──────────────────────────────────────────
-    json_path: Path | None = None
-    text_a: Path | None = None
-    text_b: Path | None = None
-
-    if args.script_input is not None and args.script_input.suffix.lower() == ".json":
-        json_path = args.script_input
-    elif args.analysis_file_b is not None and args.prompt is not None:
-        text_a = args.prompt
-        text_b = args.analysis_file_b
-    elif args.script_input is not None:
-        # Single non-JSON file via --script-input is invalid here
-        print(
-            "Error: --mode analysis requires either a debate JSON "
-            "(--script-input PATH.json) or two text files "
-            "(positional FILE_A and --analysis-file-b FILE_B).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    else:
-        print(
-            "Error: --mode analysis requires either --script-input "
-            "pointing at a debate JSON, or a positional FILE_A plus "
-            "--analysis-file-b FILE_B.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    min_words = args.analysis_min_words
-
-    # ── Load corpora ─────────────────────────────────────────────────
-    if json_path is not None:
-        corpora = CorpusLoader.from_vox_romana_json(json_path, min_words=min_words)
-        speakers = list(corpora.keys())
-        if len(speakers) < 2:
-            print(
-                f"Error: found only {len(speakers)} speaker(s) in {json_path}; "
-                "need at least 2 to compare.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        def _resolve(hint: str | None, exclude: str | None) -> str:
-            if hint is not None:
-                matches = [s for s in speakers if hint.lower() in s.lower()]
-                if not matches:
-                    print(
-                        f"Error: no speaker matching {hint!r} in {speakers}",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-                return matches[0]
-            for s in speakers:
-                if s != exclude:
-                    return s
-            return speakers[0]
-
-        name_a = _resolve(args.speaker_a, None)
-        name_b = _resolve(args.speaker_b, name_a)
-        if name_a == name_b:
-            print(
-                f"Error: speaker A and B resolved to the same speaker: {name_a!r}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        corpus_a = corpora[name_a]
-        corpus_b = corpora[name_b]
-    else:
-        assert text_a is not None and text_b is not None
-        name_a = args.speaker_a or text_a.stem
-        name_b = args.speaker_b or text_b.stem
-        corpus_a = CorpusLoader.from_text_file(
-            text_a, speaker_name=name_a, min_words=min_words
-        )
-        corpus_b = CorpusLoader.from_text_file(
-            text_b, speaker_name=name_b, min_words=min_words
-        )
-
-    if not args.quiet:
-        print(
-            f"  Loaded corpora: {corpus_a.name} ({corpus_a.utterance_count} utts) "
-            f"vs. {corpus_b.name} ({corpus_b.utterance_count} utts)"
-        )
-
-    # ── Build report ─────────────────────────────────────────────────
-    if args.analysis_no_html:
-        output_dir = None
-    else:
-        output_dir = args.analysis_output or (
-            _ANALYSIS_OUTPUT_DIR / "text" / "analysis"
-        )
-
-    reporter = AnalysisReporter(output_dir=output_dir)
-    report = reporter.build(
-        corpus_a,
-        corpus_b,
-        n_topics=args.analysis_n_topics,
-        n_permutations=args.analysis_permutations,
-        use_llm=not args.analysis_no_llm,
-    )
-
-    # ── Output ───────────────────────────────────────────────────────
-    if args.analysis_no_html:
-        summary = reporter.render_text(report, corpus_a=corpus_a, corpus_b=corpus_b)
-        print(summary)
-
-    if not args.quiet:
-        if report.report_path:
-            print(f"  HTML report \u2192 {report.report_path}")
-        if report.hypothesis is not None:
-            verdict = report.hypothesis.verdict
-            tests_passed = report.hypothesis.tests_passed
-            total = report.hypothesis.total_tests
-            print(
-                f"  Hypothesis verdict: {verdict}  "
-                f"({tests_passed}/{total} tests)"
-            )
+    """Delegate to vox_romana.cli.analysis.run_analysis()."""
+    from vox_romana.cli.analysis import run_analysis
+    run_analysis(args)
 
 
 def _mode_emotion_flow(args: argparse.Namespace) -> None:
-    """Run emotion-flow mode: cross-lingual emotion analysis or show adaptation.
-
-    Without ``--to-show``: loads speech segments from ``--script-input`` (or
-    the positional ``prompt``), runs the full EmotionFlowPipeline, and writes
-    HTML/JSON/CSV/PNG reports.
-
-    With ``--to-show``: loads a ``report.json`` produced by the analysis pass
-    and converts it into a NewsConfig via EmotionFlowShowAdapter.  If
-    ``--run-show`` is also set, the show pipeline is executed to produce a
-    full show.json.
-
-    Args:
-        args: Parsed namespace from parse_args().
-    """
-    from vox_romana.core.paths import OUTPUT_DIR as _EF_OUTPUT_DIR
-
-    if args.ef_to_show is not None:
-        # ── Show-adapter mode ────────────────────────────────────────
-        import json as _json
-        from dataclasses import asdict
-        from vox_romana.emotion_flow.show_adapter import EmotionFlowShowAdapter
-
-        report_path = args.ef_to_show
-
-        adapter = EmotionFlowShowAdapter(
-            n_segments=args.ef_n_segments,
-        )
-
-        if not args.quiet:
-            print(f"  Loading emotion-flow report: {report_path}")
-
-        config = adapter.adapt_from_file(report_path)
-
-        output_dir = args.emotion_output or (
-            _EF_OUTPUT_DIR / "shows" / "emotion_flow"
-        )
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        config_path = output_dir / "show_config.json"
-        config_dict = asdict(config)
-        config_path.write_text(
-            _json.dumps(config_dict, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        if not args.quiet:
-            print(f"  Show config \u2192 {config_path}")
-
-        if args.ef_run_show:
-            try:
-                from dotenv import load_dotenv
-                load_dotenv()
-            except ImportError:
-                pass
-
-            from vox_romana.core.client import DeepSeekClient
-            from vox_romana.shows.news.conductor import NewsConductor
-            from vox_romana.shows.news.serializer import NewsSerializer
-
-            if not args.quiet:
-                print("  Running show pipeline\u2026")
-
-            client = DeepSeekClient()
-            conductor = NewsConductor(config, client=client)  # type: ignore[arg-type]
-            result = conductor.run()
-            merged = result.to_merged_news_show()
-
-            show_path = output_dir / "show.json"
-            NewsSerializer().save(merged, show_path)
-
-            if not args.quiet:
-                print(f"  Show \u2192 {show_path}")
-
-    else:
-        # ── Analysis mode ────────────────────────────────────────────
-        source = args.script_input or args.prompt
-        if source is None:
-            print(
-                "Error: --mode emotion-flow requires --script-input pointing "
-                "to a text file, directory, or debate JSON (or use --to-show "
-                "PATH for show-adapter mode).",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        from vox_romana.emotion_flow.pipeline import EmotionFlowPipeline
-
-        output_dir = args.emotion_output or (_EF_OUTPUT_DIR / "emotion_flow")
-
-        pipeline = EmotionFlowPipeline(
-            output_dir=output_dir,
-            seed=args.ef_seed,
-            cache_dir=str(args.ef_cache_dir) if args.ef_cache_dir else None,
-            n_permutations=args.ef_permutations,
-            run_semantic=not args.ef_no_semantic,
-            run_translation=not args.ef_no_translate,
-        )
-
-        if not args.quiet:
-            leader_display = args.ef_leader or source.stem
-            print(f"  Source:       {source}")
-            print(f"  Leader:       {leader_display}")
-            print(f"  Output dir:   {output_dir}")
-            print(f"  Seed:         {args.ef_seed}  |  Permutations: {args.ef_permutations}")
-            if args.ef_no_translate:
-                print("  Translation:  OFF")
-            if args.ef_no_semantic:
-                print("  Semantic:     OFF")
-            print()
-
-        report = pipeline.run(
-            source,
-            leader=args.ef_leader,
-        )
-
-        if not args.quiet and report.report_path:
-            print(f"  Report \u2192 {report.report_path}")
+    """Delegate to vox_romana.cli.emotion_flow.run_emotion_flow()."""
+    from vox_romana.cli.emotion_flow import run_emotion_flow
+    run_emotion_flow(args)
 
 
 def _mode_publish(

@@ -96,6 +96,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -277,6 +278,7 @@ class TTSRenderer:
         music_engine: "MusicGenEngine | None" = None,
         music_style: str = "",
         music_duration: float = 8.0,
+        parallel_workers: int = 1,
     ) -> None:
         """Initialize the renderer.
 
@@ -312,6 +314,20 @@ class TTSRenderer:
             music_duration:   Default length (seconds) of generated music clips.
                               Used for any cue that doesn't specify its own.
                               Ignored when ``music_engine`` is None.
+            parallel_workers: Number of worker threads used to synthesize
+                              spoken events concurrently. Default 1 preserves
+                              the existing sequential behaviour. Values > 1
+                              submit all spoken events to a ThreadPoolExecutor
+                              up-front and consume results in event order, so
+                              audio mixing order is unchanged. Music cues
+                              always render sequentially in the main loop.
+
+                              IMPORTANT: Kokoro (MLX/MPS) has not been
+                              validated with workers > 1 — the MLX model may
+                              serialize internally and parallel calls could
+                              be no-ops or cause GPU contention. Piper is
+                              safe at any worker count (each call is a fresh
+                              subprocess with its own model load).
 
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
@@ -326,6 +342,9 @@ class TTSRenderer:
         self._music_engine = music_engine
         self._music_style = music_style
         self._music_duration = music_duration
+        if parallel_workers < 1:
+            raise ValueError(f"parallel_workers must be >= 1, got {parallel_workers}")
+        self._parallel_workers = parallel_workers
 
     def render(
         self,
@@ -399,7 +418,37 @@ class TTSRenderer:
             for speaker, voice_id in voice_map.items():
                 print(f"    {speaker} → {voice_id}")
 
-        # ── STEP 2: Render each event through the TTS engine ────────
+        # ── STEP 2: Optionally pre-submit spoken events to a thread pool ─
+        # When parallel_workers > 1 we identify every spoken event up-front
+        # and submit a synthesize() call for each into a ThreadPoolExecutor.
+        # The main loop below still walks events in script order; for each
+        # spoken event it pulls the matching future's .result(). This
+        # preserves mixing order (and therefore audio order) while letting
+        # synthesis overlap.
+        #
+        # Music cues stay in the sequential main loop — MusicGen is also
+        # MPS-bound and concurrent generation has not been validated.
+        # Kokoro (MLX/MPS) similarly has not been tested with workers > 1
+        # and may serialize internally; Piper (subprocess-per-call) is
+        # safe at any worker count.
+        synth_futures: dict[int, Future] = {}
+        executor: ThreadPoolExecutor | None = None
+        if self._parallel_workers > 1:
+            executor = ThreadPoolExecutor(max_workers=self._parallel_workers)
+            for i, event in enumerate(events):
+                # Skip music cues — they render in the main loop.
+                if self._music_engine is not None and self._is_music_cue(event):
+                    continue
+                synth_kwargs = self._prepare_synth_kwargs(
+                    event, voice_map, voice_cfg_map, tts_styles, language,
+                )
+                if synth_kwargs is None:
+                    continue
+                synth_futures[i] = executor.submit(
+                    self._engine.synthesize, **synth_kwargs,
+                )
+
+        # ── STEP 3: Render each event through the TTS engine ────────
         mixer = AudioMixer()
         rendered = 0
         skipped = 0
@@ -495,14 +544,18 @@ class TTSRenderer:
                 print(f"  {label} {speaker}: {truncated}")
 
             try:
-                result = self._engine.synthesize(
-                    text,
-                    voice=voice_id,
-                    emotion=emotion,
-                    speed=speed,
-                    language=language,
-                    **extras,
-                )
+                future = synth_futures.get(i)
+                if future is not None:
+                    result = future.result()
+                else:
+                    result = self._engine.synthesize(
+                        text,
+                        voice=voice_id,
+                        emotion=emotion,
+                        speed=speed,
+                        language=language,
+                        **extras,
+                    )
 
                 mixer.add_clip(
                     result.audio,
@@ -534,7 +587,10 @@ class TTSRenderer:
                     print(f"    WARNING: Failed to synthesize: {e}")
                 skipped += 1
 
-        # ── STEP 3: Mix and export ───────────────────────────────────
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+        # ── STEP 4: Mix and export ───────────────────────────────────
         if not quiet:
             print(f"\n  Mixing {rendered} clips...")
 
@@ -867,6 +923,49 @@ class TTSRenderer:
         """Get the first available voice, or "default" if none."""
         voices = self._engine.available_voices()
         return voices[0] if voices else "default"
+
+    def _prepare_synth_kwargs(
+        self,
+        event: dict,
+        voice_map: dict[str, str],
+        voice_cfg_map: dict[str, VoiceConfig],
+        tts_styles: dict[str, str],
+        language: str,
+    ) -> dict | None:
+        """Build the kwargs dict for an engine.synthesize() call.
+
+        Returns ``None`` if the event should be skipped (non-spoken kind,
+        empty text, or text consisting only of stripped stage directions).
+
+        This logic MUST stay in sync with the per-event prep in render()'s
+        main loop — both paths feed the same engine with the same kwargs,
+        so drift here would cause the parallel pre-pass to disagree with
+        the sequential fallback. When parallel_workers > 1 this helper is
+        called once during the pre-pass; the main loop's own inline
+        computation provides the matching kwargs for sequential mode.
+        """
+        text = event.get("text", "")
+        event_kind = event.get("event_kind", "utterance")
+        if self._strip_directions:
+            text = strip_stage_directions(text)
+        text = strip_markdown_emphasis(text)
+        if not text or not text.strip() or event_kind not in SPOKEN_EVENT_KINDS:
+            return None
+
+        speaker = event.get("speaker_name", "Unknown")
+        voice_id = voice_map.get(speaker) or self._default_voice()
+        emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
+        speed = self._pace_to_speed(event.get("pace"))
+        voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
+        kwargs = {
+            "text": text,
+            "voice": voice_id,
+            "emotion": emotion,
+            "speed": speed,
+            "language": language,
+        }
+        kwargs.update(voice_cfg.extras)
+        return kwargs
 
     @staticmethod
     def _build_emotion_hint(event: dict, tts_style: str | None = None) -> str:

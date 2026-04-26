@@ -422,6 +422,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Parallel TTS rendering ──────────────────────────────────────────────
+    # When > 1, spoken events are submitted to a ThreadPoolExecutor and
+    # mixed in script order once their futures resolve. Music cues stay
+    # sequential. Default is 1 (sequential, zero behaviour change).
+    #
+    # Engine notes:
+    #   - Piper:  safe at any worker count (subprocess-per-call)
+    #   - Kokoro: NOT validated (MLX/MPS may serialize internally)
+    #   - MusicGen: stays sequential regardless
+    parser.add_argument(
+        "--tts-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of TTS worker threads (default: 1, sequential). "
+            "Values > 1 parallelize spoken-event synthesis. Recommended "
+            "for Piper only — Kokoro (MLX/MPS) parallel safety is not "
+            "yet validated."
+        ),
+    )
+
     # ── Stage direction stripping ───────────────────────────────────────────────
     # LLMs often write stage directions inline in utterance text,
     # e.g. "(laughs) Well, that's funny." or "(dramatic pause) Gold."
@@ -605,6 +626,7 @@ def main(argv: list[str] | None = None) -> None:
         music_engine=_build_music_engine(args),
         music_style=args.music_style,
         music_duration=args.music_duration,
+        parallel_workers=args.tts_workers,
     )
 
     if not args.quiet:

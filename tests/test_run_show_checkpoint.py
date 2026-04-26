@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from run_show import _should_use_checkpoint
+from vox_romana.cli.runners import _should_use_checkpoint
 
 
 def _args(checkpoint=None):
@@ -105,10 +105,10 @@ class TestPreflightBriefValidation:
 
         with (
             patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker") as MockFC,
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker") as MockFC,
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             MockFC.build_default.return_value = mock_checker
             router_instance = MockRouter.return_value
@@ -134,10 +134,10 @@ class TestPreflightBriefValidation:
 
         with (
             patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker", mock_fc),
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker", mock_fc),
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             router_instance = MockRouter.return_value
             router_instance.classify.return_value = MagicMock(
@@ -175,10 +175,10 @@ class TestPreflightBriefValidation:
 
         with (
             patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker") as MockFC,
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker") as MockFC,
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             MockFC.build_default.return_value = mock_checker
             router_instance = MockRouter.return_value

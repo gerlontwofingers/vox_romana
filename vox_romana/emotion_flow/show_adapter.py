@@ -2,7 +2,7 @@
 
 The adapter is a pure translation layer — no LLM calls, no I/O.
 
-    Input:  EmotionFlowReport  (produced by run_emotion_flow.py)
+    Input:  EmotionFlowReport  (produced by `run.py --mode emotion-flow`)
     Output: NewsConfig          (ready for NewsConductor — no bootstrap needed)
 
 MAPPING LOGIC

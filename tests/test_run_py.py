@@ -3,13 +3,12 @@
 Tests cover:
     1. Argument parsing (modes, flags, defaults)
     2. Validation (missing prompt, missing --script-input)
-    3. _build_generate_argv() flag forwarding
-    4. _build_render_argv() flag forwarding
-    5. generate mode (mocked run_show.main)
-    6. render mode (mocked render_show.main)
-    7. full mode (mocked both)
-    8. --no-log-audio-duration forwarding
-    9. --quiet output behavior
+    3. _build_render_argv() flag forwarding
+    4. generate mode (run_generate delegation via vox_romana.cli.runners)
+    5. render mode (mocked render_show.main)
+    6. full mode (mocked both)
+    7. --no-log-audio-duration forwarding
+    8. --quiet output behavior
 
 Also tests for render_show.py audio feedback additions:
     10. _detect_content_type() from JSON keys
@@ -33,7 +32,6 @@ import pytest
 
 import run as run_master
 from run import (
-    _build_generate_argv,
     _build_render_argv,
     parse_args,
 )
@@ -153,37 +151,7 @@ class TestParseArgs:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestBuildArgv:
-    """Verify the argv builder helpers."""
-
-    def test_generate_argv_minimal(self, tmp_prompt):
-        """Minimal generate argv should contain the prompt but NOT --quiet.
-
-        --quiet is only forwarded when the user explicitly passes --quiet;
-        run_show.py should stream its own progress output by default.
-        """
-        args = parse_args([str(tmp_prompt)])
-        argv = _build_generate_argv(args)
-        assert str(tmp_prompt) in argv
-        assert "--quiet" not in argv
-
-    def test_generate_argv_with_overrides(self, tmp_prompt):
-        """All overrides should appear in the generated argv."""
-        args = parse_args([
-            str(tmp_prompt),
-            "--type", "debate",
-            "--tag", "test",
-            "--turns", "40",
-            "--duration", "20",
-        ])
-        argv = _build_generate_argv(args)
-        assert "--type" in argv
-        assert "debate" in argv
-        assert "--tag" in argv
-        assert "test" in argv
-        assert "--turns" in argv
-        assert "40" in argv
-        assert "--duration" in argv
-        assert "20.0" in argv  # float is stringified with decimal
+    """Verify the render argv builder helper."""
 
     def test_render_argv_minimal(self, tmp_json):
         """Minimal render argv should include the JSON path and defaults."""
@@ -264,16 +232,16 @@ class TestValidation:
 class TestModeExecution:
     """Verify each mode calls the right sub-scripts."""
 
-    @patch("run_show.main")
-    def test_generate_mode_calls_run_show(self, mock_main, tmp_prompt, capsys):
-        """generate mode should call run_show.main()."""
-        # Make run_show.main() print a fake path (simulating --quiet).
-        mock_main.side_effect = lambda argv: print("/fake/output.json")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_generate_mode_calls_run_show(self, mock_run_generate, tmp_prompt, capsys):
+        """generate mode should delegate to run_generate()."""
+        from pathlib import Path
+        mock_run_generate.return_value = Path("/fake/output.json")
         run_master.main([str(tmp_prompt), "--mode", "generate", "--quiet"])
-        mock_main.assert_called_once()
-        # The argv passed to run_show should contain --quiet.
-        call_argv = mock_main.call_args[0][0]
-        assert "--quiet" in call_argv
+        mock_run_generate.assert_called_once()
+        # The args namespace passed to run_generate should have quiet=True.
+        call_args = mock_run_generate.call_args[0][0]
+        assert call_args.quiet is True
 
     @patch("render_show.main")
     def test_render_mode_calls_render_show(self, mock_main, tmp_json):
@@ -286,12 +254,11 @@ class TestModeExecution:
         mock_main.assert_called_once()
 
     @patch("render_show.main")
-    @patch("run_show.main")
+    @patch("vox_romana.cli.runners.run_generate")
     def test_full_mode_calls_both(self, mock_gen, mock_render, tmp_prompt, capsys):
-        """full mode should call run_show then render_show."""
+        """full mode should call run_generate then render_show."""
         from pathlib import Path
         fake_json = "/fake/output.json"
-        # run_show.main() now returns a Path rather than printing to stdout.
         mock_gen.return_value = Path(fake_json)
         mock_render.return_value = None
 
@@ -301,12 +268,12 @@ class TestModeExecution:
         mock_gen.assert_called_once()
         mock_render.assert_called_once()
 
-        # render_show should receive the JSON path from run_show's return value.
+        # render_show should receive the JSON path from run_generate's return value.
         render_argv = mock_render.call_args[0][0]
         assert fake_json in render_argv
 
     @patch("render_show.main")
-    @patch("run_show.main")
+    @patch("vox_romana.cli.runners.run_generate")
     def test_no_log_forwarded_in_full_mode(self, mock_gen, mock_render, tmp_prompt):
         """--no-log-audio-duration should be forwarded to render in full mode."""
         from pathlib import Path
@@ -631,7 +598,7 @@ class TestPublishModeExecution:
         src = _write_debate_json(tmp_path)
         out_dir = tmp_path / "pub"
 
-        with patch("run_show.main", return_value=src):
+        with patch("vox_romana.cli.runners.run_generate", return_value=src):
             run_master.main([
                 "fake_prompt.txt",
                 "--mode", "generate",
@@ -648,7 +615,7 @@ class TestPublishModeExecution:
         src = _write_debate_json(tmp_path)
         out_dir = tmp_path / "pub"
 
-        with patch("run_show.main", return_value=src), \
+        with patch("vox_romana.cli.runners.run_generate", return_value=src), \
              patch("render_show.main", return_value=None):
             run_master.main([
                 "fake_prompt.txt",
