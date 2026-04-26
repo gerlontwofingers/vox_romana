@@ -310,12 +310,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university"],
+        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
             "'render' = audio only (from existing JSON). "
             "'full' = generate + render (default). "
+            "'video' = generate + render + animate (requires animation deps). "
             "'ingest' = feed documents into the knowledge store. "
             "'publish' = format an existing show JSON as a human-readable "
             "document (TXT/PDF). "
@@ -754,6 +755,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="TAG",
         help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
     )
+    # ── Animation flags (--mode video) ──────────────────────────────
+    anim_group = parser.add_argument_group(
+        "animation (--mode video)"
+    )
+    anim_group.add_argument(
+        "--visual-brief",
+        dest="visual_brief",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Visual style hint passed to the AnimationDirector LLM. "
+            "Describes the desired look and feel of the video "
+            "(e.g. 'academic documentary, warm lighting'). "
+            "Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--video-output",
+        dest="video_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Output directory for rendered video files. "
+            "Defaults to a 'video/' subdirectory next to the audio file. "
+            "Only used with --mode video."
+        ),
+    )
     # ── Publish flags (--mode publish or --publish add-on) ───────────
     pub_group = parser.add_argument_group(
         "publishing (--mode publish  /  --publish add-on)"
@@ -1140,6 +1170,60 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
 
     argv = _build_render_argv(json_path, args)
     render_show.main(argv)
+
+
+def _mode_video(args: argparse.Namespace) -> None:
+    """Run video mode: generate → render → animate.
+
+    Three-phase pipeline:
+      1. Generate the show JSON (same as --mode generate).
+      2. Render the audio (same as --mode render).
+      3. Run the animation pipeline: hardware scan → bootstrap →
+         director (1 LLM call) → video render.
+
+    The animation phase is driven by ``vox_romana.cli.animation_runner``
+    so the heavy animation imports (torch, diffusers, moviepy) are never
+    loaded for non-video modes.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.cli.animation_runner import run_animation
+
+    if not args.quiet:
+        print(f"\n{'─' * 60}")
+        print("  Step 1/3: Generating script…")
+        print(f"{'─' * 60}\n")
+
+    json_path = _mode_generate(args)
+
+    if not args.quiet:
+        print(f"\n{'─' * 60}")
+        print("  Step 2/3: Rendering audio…")
+        print(f"{'─' * 60}\n")
+
+    _mode_render(json_path, args)
+
+    audio_suffix = f".{args.format}"
+    audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)
+
+    if not args.quiet:
+        print(f"\n{'─' * 60}")
+        print("  Step 3/3: Animating…")
+        print(f"{'─' * 60}\n")
+
+    video_path = run_animation(args, json_path, audio_path)
+
+    if not args.quiet:
+        print(f"\n{'═' * 60}")
+        print("  Pipeline complete!")
+        print(f"  Script: {json_path}")
+        print(f"  Audio:  {audio_path}")
+        if video_path:
+            print(f"  Video:  {video_path}")
+        print(f"{'═' * 60}\n")
+    elif video_path:
+        print(video_path)
 
 
 def _mode_ingest(args: argparse.Namespace) -> None:
@@ -1613,7 +1697,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    if args.mode in ("generate", "full") and args.prompt is None:
+    if args.mode in ("generate", "full", "video") and args.prompt is None:
         print(
             "Error: prompt file is required for "
             f"'{args.mode}' mode.",
@@ -1924,6 +2008,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "ingest":
         _mode_ingest(args)
 
+    elif args.mode == "video":
+        _mode_video(args)
     elif args.mode == "full":
         # Full pipeline — generate then render (+ optional publish),
         # fanning across every requested output language.

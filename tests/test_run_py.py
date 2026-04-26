@@ -87,6 +87,37 @@ class TestParseArgs:
         args = parse_args([str(tmp_prompt), "--mode", "generate"])
         assert args.mode == "generate"
 
+    def test_video_mode_parses(self, tmp_prompt):
+        """--mode video should parse correctly."""
+        args = parse_args([str(tmp_prompt), "--mode", "video"])
+        assert args.mode == "video"
+
+    def test_visual_brief_default_none(self, tmp_prompt):
+        """--visual-brief should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.visual_brief is None
+
+    def test_visual_brief_parses(self, tmp_prompt):
+        """--visual-brief should capture the string value."""
+        args = parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--visual-brief", "documentary, warm lighting",
+        ])
+        assert args.visual_brief == "documentary, warm lighting"
+
+    def test_video_output_default_none(self, tmp_prompt):
+        """--video-output should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.video_output is None
+
+    def test_video_output_parses(self, tmp_prompt, tmp_path):
+        """--video-output should parse as a Path."""
+        args = parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--video-output", str(tmp_path),
+        ])
+        assert args.video_output == tmp_path
+
     def test_render_mode_with_script_input(self, tmp_json):
         """--mode render with --script-input should parse correctly."""
         args = parse_args([
@@ -224,6 +255,11 @@ class TestValidation:
         with pytest.raises(SystemExit):
             run_master.main(["--mode", "full"])
 
+    def test_video_mode_requires_prompt(self):
+        """video mode without a prompt should exit with error."""
+        with pytest.raises(SystemExit):
+            run_master.main(["--mode", "video"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MODE EXECUTION (mocked sub-scripts)
@@ -287,6 +323,12 @@ class TestModeExecution:
 
         render_argv = mock_render.call_args[0][0]
         assert "--no-log-audio-duration" in render_argv
+
+    @patch("run._mode_video")
+    def test_video_mode_dispatches_to_mode_video(self, mock_mode_video, tmp_prompt):
+        """--mode video should call _mode_video()."""
+        run_master.main([str(tmp_prompt), "--mode", "video", "--quiet"])
+        mock_mode_video.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
