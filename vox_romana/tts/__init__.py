@@ -3,14 +3,16 @@
 This package turns show JSON scripts into spoken audio files.
 Think of it as the "sound department" of a film studio:
 
-    ┌─────────────────────────────────────────────────────────┐
-    │  Show JSON  →  Renderer  →  Engine  →  Mixer  →  MP3   │
-    └─────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │  Show JSON  →  Renderer  →  Speech Engine  →  Mixer  →  MP3        │
+    │                         ↘  Music Engine  ↗                          │
+    └──────────────────────────────────────────────────────────────────────┘
 
 COMPONENTS:
     engine.py         — BaseTTSEngine ABC, SynthesizedAudio, VoiceConfig
-    mixer.py          — AudioMixer (stitches clips with pauses & overlaps)
+    mixer.py          — AudioMixer (stitches clips with pauses, overlaps & fades)
     renderer.py       — TTSRenderer (orchestrates engine + mixer)
+    music_engine.py   — MusicGenEngine (MusicGen via HuggingFace Transformers)
     voice_catalog.py  — VoiceDescriptor metadata, catalog matching algorithms
     engines/          — Plug-in engine implementations:
         piper_engine.py  — Local, free, CPU-based (ONNX)
@@ -28,6 +30,7 @@ QUICK START:
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, AudioClip, PAUSE_MAP, DEFAULT_PAUSE_MS
+from .music_engine import MusicGenEngine
 from .renderer import TTSRenderer, RenderResult
 from .voice_registry import VoiceRegistry, series_key_for
 from .voice_catalog import (
@@ -51,6 +54,8 @@ __all__ = [
     "AudioClip",
     "PAUSE_MAP",
     "DEFAULT_PAUSE_MS",
+    # Music generation
+    "MusicGenEngine",
     # Renderer
     "TTSRenderer",
     "RenderResult",

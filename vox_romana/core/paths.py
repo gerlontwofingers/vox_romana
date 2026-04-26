@@ -89,4 +89,5 @@ CHROMA_DIR:       Path = MEMORY_ROOT / "chroma"
 ENCODER_DIR:      Path = MEMORY_ROOT / "encoder"
 LM_DIR:           Path = MEMORY_ROOT / "lm"
 CORPUS_ROOT:      Path = MEMORY_ROOT / "corpus"
+HF_CACHE_DIR:     Path = DATA_ROOT / "hf_cache"
 PIPER_VOICES_DIR: Path = _piper_voices_dir(DATA_ROOT)

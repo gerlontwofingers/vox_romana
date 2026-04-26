@@ -183,6 +183,35 @@ USAGE:
     # Custom chunk size (larger = fewer but richer chunks):
     python run.py --mode ingest --ingest-path docs/ --chunk-size 1200
 
+    # === MUSIC MODE (generate a standalone audio clip) =============
+    #
+    # Give it a natural-language description of the music you want
+    # (inline text or a prompt file) and get back an audio file.
+    # No show pipeline, no JSON — just MusicGen → audio.
+    #
+    # Defaults are set for quality when running on good hardware:
+    #   model  = large  (~3.3 GB, MPS-accelerated on Apple Silicon)
+    #   duration = 30 s  (practical per-call max for MusicGen)
+    #   format = mp3  (override with --format wav for lossless)
+    #   output = output/music/<slug>_<timestamp>.<format>
+    #
+    # Inline prompt:
+    python run.py --mode music \
+        --music-prompt "heavy metal with harpsichord, dark Ozzy Osbourne style"
+    #
+    # Prompt from file:
+    python run.py prompts/my_music_brief.txt --mode music
+    #
+    # Custom length, lossless output:
+    python run.py --mode music \
+        --music-prompt "lo-fi jazz rainy day" \
+        --music-duration 20 --format wav --audio-output ~/Desktop/lofi.wav
+    #
+    # Lighter model for quick tests:
+    python run.py --mode music \
+        --music-prompt "energetic synthwave" \
+        --music-model small --music-duration 8
+
 ENVIRONMENT:
     DEEPSEEK_API_KEY in .env (required for generate/full modes).
     No API keys needed for render mode — all TTS is local.
@@ -192,6 +221,7 @@ OUTPUT:
     generate mode → JSON file in output/text/{type}/
     render mode   → Audio file next to the JSON (or --audio-output)
     full mode     → Both JSON and audio files
+    music mode    → Audio file in output/music/ (or --audio-output)
 """
 
 from __future__ import annotations
@@ -280,7 +310,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish"],
+        choices=["generate", "render", "full", "ingest", "publish", "music"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -289,6 +319,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'ingest' = feed documents into the knowledge store. "
             "'publish' = format an existing show JSON as a human-readable "
             "document (TXT/PDF). "
+            "'music' = generate a standalone audio clip from a text prompt "
+            "(inline via --music-prompt or from a prompt file). "
             "See the USAGE block above for full examples."
         ),
     )
@@ -570,6 +602,66 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Exclude airy/whispery voices (e.g. af_kore, af_sky) from "
             "voice assignment. Useful when the listener prefers voices "
             "with more presence."
+        ),
+    )
+    render_group.add_argument(
+        "--music",
+        action="store_true",
+        default=False,
+        dest="music",
+        help=(
+            "Enable generative music for bumper events and [music: …] cues. "
+            "Uses MusicGen via HuggingFace Transformers. Model auto-downloads "
+            "on first use (~300 MB for small)."
+        ),
+    )
+    render_group.add_argument(
+        "--music-style",
+        type=str,
+        default="",
+        dest="music_style",
+        metavar="DESCRIPTION",
+        help=(
+            "Default music style used when a bumper cue has no explicit "
+            "[music: …] description. E.g. 'lo-fi jazz podcast bed'. "
+            "Ignored when --music is not set."
+        ),
+    )
+    render_group.add_argument(
+        "--music-model",
+        type=str,
+        default="small",
+        dest="music_model",
+        choices=["small", "medium", "large"],
+        metavar="{small,medium,large}",
+        help=(
+            "MusicGen model size (small/medium/large). "
+            "Defaults to 'small' (~300 MB). Ignored when --music is not set."
+        ),
+    )
+    render_group.add_argument(
+        "--music-duration",
+        type=float,
+        default=8.0,
+        dest="music_duration",
+        metavar="SECONDS",
+        help=(
+            "Duration in seconds of each generated music clip (default: 8.0 "
+            "for show bumpers; 30.0 for --mode music). "
+            "Ignored when --music is not set outside of music mode."
+        ),
+    )
+    render_group.add_argument(
+        "--music-prompt",
+        type=str,
+        default=None,
+        dest="music_prompt",
+        metavar="TEXT",
+        help=(
+            "Inline text prompt for --mode music. "
+            "E.g. 'heavy metal with harpsichord, dark Ozzy Osbourne style'. "
+            "Mutually exclusive with a positional prompt file. "
+            "Ignored in all other modes."
         ),
     )
     # ── Knowledge ingestion flags ────────────────────────────────
@@ -864,6 +956,14 @@ def _build_render_argv(
         argv.append("--no-strip-directions")
     if args.no_whisper_voices:
         argv.append("--no-whisper-voices")
+    if args.music:
+        argv.append("--music")
+    if args.music_style:
+        argv += ["--music-style", args.music_style]
+    if args.music_model != "small":
+        argv += ["--music-model", args.music_model]
+    if args.music_duration != 8.0:
+        argv += ["--music-duration", str(args.music_duration)]
     if args.quiet:
         argv.append("--quiet")
 
@@ -1008,6 +1108,83 @@ def _mode_ingest(args: argparse.Namespace) -> None:
                     )
         except Exception as exc:
             logger.warning("Failed to update vector index: %s", exc)
+
+
+def _mode_music(args: argparse.Namespace) -> Path:
+    """Run music mode: text prompt → standalone audio file.
+
+    Accepts a prompt from ``args.music_prompt`` (inline text) or
+    ``args.prompt`` (plain-text file).  Generates audio via
+    :class:`MusicGenEngine`, converts to the requested format, and
+    writes the result to ``args.audio_output`` or an auto-named path
+    under ``output/music/``.
+
+    Args:
+        args: Parsed namespace from parse_args().  Reads
+              ``args.music_prompt``, ``args.prompt``, ``args.music_model``,
+              ``args.music_duration``, ``args.format``, ``args.audio_output``,
+              ``args.quiet``.
+
+    Returns:
+        Path to the generated audio file.
+    """
+    import re
+    import datetime
+    from io import BytesIO
+
+    from vox_romana.tts.music_engine import MusicGenEngine, MODEL_ALIASES
+    from vox_romana.core.paths import HF_CACHE_DIR
+
+    # ── Resolve prompt text ───────────────────────────────────────────
+    if args.music_prompt:
+        prompt_text = args.music_prompt.strip()
+    else:
+        prompt_text = args.prompt.read_text(encoding="utf-8").strip()
+
+    if not prompt_text:
+        print("Error: music prompt is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Resolve model name ────────────────────────────────────────────
+    model_name = MODEL_ALIASES.get(args.music_model, args.music_model)
+
+    # ── Generate ──────────────────────────────────────────────────────
+    if not args.quiet:
+        print(f"  Model:    {model_name}")
+        print(f"  Duration: {args.music_duration}s")
+        print(f"  Prompt:   {prompt_text[:80]}{'…' if len(prompt_text) > 80 else ''}")
+        print()
+
+    engine = MusicGenEngine(model_name=model_name, cache_dir=HF_CACHE_DIR)
+    result = engine.generate(prompt_text, duration=args.music_duration)
+
+    # ── Determine output path ─────────────────────────────────────────
+    if args.audio_output:
+        out_path = Path(args.audio_output)
+    else:
+        # Auto-name: output/music/<slug>_<timestamp>.<format>
+        slug = re.sub(r"[^a-z0-9]+", "_", prompt_text[:40].lower()).strip("_")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = _OUTPUT_DIR / "music"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{slug}_{ts}.{args.format}"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Write audio (convert format if needed) ────────────────────────
+    if args.format == "wav":
+        out_path.write_bytes(result.audio)
+    else:
+        from pydub import AudioSegment
+        segment = AudioSegment.from_wav(BytesIO(result.audio))
+        segment.export(str(out_path), format=args.format)
+
+    if not args.quiet:
+        print(f"  Audio → {out_path}")
+    else:
+        print(out_path)
+
+    return out_path
 
 
 def _mode_publish(
@@ -1247,6 +1424,16 @@ def main(argv: list[str] | None = None) -> None:
     """
     args = parse_args(argv)
 
+    # ── Music mode: apply quality defaults before validation ──────────
+    # The render-group flags use low defaults suited for show bumpers.
+    # In music mode we upgrade them to the best quality that fits the
+    # hardware (M1 Max 32 GB: large model ~3.3 GB, runs on MPS).
+    if args.mode == "music":
+        if args.music_model == "small":   # sentinel default → upgrade
+            args.music_model = "large"
+        if args.music_duration == 8.0:    # sentinel default → upgrade
+            args.music_duration = 30.0
+
     # ── Validate mode-specific requirements ──────────────────────────
     if args.mode == "ingest" and not args.ingest_path:
         print(
@@ -1262,6 +1449,29 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if args.mode == "music":
+        has_file_prompt = args.prompt is not None
+        has_inline_prompt = bool(args.music_prompt)
+        if not has_file_prompt and not has_inline_prompt:
+            print(
+                "Error: --mode music requires either a prompt file "
+                "(positional argument) or --music-prompt TEXT.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if has_file_prompt and has_inline_prompt:
+            print(
+                "Error: provide a prompt file OR --music-prompt, not both.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if has_file_prompt and not args.prompt.exists():
+            print(
+                f"Error: prompt file not found: {args.prompt}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if args.mode == "render" and args.script_input is None:
         print(
@@ -1340,7 +1550,15 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  Ingest path: {p}")
             if args.dry_run:
                 print("  (dry run — no files will be written)")
-        if args.prompt:
+        if args.mode == "music":
+            if args.music_prompt:
+                print(f"  Prompt:   {args.music_prompt[:80]}{'…' if len(args.music_prompt) > 80 else ''}")
+            else:
+                print(f"  Prompt file: {args.prompt}")
+            print(f"  Model:    {args.music_model}")
+            print(f"  Duration: {args.music_duration}s")
+            print(f"  Format:   {args.format}")
+        if args.prompt and args.mode != "music":
             print(f"  Prompt: {args.prompt}")
         if args.script_input:
             print(f"  Script input: {args.script_input}")
@@ -1349,17 +1567,27 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Publish format: {fmt_label}")
             if args.publish_output:
                 print(f"  Publish output: {args.publish_output}")
-        # Language matrix
-        if len(args.out_lang_list) == 1 and args.out_lang_list[0] == args.root_lang:
-            print(f"  Language: {language_display([args.root_lang])}")
-        else:
-            print(f"  Root language: {language_display([args.root_lang])}")
-            print(f"  Output languages: {language_display(args.out_lang_list)}")
+        # Language matrix (not shown for music mode — language-agnostic)
+        if args.mode != "music":
+            if len(args.out_lang_list) == 1 and args.out_lang_list[0] == args.root_lang:
+                print(f"  Language: {language_display([args.root_lang])}")
+            else:
+                print(f"  Root language: {language_display([args.root_lang])}")
+                print(f"  Output languages: {language_display(args.out_lang_list)}")
         print()
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
-    if args.mode == "publish":
+    if args.mode == "music":
+        # Standalone music generation — prompt → audio file.
+        out_path = _mode_music(args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Music generation complete!")
+            print(f"  Audio → {out_path}")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "publish":
         # Standalone publish — read existing JSON → TXT/PDF.
         # Fan out across every language in --out-lang.
         _run_language_matrix(
