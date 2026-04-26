@@ -58,6 +58,14 @@ wikipedia-api>=0.6          # MediaWiki REST client for WikipediaSource
 pandas>=2.2,<2.3
 scipy>=1.13,<1.15
 langdetect>=1.0.9           # language detection for TranslatorAgent
+
+# ── Animation / Video generation — OPTIONAL ─────────────────────────────
+# Required only when using the animation pipeline (vox_romana/animation/).
+# If not installed, ImageGenerator raises ImportError with a clear install
+# message on first use. All other vox_romana features work without these.
+diffusers>=0.30,<0.32       # Stable Diffusion pipelines (local SD inference)
+moviepy>=1.0.3,<2.0         # video compositing + audio sync backend
+Pillow>=10.4,<11.0          # image I/O (save PNG frames; PIL used by diffusers too)
 bert-score>=0.3             # back-translation quality scoring (BERTScore F1)
 statsmodels>=0.14,<0.15
 pingouin>=0.5.4,<0.6
