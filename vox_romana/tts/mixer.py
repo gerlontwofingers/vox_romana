@@ -216,6 +216,63 @@ class AudioMixer:
             speaker="[silence]",
         ))
 
+    def add_music_clip(
+        self,
+        audio_bytes: bytes,
+        *,
+        sample_rate: int = 32000,
+        fade_in_ms: int = 500,
+        fade_out_ms: int = 1000,
+        pause_before: int = 0,
+        pause_after: int = 0,
+    ) -> None:
+        """Add a generated music clip (bumper, stinger, theme cue) to the mix.
+
+        Like add_clip(), but applies a fade-in and fade-out before enqueuing.
+        This prevents harsh click/pop artefacts at the start and end of
+        music cues — especially important when a bumper sits between two
+        speech segments.
+
+        The clip is enqueued in the same timeline as speech clips, so
+        sequencing (and any overlap logic) works identically. Music clips
+        do not interrupt speech — they are placed at the position the
+        bumper event occupies in the script.
+
+        Args:
+            audio_bytes:  Raw WAV audio bytes (from MusicGenEngine.generate()).
+            sample_rate:  Sample rate of the audio. MusicGen produces 32000 Hz.
+            fade_in_ms:   Fade-in duration in milliseconds. Default 500ms gives
+                          a smooth entry. Set to 0 to disable.
+            fade_out_ms:  Fade-out duration in milliseconds. Default 1000ms
+                          (1 second) gives a natural end. Set to 0 to disable.
+            pause_before: Silence before the clip (ms). Default 0 — music
+                          bumpers usually butt up against the preceding speech.
+            pause_after:  Silence after the clip (ms). Default 0.
+
+        Example:
+            result = music_engine.generate("upbeat jazz intro", duration=8.0)
+            mixer.add_music_clip(
+                result.audio,
+                sample_rate=result.sample_rate,
+                fade_in_ms=300,
+                fade_out_ms=800,
+            )
+        """
+        segment = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+
+        if fade_in_ms > 0:
+            segment = segment.fade_in(fade_in_ms)
+        if fade_out_ms > 0:
+            segment = segment.fade_out(fade_out_ms)
+
+        self._clips.append(AudioClip(
+            segment=segment,
+            pause_before=pause_before,
+            pause_after=pause_after,
+            overlap=0,
+            speaker="[music]",
+        ))
+
     def mix(self, *, normalize: bool = True) -> AudioSegment:
         """Assemble all clips into a single AudioSegment.
 

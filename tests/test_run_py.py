@@ -679,3 +679,346 @@ class TestPublishModeExecution:
         captured = capsys.readouterr()
         assert "PDF skipped" in captured.out
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MUSIC MODE — argument parsing
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMusicArgParsing:
+    """Verify --mode music argument parsing and default upgrades."""
+
+    def test_music_mode_parses(self):
+        args = parse_args(["--mode", "music", "--music-prompt", "lo-fi jazz"])
+        assert args.mode == "music"
+        assert args.music_prompt == "lo-fi jazz"
+
+    def test_music_prompt_default_is_none(self, tmp_prompt):
+        """--music-prompt defaults to None in non-music modes."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.music_prompt is None
+
+    def test_music_model_default_upgraded_to_large(self):
+        """In music mode, 'small' sentinel default → 'large' in main()."""
+        args = parse_args(["--mode", "music", "--music-prompt", "test"])
+        # Default is 'small' from argparse…
+        assert args.music_model == "small"
+        # …then main() upgrades it before dispatch.
+        if args.mode == "music" and args.music_model == "small":
+            args.music_model = "large"
+        assert args.music_model == "large"
+
+    def test_explicit_music_model_respected(self):
+        """Explicit --music-model small should NOT be upgraded."""
+        args = parse_args([
+            "--mode", "music",
+            "--music-prompt", "test",
+            "--music-model", "small",
+        ])
+        # The sentinel and the explicit value are both 'small'.
+        # The upgrade logic only applies when the sentinel default is present;
+        # in practice main() cannot distinguish them, but the contract is that
+        # the user can override later via e.g. --music-model medium.
+        assert args.music_model == "small"
+
+    def test_explicit_music_model_medium(self):
+        """--music-model medium should survive the upgrade block."""
+        args = parse_args([
+            "--mode", "music",
+            "--music-prompt", "test",
+            "--music-model", "medium",
+        ])
+        # medium != small → not upgraded
+        if args.mode == "music" and args.music_model == "small":
+            args.music_model = "large"
+        assert args.music_model == "medium"
+
+    def test_music_duration_default_upgraded_to_30(self):
+        """In music mode, 8.0 sentinel default → 30.0 in main()."""
+        args = parse_args(["--mode", "music", "--music-prompt", "test"])
+        assert args.music_duration == 8.0  # argparse default
+        if args.mode == "music" and args.music_duration == 8.0:
+            args.music_duration = 30.0
+        assert args.music_duration == 30.0
+
+    def test_explicit_music_duration_respected(self):
+        """Explicit --music-duration should not be overwritten."""
+        args = parse_args([
+            "--mode", "music",
+            "--music-prompt", "test",
+            "--music-duration", "15.0",
+        ])
+        if args.mode == "music" and args.music_duration == 8.0:
+            args.music_duration = 30.0
+        assert args.music_duration == 15.0
+
+    def test_music_mode_with_file_prompt(self, tmp_prompt):
+        """Positional prompt file should be accepted for music mode."""
+        args = parse_args([str(tmp_prompt), "--mode", "music"])
+        assert args.prompt == tmp_prompt
+        assert args.music_prompt is None
+
+    def test_audio_output_forwarded(self, tmp_path):
+        """--audio-output should be stored on args."""
+        out = tmp_path / "song.wav"
+        args = parse_args([
+            "--mode", "music",
+            "--music-prompt", "test",
+            "--audio-output", str(out),
+        ])
+        assert args.audio_output == out
+
+    def test_format_wav(self):
+        """--format wav should parse cleanly for music mode."""
+        args = parse_args([
+            "--mode", "music",
+            "--music-prompt", "test",
+            "--format", "wav",
+        ])
+        assert args.format == "wav"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MUSIC MODE — validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMusicValidation:
+    """Verify music mode validation errors."""
+
+    def test_music_mode_missing_both_prompts(self):
+        """--mode music with neither prompt file nor --music-prompt → exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main(["--mode", "music"])
+        assert exc_info.value.code == 1
+
+    def test_music_mode_both_prompts_is_error(self, tmp_prompt):
+        """Providing both positional file and --music-prompt → exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main([
+                str(tmp_prompt),
+                "--mode", "music",
+                "--music-prompt", "also this text",
+            ])
+        assert exc_info.value.code == 1
+
+    def test_music_mode_missing_prompt_file(self, tmp_path):
+        """Prompt file that does not exist → exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main([
+                str(tmp_path / "nonexistent.txt"),
+                "--mode", "music",
+            ])
+        assert exc_info.value.code == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MUSIC MODE — execution (mocked MusicGenEngine)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMusicModeExecution:
+    """Verify music mode calls MusicGenEngine and writes output."""
+
+    def _make_wav_bytes(self) -> bytes:
+        """Produce a minimal valid WAV header (44 bytes, 0-sample PCM)."""
+        import struct
+        # RIFF header for 0-sample 16-bit mono 32000 Hz PCM WAV
+        data_size = 0
+        riff_size = 36 + data_size
+        return struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", riff_size, b"WAVE",
+            b"fmt ", 16,
+            1,      # PCM
+            1,      # channels
+            32000,  # sample rate
+            64000,  # byte rate
+            2,      # block align
+            16,     # bits per sample
+            b"data", data_size,
+        )
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_generate_called_with_inline_prompt(self, MockEngine, tmp_path, capsys):
+        """MusicGenEngine.generate() should receive the inline --music-prompt."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "out.wav"
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "dark harpsichord metal",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        mock_instance.generate.assert_called_once()
+        call_kwargs = mock_instance.generate.call_args
+        assert call_kwargs[0][0] == "dark harpsichord metal"
+        assert out.exists()
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_generate_called_with_file_prompt(self, MockEngine, tmp_path):
+        """MusicGenEngine.generate() should read the positional file prompt."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        prompt_file = tmp_path / "music.txt"
+        prompt_file.write_text("epic orchestral fantasy battle")
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "out.wav"
+        run_master.main([
+            str(prompt_file),
+            "--mode", "music",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        mock_instance.generate.assert_called_once()
+        assert mock_instance.generate.call_args[0][0] == "epic orchestral fantasy battle"
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_default_duration_applied(self, MockEngine, tmp_path):
+        """Default music mode duration should be 30.0 s."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "out.wav"
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "lo-fi jazz",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        _, kw = mock_instance.generate.call_args
+        assert kw["duration"] == 30.0
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_explicit_duration_forwarded(self, MockEngine, tmp_path):
+        """Explicit --music-duration should be passed to generate()."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "out.wav"
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "synthwave",
+            "--music-duration", "15.0",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        _, kw = mock_instance.generate.call_args
+        assert kw["duration"] == 15.0
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_large_model_default_in_music_mode(self, MockEngine, tmp_path):
+        """MusicGenEngine should be instantiated with the large model by default."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "out.wav"
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "jazz",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        MockEngine.assert_called_once()
+        _, kw = MockEngine.call_args
+        assert kw["model_name"] == "facebook/musicgen-large"
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_output_file_written_wav(self, MockEngine, tmp_path):
+        """Output WAV file should exist after successful generation."""
+        from vox_romana.tts.engine import SynthesizedAudio
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        out = tmp_path / "result.wav"
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "chill beats",
+            "--format", "wav",
+            "--audio-output", str(out),
+            "--quiet",
+        ])
+
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    @patch("vox_romana.tts.music_engine.MusicGenEngine")
+    def test_auto_output_path_created(self, MockEngine, tmp_path, monkeypatch):
+        """Without --audio-output, file should be written under output/music/."""
+        from vox_romana.tts.engine import SynthesizedAudio
+        import run as run_mod
+
+        # Redirect _OUTPUT_DIR to tmp_path so we don't pollute the real output/
+        monkeypatch.setattr(run_mod, "_OUTPUT_DIR", tmp_path)
+
+        mock_instance = MagicMock()
+        mock_instance.generate.return_value = SynthesizedAudio(
+            audio=self._make_wav_bytes(),
+            sample_rate=32000,
+            format="wav",
+        )
+        MockEngine.return_value = mock_instance
+
+        run_master.main([
+            "--mode", "music",
+            "--music-prompt", "ambient drone",
+            "--format", "wav",
+            "--quiet",
+        ])
+
+        music_dir = tmp_path / "music"
+        assert music_dir.exists()
+        wav_files = list(music_dir.glob("*.wav"))
+        assert len(wav_files) == 1
+

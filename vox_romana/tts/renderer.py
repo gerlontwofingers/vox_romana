@@ -181,6 +181,20 @@ def strip_stage_directions(text: str) -> str:
 _MD_EMPHASIS_RE = re.compile(r'(\*{1,2}|_{1,2})(.+?)\1')
 
 
+# Matches inline music cues written by agents into utterance text:
+#   "[music: upbeat jazz piano]"
+#   "[Music: somber strings]"
+# The captured group is the prompt passed to the music engine. These cues
+# can appear in any event — not just bumper events — and trigger generative
+# music when a music engine is wired into the renderer.
+_MUSIC_CUE_RE = re.compile(r'\[\s*music\s*:\s*([^\]]+?)\s*\]', re.IGNORECASE)
+
+
+# Nonverbal markers that signal a theme music cue at this event boundary.
+# Lowercased substring match against each entry in event["nonverbal"].
+_THEME_MUSIC_MARKERS: frozenset[str] = frozenset({"theme music", "theme song", "intro music", "outro music"})
+
+
 def strip_markdown_emphasis(text: str) -> str:
     """Remove Markdown emphasis markers from TTS text, keeping the inner word.
 
@@ -260,6 +274,9 @@ class TTSRenderer:
         registry: "VoiceRegistry | None" = None,
         series_key: str | None = None,
         exclude_whispery: bool = False,
+        music_engine: "MusicGenEngine | None" = None,
+        music_style: str = "",
+        music_duration: float = 8.0,
     ) -> None:
         """Initialize the renderer.
 
@@ -283,6 +300,18 @@ class TTSRenderer:
                               registry lookups. When None, ``render()`` derives
                               one from the input JSON (series_id → show_name →
                               "global").
+            music_engine:     Optional MusicGenEngine for generative music at
+                              bumper events (event_kind == "bumper") and
+                              ``[music: …]`` cues found in any event's text.
+                              When None, all such events are skipped silently
+                              (preserves the legacy behaviour).
+            music_style:      Default style hint appended to music prompts when
+                              the cue itself contains no description. Examples:
+                              "lo-fi podcast bed", "orchestral cinematic".
+                              Ignored when ``music_engine`` is None.
+            music_duration:   Default length (seconds) of generated music clips.
+                              Used for any cue that doesn't specify its own.
+                              Ignored when ``music_engine`` is None.
 
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
@@ -294,6 +323,9 @@ class TTSRenderer:
         self._registry = registry
         self._series_key_override = series_key
         self._exclude_whispery = exclude_whispery
+        self._music_engine = music_engine
+        self._music_style = music_style
+        self._music_duration = music_duration
 
     def render(
         self,
@@ -389,6 +421,38 @@ class TTSRenderer:
             # TTS engines have no concept of Markdown — the asterisks are read
             # aloud literally.  The inner word is preserved.
             text = strip_markdown_emphasis(text)
+
+            # ── Music intercept ──────────────────────────────────────
+            # Bumper events and inline [music: …] cues route to the music
+            # engine instead of the speech engine. We do this BEFORE the
+            # SPOKEN_EVENT_KINDS guard below so that bumper events (which
+            # have no spoken text) are caught here rather than skipped.
+            #
+            # When no music engine is wired in, these events fall through
+            # to the existing skip-or-synthesize logic — preserving the
+            # legacy behaviour where bumpers were silently dropped.
+            if self._music_engine is not None and self._is_music_cue(event):
+                prompt = self._resolve_music_prompt(event)
+                if not quiet:
+                    label = f"[{i+1}/{len(events)}]"
+                    print(f"  {label} 🎵 music: {prompt}")
+                try:
+                    music_result = self._music_engine.generate(
+                        prompt,
+                        duration=self._music_duration,
+                    )
+                    mixer.add_music_clip(
+                        music_result.audio,
+                        sample_rate=music_result.sample_rate,
+                    )
+                    rendered += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Music generation failed for event %d (%r): %s",
+                        i, prompt, exc,
+                    )
+                    skipped += 1
+                continue
 
             if not text or not text.strip() or event_kind not in SPOKEN_EVENT_KINDS:
                 skipped += 1
@@ -874,3 +938,71 @@ class TTSRenderer:
         if pace:
             return pace_map.get(pace.lower(), 1.0)
         return 1.0
+
+    # ── Music helpers ─────────────────────────────────────────────────────────
+
+    def _is_music_cue(self, event: dict) -> bool:
+        """Return True if this event should produce generative music.
+
+        Three signals trigger music routing:
+          1. ``event_kind == "bumper"`` — explicit bumper marker from the
+             show script. The renderer historically skipped these silently.
+          2. ``[music: …]`` cue embedded in the event text — the agent
+             writes an inline music direction (any event kind).
+          3. A theme-music marker in ``event.nonverbal`` — e.g. agents
+             wrote ``"theme music"``, ``"intro music"``, etc.
+
+        Args:
+            event: A raw event dict (as found in the JSON ``events`` list).
+
+        Returns:
+            True if any of the three signals match. False otherwise.
+        """
+        if (event.get("event_kind") or "").lower() == "bumper":
+            return True
+
+        text = event.get("text") or ""
+        if _MUSIC_CUE_RE.search(text):
+            return True
+
+        nonverbal = event.get("nonverbal") or ()
+        for marker in nonverbal:
+            marker_lc = (marker or "").lower()
+            if any(theme in marker_lc for theme in _THEME_MUSIC_MARKERS):
+                return True
+
+        return False
+
+    def _resolve_music_prompt(self, event: dict) -> str:
+        """Build the text prompt to pass to the music engine for this event.
+
+        Resolution priority:
+          1. The first ``[music: …]`` capture in the event text — the agent
+             explicitly described what they want.
+          2. The first matching theme-music marker in ``event.nonverbal``.
+          3. The renderer's ``music_style`` default (set in __init__).
+          4. A safe generic fallback so we always pass something to the model.
+
+        Args:
+            event: A raw event dict.
+
+        Returns:
+            A non-empty prompt string suitable for ``MusicGenEngine.generate()``.
+        """
+        text = event.get("text") or ""
+        m = _MUSIC_CUE_RE.search(text)
+        if m:
+            inline = m.group(1).strip()
+            if inline:
+                return inline
+
+        nonverbal = event.get("nonverbal") or ()
+        for marker in nonverbal:
+            marker_lc = (marker or "").lower()
+            if any(theme in marker_lc for theme in _THEME_MUSIC_MARKERS):
+                return marker.strip()
+
+        if self._music_style:
+            return self._music_style
+
+        return "podcast background music"

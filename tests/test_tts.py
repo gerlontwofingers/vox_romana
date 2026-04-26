@@ -1696,3 +1696,320 @@ class TestRendererAmAdamVariety:
             f"No voice should be assigned more than 2 times across 8 renders, "
             f"got {dict(counts)}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. MUSIC ROUTING TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class FakeMusicEngine:
+    """A fake MusicGenEngine that records generate() calls without touching torch."""
+
+    def __init__(self, sample_rate: int = 32000):
+        self._sample_rate = sample_rate
+        self.calls: list[dict] = []
+
+    def generate(self, prompt: str, *, duration: float = 8.0) -> SynthesizedAudio:
+        self.calls.append({"prompt": prompt, "duration": duration})
+        return SynthesizedAudio(
+            audio=make_wav_bytes(duration_ms=int(duration * 1000), sample_rate=self._sample_rate),
+            sample_rate=self._sample_rate,
+        )
+
+
+class TestRendererMusicRouting:
+    """Tests that music cues route to MusicGenEngine, not the TTS engine.
+
+    These tests verify the intercept logic added to TTSRenderer:
+    - bumper events → music engine, not TTS engine
+    - [music: …] cues in utterance text → music engine
+    - 'theme music' in nonverbal → music engine
+    - plain utterances → TTS engine (regression check)
+    - no music engine wired in → bumper events skipped silently
+    """
+
+    def _render_events(self, events, *, music_engine=None, music_style="", music_duration=8.0):
+        """Helper: render given events to a temp WAV, return (result, tts_engine, music_engine)."""
+        tts_engine = FakeEngine()
+        renderer = TTSRenderer(
+            tts_engine,
+            music_engine=music_engine,
+            music_style=music_style,
+            music_duration=music_duration,
+        )
+        data = {"title": "", "events": events, "participants": []}
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            output_path = f.name
+        result = renderer.render(data, output_path, format="wav", quiet=True)
+        return result, tts_engine, music_engine
+
+    # ── Bumper events ────────────────────────────────────────────
+
+    def test_bumper_event_routes_to_music_engine(self):
+        """A bumper event calls music_engine.generate(), not TTS engine."""
+        music_engine = FakeMusicEngine()
+        events = [{"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}]
+        result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
+
+        assert len(music_engine.calls) == 1
+        assert len(tts_engine.calls) == 0
+        assert result.rendered == 1
+        assert result.skipped == 0
+
+    def test_bumper_event_skipped_without_music_engine(self):
+        """Bumper events are silently skipped when no music engine is wired in."""
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "Hello.",
+                "nonverbal": [],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            },
+            {"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []},
+        ]
+        result, tts_engine, _ = self._render_events(events, music_engine=None)
+
+        assert len(tts_engine.calls) == 1   # Only the utterance.
+        assert result.rendered == 1
+        assert result.skipped == 1          # The bumper was skipped.
+
+    def test_bumper_uses_music_style_as_prompt_fallback(self):
+        """When the bumper carries no [music:] cue, music_style is used as the prompt."""
+        music_engine = FakeMusicEngine()
+        events = [{"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}]
+        self._render_events(events, music_engine=music_engine, music_style="lo-fi jazz podcast")
+        assert music_engine.calls[0]["prompt"] == "lo-fi jazz podcast"
+
+    def test_bumper_falls_back_to_generic_prompt(self):
+        """When music_style is empty and no cue is present, the generic fallback is used."""
+        music_engine = FakeMusicEngine()
+        events = [{"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}]
+        self._render_events(events, music_engine=music_engine, music_style="")
+        assert music_engine.calls[0]["prompt"] == "podcast background music"
+
+    def test_music_duration_forwarded(self):
+        """music_duration is passed through to music_engine.generate()."""
+        music_engine = FakeMusicEngine()
+        events = [{"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}]
+        self._render_events(events, music_engine=music_engine, music_duration=12.0)
+        assert music_engine.calls[0]["duration"] == 12.0
+
+    # ── Inline [music: …] cues ────────────────────────────────────
+
+    def test_inline_music_cue_routes_to_music_engine(self):
+        """[music: upbeat jazz piano] embedded in utterance text triggers music."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Host",
+                "text": "And now [music: upbeat jazz piano] we begin.",
+                "nonverbal": [],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            }
+        ]
+        result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
+
+        assert len(music_engine.calls) == 1
+        assert music_engine.calls[0]["prompt"] == "upbeat jazz piano"
+        assert len(tts_engine.calls) == 0   # TTS must NOT have been called.
+
+    def test_inline_cue_case_insensitive(self):
+        """[Music: …] with a capital M is also detected."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Host",
+                "text": "[Music: somber strings]",
+                "nonverbal": [],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            }
+        ]
+        self._render_events(events, music_engine=music_engine)
+        assert music_engine.calls[0]["prompt"] == "somber strings"
+
+    # ── Nonverbal theme music marker ──────────────────────────────
+
+    def test_theme_music_nonverbal_routes_to_music_engine(self):
+        """'theme music' in nonverbal triggers music generation."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Host",
+                "text": "",
+                "nonverbal": ["theme music"],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            }
+        ]
+        result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
+        assert len(music_engine.calls) == 1
+        assert len(tts_engine.calls) == 0
+
+    def test_intro_music_nonverbal_routes_to_music_engine(self):
+        """'intro music' in nonverbal is also detected."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Host",
+                "text": "",
+                "nonverbal": ["intro music plays"],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            }
+        ]
+        self._render_events(events, music_engine=music_engine)
+        assert len(music_engine.calls) == 1
+
+    # ── Regression: plain utterances still go to TTS ─────────────
+
+    def test_plain_utterance_still_routes_to_tts(self):
+        """Ordinary speech events are NOT intercepted by the music engine."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "Welcome to the show.",
+                "nonverbal": [],
+                "tone": ["warm"],
+                "pace": "medium",
+                "volume": "normal",
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            }
+        ]
+        result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
+
+        assert len(tts_engine.calls) == 1
+        assert tts_engine.calls[0]["text"] == "Welcome to the show."
+        assert len(music_engine.calls) == 0
+
+    def test_mixed_events_route_correctly(self):
+        """Bumper → music, utterances → TTS, all in a single render pass."""
+        music_engine = FakeMusicEngine()
+        events = [
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "Hello.",
+                "nonverbal": [],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            },
+            {"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []},
+            {
+                "event_kind": "utterance",
+                "speaker_name": "Bob",
+                "text": "And goodbye.",
+                "nonverbal": [],
+                "tone": [],
+                "pace": None,
+                "volume": None,
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+                "pause_after": None,
+            },
+        ]
+        result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
+
+        assert len(music_engine.calls) == 1     # Only the bumper.
+        assert len(tts_engine.calls) == 2        # Both utterances.
+        assert result.rendered == 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 10. MIXER add_music_clip TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAudioMixerMusicClip:
+    """Tests for AudioMixer.add_music_clip()."""
+
+    def test_add_music_clip_increases_clip_count(self):
+        """add_music_clip() adds exactly one clip to the timeline."""
+        mixer = AudioMixer()
+        assert mixer.clip_count == 0
+        mixer.add_music_clip(make_wav_bytes(duration_ms=500, sample_rate=32000), sample_rate=32000)
+        assert mixer.clip_count == 1
+
+    def test_add_music_clip_speaker_label(self):
+        """The clip is tagged with speaker='[music]'."""
+        mixer = AudioMixer()
+        mixer.add_music_clip(make_wav_bytes(sample_rate=32000), sample_rate=32000)
+        assert mixer._clips[0].speaker == "[music]"
+
+    def test_add_music_clip_no_overlap(self):
+        """Music clips never use the overlap/interruption mechanism."""
+        mixer = AudioMixer()
+        mixer.add_music_clip(make_wav_bytes(sample_rate=32000), sample_rate=32000)
+        assert mixer._clips[0].overlap == 0
+
+    def test_add_music_clip_with_speech_produces_audio(self):
+        """A music clip followed by a speech clip produces a non-empty mix."""
+        mixer = AudioMixer()
+        mixer.add_music_clip(make_wav_bytes(duration_ms=500, sample_rate=32000), sample_rate=32000)
+        mixer.add_clip(make_wav_bytes(duration_ms=300, sample_rate=22050), sample_rate=22050)
+        mixed = mixer.mix(normalize=False)
+        assert len(mixed) > 0
+
+    def test_add_music_clip_with_fades(self):
+        """Custom fade_in_ms and fade_out_ms round-trip through pydub without error."""
+        mixer = AudioMixer()
+        mixer.add_music_clip(
+            make_wav_bytes(duration_ms=1000, sample_rate=32000),
+            sample_rate=32000,
+            fade_in_ms=100,
+            fade_out_ms=200,
+        )
+        assert mixer.clip_count == 1
+
+    def test_add_music_clip_zero_fades_allowed(self):
+        """fade_in_ms=0 and fade_out_ms=0 disable fading without raising."""
+        mixer = AudioMixer()
+        mixer.add_music_clip(
+            make_wav_bytes(duration_ms=500, sample_rate=32000),
+            sample_rate=32000,
+            fade_in_ms=0,
+            fade_out_ms=0,
+        )
+        assert mixer.clip_count == 1

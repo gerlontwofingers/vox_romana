@@ -212,6 +212,39 @@ def make_engine(engine_name: str, **kwargs):
         )
 
 
+def _build_music_engine(args: argparse.Namespace):
+    """Build a MusicGenEngine if --music was requested, else return None.
+
+    The engine is constructed only when ``args.music`` is True. On any
+    import or construction error (e.g. transformers not installed), the
+    function prints a warning and returns None so the rest of the render
+    continues without music.
+
+    Args:
+        args: Parsed namespace from parse_args().
+
+    Returns:
+        A MusicGenEngine instance, or None if music was not requested
+        or the engine could not be constructed.
+    """
+    if not args.music:
+        return None
+
+    try:
+        from vox_romana.tts.music_engine import MusicGenEngine, MODEL_ALIASES
+        from vox_romana.core.paths import HF_CACHE_DIR
+        model_name = MODEL_ALIASES.get(args.music_model, f"facebook/musicgen-{args.music_model}")
+        return MusicGenEngine(model_name=model_name, cache_dir=HF_CACHE_DIR)
+    except Exception as exc:
+        import sys
+        print(
+            f"Warning: could not initialise MusicGenEngine ({exc}). "
+            "Continuing without music generation.",
+            file=sys.stderr,
+        )
+        return None
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments for the render pipeline.
 
@@ -425,7 +458,59 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
-    # ── Series / voice registry ───────────────────────────────────
+    # ── Music generation ────────────────────────────────────────────────
+    parser.add_argument(
+        "--music",
+        action="store_true",
+        default=False,
+        dest="music",
+        help=(
+            "Enable generative music for bumper events and [music: …] cues "
+            "in the show script. Uses MusicGen (facebook/musicgen-small by "
+            "default) via HuggingFace Transformers. The model auto-downloads "
+            "on first use (~300 MB for small). Requires torch and scipy "
+            "(already in requirements.txt)."
+        ),
+    )
+    parser.add_argument(
+        "--music-style",
+        type=str,
+        default="",
+        dest="music_style",
+        metavar="DESCRIPTION",
+        help=(
+            "Default music style/genre used when a bumper event carries no "
+            "explicit [music: …] cue. Examples: \"lo-fi jazz podcast bed\", "
+            "\"orchestral cinematic transition\". Ignored when --music is not set."
+        ),
+    )
+    parser.add_argument(
+        "--music-model",
+        type=str,
+        default="small",
+        dest="music_model",
+        choices=["small", "medium", "large"],
+        metavar="{small,medium,large}",
+        help=(
+            "MusicGen model size. \"small\" (default, ~300 MB) is fast on MPS "
+            "and good enough for bumpers. \"medium\" (~1.5 GB) and \"large\" "
+            "(~3.3 GB) produce higher quality at the cost of speed. "
+            "Maps to facebook/musicgen-{size}. Ignored when --music is not set."
+        ),
+    )
+    parser.add_argument(
+        "--music-duration",
+        type=float,
+        default=8.0,
+        dest="music_duration",
+        metavar="SECONDS",
+        help=(
+            "Duration in seconds of each generated music clip (default: 8.0). "
+            "Applies to all music cues unless the cue specifies its own length. "
+            "MusicGen supports up to ~30 seconds per generation call. "
+            "Ignored when --music is not set."
+        ),
+    )
     parser.add_argument(
         "--series-id",
         type=str,
@@ -517,6 +602,9 @@ def main(argv: list[str] | None = None) -> None:
         registry=registry,
         series_key=series_key,
         exclude_whispery=args.no_whisper_voices,
+        music_engine=_build_music_engine(args),
+        music_style=args.music_style,
+        music_duration=args.music_duration,
     )
 
     if not args.quiet:
