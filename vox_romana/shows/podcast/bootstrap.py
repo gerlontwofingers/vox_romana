@@ -125,13 +125,16 @@ RULES:
 - Create 2-6 hosts depending on the brief. Most podcasts have 2-4 hosts.
 - Each host MUST have a distinct personality and speech style. No two hosts
   should sound the same when their dialogue is generated.
-- Plan enough segments to reach the target word count. Each segment should
-  target roughly 1,000–1,200 words (this is the optimal LLM output size
-  for natural multi-speaker conversation). Use this formula:
-      num_segments ≈ max(4, min(35, target_words // 1100))
+- Plan enough segments to reach the target word count. Each segment's word
+  target comes from the TARGET LENGTH block in the user message — match it
+  exactly. Without a word target, aim for ~800–1,200 words per segment.
+  Use this formula:
+      num_segments ≈ max(4, target_words // 1100)
   Examples: 4,500 words → ~4 segments. 10,000 words → ~9 segments.
-  27,000 words → ~25 segments. Always include an intro segment first
-  and an outro segment last; everything between is content.
+  27,000 words → ~25 segments. 72,000 words → ~65 segments.
+  Always include an intro segment first and an outro segment last;
+  everything between is content. There is no upper cap on segment count —
+  for long-form shows, plan as many segments as the word budget requires.
 - More shorter segments produce better quality than a few very long ones,
   because each segment is generated in a single LLM call.
 - If the user specifies a word count or duration, plan enough segments and
@@ -364,7 +367,10 @@ class PodcastBootstrap(BaseShowBootstrap):
         if reference_material:
             user_parts.append(f"\nREFERENCE MATERIAL:\n{reference_material}")
         if target_words:
-            ideal_segs = max(4, min(35, target_words // 1100))
+            # No artificial ceiling — segment count scales linearly with
+            # word budget so long-form shows (e.g. 480 min ≈ 72,000 words)
+            # get the ~65 segments they need rather than being capped at 35.
+            ideal_segs = max(4, target_words // 1100)
             per_seg = target_words // ideal_segs
             user_parts.append(
                 f"\nTARGET LENGTH: {target_words:,} words total. "
@@ -374,9 +380,9 @@ class PodcastBootstrap(BaseShowBootstrap):
             )
             user_parts.append(
                 f"\nSEGMENT COUNT: Plan approximately {ideal_segs} segments "
-                f"of ~{per_seg:,} words each. This is the optimal segment "
-                f"size — DO NOT plan fewer than {max(4, ideal_segs - 2)} or "
-                f"more than {min(35, ideal_segs + 5)} segments."
+                f"of ~{per_seg:,} words each. This is the required segment "
+                f"count — DO NOT plan fewer than {max(4, ideal_segs - 2)} or "
+                f"more than {ideal_segs + 5} segments."
             )
 
         raw = self._client.chat(

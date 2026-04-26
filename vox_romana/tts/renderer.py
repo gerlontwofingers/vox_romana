@@ -259,6 +259,7 @@ class TTSRenderer:
         strip_directions: bool = False,
         registry: "VoiceRegistry | None" = None,
         series_key: str | None = None,
+        exclude_whispery: bool = False,
     ) -> None:
         """Initialize the renderer.
 
@@ -292,6 +293,7 @@ class TTSRenderer:
         self._strip_directions = strip_directions
         self._registry = registry
         self._series_key_override = series_key
+        self._exclude_whispery = exclude_whispery
 
     def render(
         self,
@@ -688,6 +690,7 @@ class TTSRenderer:
                 cast_info,
                 catalog=active_catalog,
                 usage_counts=usage_counts,
+                exclude_whispery=self._exclude_whispery,
             )
             for name, voice_id in catalog_map.items():
                 if voice_id and name not in result and voice_id not in already_used:
@@ -733,6 +736,15 @@ class TTSRenderer:
             # Kokoro naming convention: af_* / bf_* = female; am_* / bm_* = male
             male_voices = [v for v in available if v[:2] in ("am", "bm")]
             female_voices = [v for v in available if v[:2] in ("af", "bf")]
+
+        # Filter whispery voices from all pools when requested.
+        if self._exclude_whispery:
+            def _not_whispery(v: str) -> bool:
+                desc = active_catalog.get(v)
+                return desc is None or not desc.is_whispery
+            male_voices = [v for v in male_voices if _not_whispery(v)]
+            female_voices = [v for v in female_voices if _not_whispery(v)]
+            available = [v for v in available if _not_whispery(v)]
 
         # When usage counts are available, sort each gender pool by
         # ascending usage so the next unassigned speaker draws from the

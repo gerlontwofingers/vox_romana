@@ -77,9 +77,16 @@ text outside the JSON block.
 
 RULES:
 - Plan enough chapters for the scope described. A short story: 3-5 chapters.
-  A novella: 8-15. A full novel: 20-40. Scale to match the brief.
-- If the user specifies a word count or duration, plan enough chapters and
-  beats to fill it. Each beat produces ~150-250 words of narration.
+  A novella: 8-15. A full novel: 20-60. Scale to match the brief.
+- If the user specifies a word count or duration, the TARGET LENGTH block
+  takes precedence over these defaults — scale chapters AND beats per chapter
+  up as needed to reach the word budget. Each beat produces ~150-250 words
+  of narration (~200 on average). Use this to derive your plan:
+      ideal_chapters   = max(3, target_words // 2000)
+      beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
+  A 74,000-word audiobook → ~37 chapters, ~10 beats each.
+  A 20,000-word novella  → ~10 chapters, ~10 beats each.
+  There is no upper cap on beats_per_chapter for long-form content.
 - Each chapter should have 2-6 key_points — these are the narrative beats
   the narrator will cover in order.
 - The first chapter should hook the reader. The last should resolve or conclude.
@@ -229,12 +236,22 @@ class AudiobookBootstrap(BaseShowBootstrap):
         if reference_material:
             user_parts.append(f"\nREFERENCE MATERIAL:\n{reference_material}")
         if target_words:
+            # Derive chapter count and beats-per-chapter from the word budget
+            # so the architect gets explicit, non-contradicting targets.
+            # Formula mirrors what the system prompt documents:
+            #   ideal_chapters    = max(3, target_words // 2000)
+            #   beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
+            ideal_chapters = max(3, target_words // 2000)
+            beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
             user_parts.append(
                 f"\nTARGET LENGTH: {target_words:,} words. "
-                f"Plan enough chapters and beats to fill this — each beat "
-                f"produces ~150-250 words of narration. For a {target_words:,}-word "
-                f"audiobook, plan roughly {max(3, target_words // 500)} chapters "
-                f"with 2-4 beats each."
+                f"Plan approximately {ideal_chapters} chapters with "
+                f"~{beats_per_chapter} beats each "
+                f"({ideal_chapters} \u00d7 {beats_per_chapter} \u00d7 ~200 words/beat "
+                f"\u2248 {ideal_chapters * beats_per_chapter * 200:,} words). "
+                f"Adjust chapter count or beats-per-chapter as needed to reach "
+                f"the target — do NOT use fewer total beats than "
+                f"{ideal_chapters * beats_per_chapter}."
             )
 
         raw = self._client.chat(

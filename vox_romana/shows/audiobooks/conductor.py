@@ -321,9 +321,14 @@ class AudiobookConductor(BaseConductor):
             weight_map = {"short": 1, "medium": 2, "long": 3}
             total_weight = sum(weight_map.get(ch.duration_hint, 2) for ch in chapters)
             for ch in chapters:
-                if ch.target_beats <= 1:
-                    w = weight_map.get(ch.duration_hint, 2)
-                    ch.target_beats = max(1, round(total_beats_needed * w / total_weight))
+                w = weight_map.get(ch.duration_hint, 2)
+                derived = max(1, round(total_beats_needed * w / total_weight))
+                # Use the word-budget-derived count as a floor — never reduce
+                # what the architect requested, but always boost when the
+                # budget demands more beats than the architect planned.
+                # Previously guarded by `if ch.target_beats <= 1` which
+                # silently skipped chapters whose architect default was 2.
+                ch.target_beats = max(ch.target_beats, derived)
 
         # ── Chapter loop ─────────────────────────────────────────────
         for ch_idx, chapter in enumerate(chapters):

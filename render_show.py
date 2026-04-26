@@ -412,6 +412,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--no-whisper-voices",
+        action="store_true",
+        default=False,
+        dest="no_whisper_voices",
+        help=(
+            "Exclude airy/whispery voices (e.g. af_kore, af_sky) from "
+            "voice assignment. Useful when the listener prefers voices "
+            "with more presence. Applies to both catalog-matched and "
+            "gender-only fallback assignment."
+        ),
+    )
+
     # ── Series / voice registry ───────────────────────────────────
     parser.add_argument(
         "--series-id",
@@ -503,6 +516,7 @@ def main(argv: list[str] | None = None) -> None:
         strip_directions=args.strip_directions,
         registry=registry,
         series_key=series_key,
+        exclude_whispery=args.no_whisper_voices,
     )
 
     if not args.quiet:

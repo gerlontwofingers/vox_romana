@@ -105,6 +105,7 @@ class VoiceDescriptor:
     best_for: str
     tags: tuple[str, ...] = ()
     engine: str = "kokoro"
+    is_whispery: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -171,6 +172,7 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
         best_for="introspective characters, contemplation, poetry",
         tags=("soft", "thoughtful", "reflective", "gentle", "contemplative",
               "quiet", "measured", "introspective"),
+        is_whispery=True,
     ),
     "af_nicole": VoiceDescriptor(
         voice_id="af_nicole",
@@ -221,6 +223,7 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
         best_for="cheerful characters, lighter segments, youth",
         tags=("airy", "light", "optimistic", "cheerful", "youthful",
               "upbeat", "breezy", "hopeful"),
+        is_whispery=True,
     ),
 
     # ── American Male ────────────────────────────────────────────────
@@ -685,6 +688,7 @@ def match_voice(
     catalog: dict[str, VoiceDescriptor] | None = None,
     position: int = 0,
     usage_counts: dict[str, int] | None = None,
+    exclude_whispery: bool = False,
 ) -> str | None:
     """Find the best voice for a character description.
 
@@ -743,6 +747,8 @@ def match_voice(
             continue
         if vid in exclude:
             continue
+        if exclude_whispery and desc.is_whispery:
+            continue
         candidates.append(desc)
 
     if not candidates:
@@ -786,6 +792,7 @@ def match_voices_for_cast(
     available_voices: list[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
     usage_counts: dict[str, int] | None = None,
+    exclude_whispery: bool = False,
 ) -> dict[str, str]:
     """Assign unique voices to an entire cast, best-fit first.
 
@@ -834,6 +841,7 @@ def match_voices_for_cast(
             catalog=catalog,
             position=position,
             usage_counts=usage_counts,
+            exclude_whispery=exclude_whispery,
         )
 
         if voice_id is None:
@@ -847,6 +855,7 @@ def match_voices_for_cast(
                 catalog=catalog,
                 position=position,
                 usage_counts=usage_counts,
+                exclude_whispery=exclude_whispery,
             )
 
         if voice_id:

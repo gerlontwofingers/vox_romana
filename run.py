@@ -560,6 +560,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "these cues."
         ),
     )
+
+    render_group.add_argument(
+        "--no-whisper-voices",
+        action="store_true",
+        default=False,
+        dest="no_whisper_voices",
+        help=(
+            "Exclude airy/whispery voices (e.g. af_kore, af_sky) from "
+            "voice assignment. Useful when the listener prefers voices "
+            "with more presence."
+        ),
+    )
     # ── Knowledge ingestion flags ────────────────────────────────
     ingest_group = parser.add_argument_group(
         "knowledge ingestion (--mode ingest)"
@@ -850,6 +862,8 @@ def _build_render_argv(
         argv.append("--no-log-audio-duration")
     if args.no_strip_directions:
         argv.append("--no-strip-directions")
+    if args.no_whisper_voices:
+        argv.append("--no-whisper-voices")
     if args.quiet:
         argv.append("--quiet")
 
