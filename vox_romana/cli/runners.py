@@ -10,6 +10,8 @@ args back into an argv list.
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -850,3 +852,458 @@ def run_generate(args: argparse.Namespace) -> Path:
         print(output_path)
 
     return output_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Render pipeline — extracted from render_show.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+_render_logger = logging.getLogger(__name__)
+
+# Each show type stamps a unique ID field into its serialized JSON.
+# We inspect those fields to figure out what kind of show we rendered,
+# so the WPM observation lands in the right catalog bucket.
+_CONTENT_TYPE_KEYS: dict[str, str] = {
+    "debate_id": "debate",
+    "show_id": "news",
+    "podcast_id": "podcast",
+    "book_id": "audiobook",
+}
+
+
+def _detect_content_type(show_data: dict) -> str:
+    """Infer the content type from the show JSON's top-level keys.
+
+    Checks for known ID fields stamped by each serializer:
+        debate_id  → "debate"
+        show_id    → "news"
+        podcast_id → "podcast"
+        book_id    → "audiobook"
+
+    Returns:
+        A content type string, or "unknown" if no key matched.
+    """
+    for key, content_type in _CONTENT_TYPE_KEYS.items():
+        if key in show_data:
+            return content_type
+    return "unknown"
+
+
+def _count_event_words(show_data: dict) -> int:
+    """Count total spoken words across all events in the show JSON.
+
+    Events live under the "events" key. Each event has a "text" field
+    containing the spoken dialogue. Stage directions are stripped before
+    counting so the WPM estimate reflects only the words actually spoken.
+
+    Returns:
+        Total word count across all events (0 if no events found).
+    """
+    from vox_romana.tts.renderer import strip_stage_directions
+    return sum(
+        len(strip_stage_directions(event.get("text", "")).split())
+        for event in show_data.get("events", [])
+    )
+
+
+def make_engine(engine_name: str, **kwargs):
+    """Build a TTS engine by name.
+
+    Args:
+        engine_name: "kokoro" or "piper" (case-insensitive).
+        **kwargs:    Engine-specific arguments forwarded to the constructor.
+                     kokoro accepts: model (HuggingFace model ID).
+                     piper accepts: model_dir (path to .onnx models).
+
+    Returns:
+        A BaseTTSEngine instance, ready to synthesize audio.
+
+    Raises:
+        ValueError: If the engine name isn't recognized.
+    """
+    engine_name = engine_name.lower().strip()
+
+    if engine_name == "kokoro":
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        model = kwargs.get("model", None)
+        if model:
+            return KokoroEngine(model=model)
+        return KokoroEngine()
+
+    elif engine_name == "piper":
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        return PiperEngine(model_dir=model_dir)
+
+    elif engine_name == "both":
+        from vox_romana.tts.engines.multi_engine import MultiEngine
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model = kwargs.get("model", None)
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        kokoro = KokoroEngine(model=model) if model else KokoroEngine()
+        piper = PiperEngine(model_dir=model_dir)
+        return MultiEngine([kokoro, piper])
+
+    else:
+        raise ValueError(
+            f"Unknown engine: {engine_name!r}. "
+            f"Available engines: kokoro, piper, both"
+        )
+
+
+def _build_music_engine(args: argparse.Namespace):
+    """Build a MusicGenEngine if --music was requested, else return None.
+
+    Args:
+        args: Parsed namespace from _render_parse_args().
+
+    Returns:
+        A MusicGenEngine instance, or None if music was not requested
+        or the engine could not be constructed.
+    """
+    if not args.music:
+        return None
+
+    try:
+        from vox_romana.tts.music_engine import MusicGenEngine, MODEL_ALIASES
+        from vox_romana.core.paths import HF_CACHE_DIR
+        model_name = MODEL_ALIASES.get(args.music_model, f"facebook/musicgen-{args.music_model}")
+        return MusicGenEngine(model_name=model_name, cache_dir=HF_CACHE_DIR)
+    except Exception as exc:
+        print(
+            f"Warning: could not initialise MusicGenEngine ({exc}). "
+            "Continuing without music generation.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the render pipeline.
+
+    Args:
+        argv: Arguments to parse. Defaults to sys.argv[1:] if None.
+
+    Returns:
+        Parsed namespace with all options.
+    """
+    parser = argparse.ArgumentParser(
+        prog="render_show",
+        description=(
+            "Turn a show JSON file into a spoken audio file. "
+            "Works for any show type (debate, news, etc.) — the "
+            "renderer reads the 'events' key and doesn't care "
+            "about the show type."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # ── Required ─────────────────────────────────────────────────────
+    parser.add_argument(
+        "json_file",
+        type=str,
+        help="Path to the show JSON file.",
+    )
+
+    # ── Engine selection ─────────────────────────────────────────────
+    parser.add_argument(
+        "--engine", "-e",
+        type=str,
+        default="both",
+        choices=["kokoro", "piper", "both"],
+        help="Which TTS engine to use (default: both).",
+    )
+
+    # ── Output ───────────────────────────────────────────────────────
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default=None,
+        help="Output audio file path.",
+    )
+
+    parser.add_argument(
+        "--format", "-f",
+        type=str,
+        default="mp3",
+        choices=["mp3", "wav", "flac", "ogg"],
+        help="Audio format (default: mp3).",
+    )
+
+    # ── Voice control ────────────────────────────────────────────────
+    parser.add_argument(
+        "--voice-map",
+        type=str,
+        default=None,
+        help='JSON string mapping speaker names to voice IDs.',
+    )
+
+    parser.add_argument(
+        "--voice-policy",
+        type=str,
+        default="auto",
+        choices=["auto", "matched"],
+        dest="voice_policy",
+        help="How to assign TTS voices (default: auto).",
+    )
+
+    # ── Engine-specific options ──────────────────────────────────────
+    parser.add_argument(
+        "--model-dir",
+        type=str,
+        default="piper-voices",
+        help="Piper model directory (default: piper-voices).",
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="HuggingFace model ID for Kokoro.",
+    )
+
+    # ── Flags ────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help="Skip volume normalization.",
+    )
+
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress progress output.",
+    )
+
+    parser.add_argument(
+        "--no-log-audio-duration",
+        action="store_true",
+        default=False,
+        help="Disable logging actual audio duration to the catalog.",
+    )
+
+    parser.add_argument(
+        "--tts-workers",
+        type=int,
+        default=1,
+        help="Number of TTS worker threads (default: 1, sequential).",
+    )
+
+    parser.add_argument(
+        "--no-strip-directions",
+        action="store_false",
+        default=True,
+        dest="strip_directions",
+        help="Disable stripping of parenthetical stage directions.",
+    )
+
+    parser.add_argument(
+        "--no-whisper-voices",
+        action="store_true",
+        default=False,
+        dest="no_whisper_voices",
+        help="Exclude airy/whispery voices from voice assignment.",
+    )
+
+    # ── Music generation ─────────────────────────────────────────────
+    parser.add_argument(
+        "--music",
+        action="store_true",
+        default=False,
+        dest="music",
+        help="Enable generative music for bumper events.",
+    )
+    parser.add_argument(
+        "--music-style",
+        type=str,
+        default="",
+        dest="music_style",
+        metavar="DESCRIPTION",
+        help="Default music style/genre.",
+    )
+    parser.add_argument(
+        "--music-model",
+        type=str,
+        default="small",
+        dest="music_model",
+        choices=["small", "medium", "large"],
+        metavar="{small,medium,large}",
+        help="MusicGen model size (default: small).",
+    )
+    parser.add_argument(
+        "--music-duration",
+        type=float,
+        default=8.0,
+        dest="music_duration",
+        metavar="SECONDS",
+        help="Duration in seconds of each generated music clip (default: 8.0).",
+    )
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help="Series identifier for multi-episode voice locking.",
+    )
+
+    return parser.parse_args(argv)
+
+
+def run_render(argv: list[str] | None = None) -> None:
+    """Run the render pipeline: JSON → TTS → audio file.
+
+    Extracted from render_show.main() so it can be called from both
+    render_show.py (standalone CLI shim) and run.py (master pipeline)
+    without round-tripping through a subprocess.
+
+    Args:
+        argv: CLI arguments. Defaults to sys.argv[1:] if None.
+    """
+    from vox_romana.tts.engine import VoiceConfig
+    from vox_romana.tts.renderer import TTSRenderer
+
+    args = _render_parse_args(argv)
+
+    # ── Validate input ───────────────────────────────────────────────
+    json_path = Path(args.json_file)
+    if not json_path.exists():
+        print(f"Error: File not found: {json_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Determine output path ────────────────────────────────────────
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        output_path = json_path.with_suffix(f".{args.format}")
+
+    # ── Parse voice map ──────────────────────────────────────────────
+    voice_map = None
+    if args.voice_map:
+        try:
+            raw_map = json.loads(args.voice_map)
+            voice_map = {
+                name: VoiceConfig(voice_id=vid)
+                for name, vid in raw_map.items()
+            }
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in --voice-map: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # ── Build the engine ─────────────────────────────────────────────
+    engine_kwargs = {}
+    if args.engine == "piper":
+        engine_kwargs["model_dir"] = args.model_dir
+    elif args.engine == "kokoro" and args.model:
+        engine_kwargs["model"] = args.model
+    elif args.engine == "both":
+        if args.model_dir:
+            engine_kwargs["model_dir"] = args.model_dir
+        if args.model:
+            engine_kwargs["model"] = args.model
+    if not args.quiet:
+        print(f"\n  Engine: {args.engine}")
+
+    try:
+        engine = make_engine(args.engine, **engine_kwargs)
+    except Exception as e:
+        print(f"Error creating {args.engine} engine: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Build the renderer and render ────────────────────────────────
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception as exc:
+        _render_logger.warning("VoiceRegistry unavailable, voice locking disabled: %s", exc)
+
+    renderer = TTSRenderer(
+        engine,
+        voice_map=voice_map,
+        strip_directions=args.strip_directions,
+        registry=registry,
+        series_key=series_key,
+        exclude_whispery=args.no_whisper_voices,
+        music_engine=_build_music_engine(args),
+        music_style=args.music_style,
+        music_duration=args.music_duration,
+        parallel_workers=args.tts_workers,
+    )
+
+    if not args.quiet:
+        print(f"  Input:  {json_path}")
+        print(f"  Output: {output_path}")
+        print(f"  Voice policy: {args.voice_policy}")
+        print()
+
+    start_time = time.time()
+
+    # Load the show JSON so we can apply the voice policy before rendering.
+    with open(json_path) as f:
+        show_data = json.load(f)
+
+    # Under 'auto' policy, strip voice_hints so the renderer falls back
+    # to the simpler gender-based round-robin assignment.
+    if args.voice_policy == "auto":
+        show_data.pop("voice_hints", None)
+
+    if not args.quiet:
+        title = show_data.get("title", json_path.stem)
+        print(f"\n  Rendering: {title}")
+        print(f"  Source: {json_path}")
+        print()
+
+    result = renderer.render(
+        show_data,
+        output_path,
+        format=args.format,
+        normalize=not args.no_normalize,
+        quiet=args.quiet,
+    )
+
+    elapsed = time.time() - start_time
+
+    # ── Report results ───────────────────────────────────────────────
+    duration_sec = result.duration_ms / 1000
+
+    if not args.quiet:
+        print(f"\n  Done!")
+        print(f"  Audio:    {result.output_path}")
+        print(f"  Duration: {duration_sec:.1f}s")
+        print(f"  Events:   {result.rendered} rendered, {result.skipped} skipped")
+        print(f"  Time:     {elapsed:.1f}s")
+
+    # ── Log actual audio duration to catalog ─────────────────────────
+    if not args.no_log_audio_duration:
+        content_type = _detect_content_type(show_data)
+        word_count = _count_event_words(show_data)
+
+        if content_type != "unknown" and word_count > 0 and duration_sec > 0:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.core.duration import SpeechRateAdvisor
+
+                catalog = Catalog()
+                advisor = SpeechRateAdvisor(catalog)
+                advisor.log_observation(content_type, word_count, duration_sec)
+
+                actual_wpm = (word_count / duration_sec) * 60.0
+                if not args.quiet:
+                    print(f"  WPM logged: {actual_wpm:.0f} "
+                          f"({content_type}, {word_count} words, "
+                          f"{duration_sec:.1f}s)")
+            except Exception as e:
+                if not args.quiet:
+                    print(f"  WPM logging skipped: {e}")
+        elif not args.quiet:
+            if content_type == "unknown":
+                print("  WPM logging skipped: unknown content type")
+            elif word_count == 0:
+                print("  WPM logging skipped: no words in events")
+    elif not args.quiet:
+        print("  WPM logging: disabled (--no-log-audio-duration)")
+
+    if not args.quiet:
+        print()

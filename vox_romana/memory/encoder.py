@@ -16,8 +16,8 @@ TRAINING:
     works well with small corpora because it doesn't need explicit negatives.
 
 DEPENDENCY SPECS:
-    sentence-transformers>=3.0,<3.2  (in requirements-data-deep.txt)
-    torch>=2.4,<2.6                  (in requirements-data-deep.txt)
+    sentence-transformers>=5.4,<5.5  (in requirements.txt)
+    torch>=2.4,<2.6                  (in requirements.txt)
 
 STORAGE:
     Trained model saved to ``data/memory/encoder/``.
@@ -41,10 +41,12 @@ DEFAULT_BASE_MODEL = "all-MiniLM-L6-v2"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_deps():
-    """Returns (SentenceTransformer, InputExample, losses, DataLoader) or raises."""
-    from sentence_transformers import SentenceTransformer, InputExample, losses
-    from torch.utils.data import DataLoader
-    return SentenceTransformer, InputExample, losses, DataLoader
+    """Returns (SentenceTransformer, MultipleNegativesRankingLoss, Trainer, TrainingArgs) or raises."""
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.losses import MultipleNegativesRankingLoss
+    from sentence_transformers.trainer import SentenceTransformerTrainer
+    from sentence_transformers.training_args import SentenceTransformerTrainingArguments
+    return SentenceTransformer, MultipleNegativesRankingLoss, SentenceTransformerTrainer, SentenceTransformerTrainingArguments
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,51 +121,54 @@ class KnowledgeEncoder:
         Returns:
             Dict with training stats (pairs_loaded, epochs, etc.).
         """
-        SentenceTransformer, InputExample, losses, DataLoader = _load_deps()
+        from datasets import Dataset
+        SentenceTransformer, MultipleNegativesRankingLoss, SentenceTransformerTrainer, SentenceTransformerTrainingArguments = _load_deps()
 
         # Load base model.
         model = SentenceTransformer(self._base_model_name)
 
         # Load pairs from JSONL.
         pairs_path = Path(pairs_path)
-        examples = []
+        rows = []
         with open(pairs_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 pair = json.loads(line)
-                examples.append(InputExample(
-                    texts=[pair["query"], pair["passage"]],
-                ))
+                rows.append({"anchor": pair["query"], "positive": pair["passage"]})
 
-        if not examples:
+        if not rows:
             logger.warning("No encoder pairs found in %s", pairs_path)
             return {"pairs_loaded": 0, "status": "skipped"}
 
-        logger.info("Training encoder on %d pairs for %d epochs", len(examples), epochs)
+        logger.info("Training encoder on %d pairs for %d epochs", len(rows), epochs)
 
-        # DataLoader + loss.
-        loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
-        loss = losses.MultipleNegativesRankingLoss(model)
+        dataset = Dataset.from_list(rows)
+        loss = MultipleNegativesRankingLoss(model)
 
-        warmup_steps = int(len(loader) * epochs * warmup_fraction)
-
-        # Train.
-        model.fit(
-            train_objectives=[(loader, loss)],
-            epochs=epochs,
-            warmup_steps=warmup_steps,
-            optimizer_params={"lr": learning_rate},
-            output_path=str(self._model_dir),
-            show_progress_bar=True,
+        training_args = SentenceTransformerTrainingArguments(
+            output_dir=str(self._model_dir),
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            warmup_ratio=warmup_fraction,
+            learning_rate=learning_rate,
         )
+
+        trainer = SentenceTransformerTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=dataset,
+            loss=loss,
+        )
+        trainer.train()
+        model.save_pretrained(str(self._model_dir))
 
         self._model = model
         logger.info("Encoder saved to %s", self._model_dir)
 
         return {
-            "pairs_loaded": len(examples),
+            "pairs_loaded": len(rows),
             "epochs": epochs,
             "batch_size": batch_size,
             "output_dir": str(self._model_dir),

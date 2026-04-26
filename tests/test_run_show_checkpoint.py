@@ -104,7 +104,6 @@ class TestPreflightBriefValidation:
         out_file = tmp_path / "show.json"
 
         with (
-            patch("run_show.parse_args", return_value=args),
             patch("vox_romana.cli.runners.DeepSeekClient"),
             patch("vox_romana.cli.runners.FactChecker") as MockFC,
             patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
@@ -116,8 +115,8 @@ class TestPreflightBriefValidation:
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         captured = capsys.readouterr()
         assert "PRE-FLIGHT WARNING" in captured.out
@@ -133,7 +132,6 @@ class TestPreflightBriefValidation:
         mock_fc = MagicMock()
 
         with (
-            patch("run_show.parse_args", return_value=args),
             patch("vox_romana.cli.runners.DeepSeekClient"),
             patch("vox_romana.cli.runners.FactChecker", mock_fc),
             patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
@@ -144,8 +142,8 @@ class TestPreflightBriefValidation:
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         mock_fc.build_default.assert_not_called()
 
@@ -174,7 +172,6 @@ class TestPreflightBriefValidation:
         out_file = tmp_path / "show.json"
 
         with (
-            patch("run_show.parse_args", return_value=args),
             patch("vox_romana.cli.runners.DeepSeekClient"),
             patch("vox_romana.cli.runners.FactChecker") as MockFC,
             patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
@@ -186,8 +183,8 @@ class TestPreflightBriefValidation:
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         captured = capsys.readouterr()
         assert "PRE-FLIGHT WARNING" not in captured.out

@@ -35,7 +35,7 @@ from run import (
     _build_render_argv,
     parse_args,
 )
-from render_show import (
+from vox_romana.cli.runners import (
     _count_event_words,
     _detect_content_type,
 )
@@ -279,9 +279,9 @@ class TestModeExecution:
         call_args = mock_run_generate.call_args[0][0]
         assert call_args.quiet is True
 
-    @patch("render_show.main")
+    @patch("vox_romana.cli.runners.run_render")
     def test_render_mode_calls_render_show(self, mock_main, tmp_json):
-        """render mode should call render_show.main()."""
+        """render mode should call run_render() in vox_romana.cli.runners."""
         run_master.main([
             "--mode", "render",
             "--script-input", str(tmp_json),
@@ -289,10 +289,10 @@ class TestModeExecution:
         ])
         mock_main.assert_called_once()
 
-    @patch("render_show.main")
+    @patch("vox_romana.cli.runners.run_render")
     @patch("vox_romana.cli.runners.run_generate")
     def test_full_mode_calls_both(self, mock_gen, mock_render, tmp_prompt, capsys):
-        """full mode should call run_generate then render_show."""
+        """full mode should call run_generate then run_render."""
         from pathlib import Path
         fake_json = "/fake/output.json"
         mock_gen.return_value = Path(fake_json)
@@ -308,7 +308,7 @@ class TestModeExecution:
         render_argv = mock_render.call_args[0][0]
         assert fake_json in render_argv
 
-    @patch("render_show.main")
+    @patch("vox_romana.cli.runners.run_render")
     @patch("vox_romana.cli.runners.run_generate")
     def test_no_log_forwarded_in_full_mode(self, mock_gen, mock_render, tmp_prompt):
         """--no-log-audio-duration should be forwarded to render in full mode."""
@@ -418,13 +418,13 @@ class TestRenderShowFlagParsing:
 
     def test_default_logging_on(self):
         """By default, no_log_audio_duration should be False."""
-        from render_show import parse_args as render_parse_args
+        from vox_romana.cli.runners import _render_parse_args as render_parse_args
         args = render_parse_args(["fake.json"])
         assert args.no_log_audio_duration is False
 
     def test_flag_disables_logging(self):
         """--no-log-audio-duration should set flag to True."""
-        from render_show import parse_args as render_parse_args
+        from vox_romana.cli.runners import _render_parse_args as render_parse_args
         args = render_parse_args(["fake.json", "--no-log-audio-duration"])
         assert args.no_log_audio_duration is True
 
@@ -658,7 +658,7 @@ class TestPublishModeExecution:
         out_dir = tmp_path / "pub"
 
         with patch("vox_romana.cli.runners.run_generate", return_value=src), \
-             patch("render_show.main", return_value=None):
+             patch("vox_romana.cli.runners.run_render", return_value=None):
             run_master.main([
                 "fake_prompt.txt",
                 "--mode", "full",

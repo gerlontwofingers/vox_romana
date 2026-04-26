@@ -1160,16 +1160,17 @@ def _mode_generate(args: argparse.Namespace) -> Path:
 def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
     """Run render mode: JSON → audio.
 
-    Calls render_show.main() with the appropriate flags.
+    Delegates to ``vox_romana.cli.runners.run_render`` directly,
+    passing the argv list built by ``_build_render_argv``.
 
     Args:
         json_path: Path to the show JSON to render.
         args:      Parsed namespace from parse_args().
     """
-    import render_show
+    from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
-    render_show.main(argv)
+    run_render(argv)
 
 
 def _mode_video(args: argparse.Namespace) -> None:

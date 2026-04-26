@@ -64,16 +64,84 @@ between the two stages.
 | `publish` | Format an existing JSON into TXT and/or PDF |
 | `ingest` | Feed documents into the local knowledge base for `--research` |
 
+## Installation
+
+### 1. Prerequisites
+
+**Python 3.12+** is required. Check with `python3 --version`.
+
+**System packages** (install once, outside any virtualenv):
+
+```bash
+# macOS
+brew install ffmpeg espeak-ng git-lfs
+git lfs install
+
+# Ubuntu / Debian
+sudo apt install ffmpeg espeak-ng git-lfs
+git lfs install
+```
+
+- `ffmpeg` — audio mixing and format conversion
+- `espeak-ng` — phoneme library required by Piper TTS
+- `git-lfs` — needed to pull the Piper voice model files
+
+### 2. Clone the repo
+
+```bash
+git clone https://github.com/your-org/vox_romana.git
+cd vox_romana
+```
+
+### 3. Python environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 4. API key
+
+Get a key from [platform.deepseek.com](https://platform.deepseek.com), then:
+
+```bash
+cp .env.example .env             # if an example file exists, otherwise:
+echo 'DEEPSEEK_API_KEY=sk-...' > .env
+```
+
+The key is only needed for `generate` and `full` modes. `render`, `publish`, and `ingest` are fully local.
+
+### 5. Piper voice models
+
+Piper uses ONNX voice model files checked in via git-lfs. If the repo includes them:
+
+```bash
+git lfs pull
+```
+
+Or set `PIPER_VOICES_DIR` in your `.env` to point at a directory of `.onnx` files you've downloaded separately.
+
+### 6. Verify the install
+
+```bash
+python preflight.py
+```
+
+All required items should show `✓`. Optional items (`ollama`, Piper voices for non-English) can be added later.
+
+### 7. (Optional) Configure
+
+```bash
+cp vox_romana.example.yaml vox_romana.yaml
+# Edit vox_romana.yaml to set default engine, voice preferences, output paths, etc.
+```
+
+---
+
 ## Quick start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Add your DeepSeek API key to .env
-echo 'DEEPSEEK_API_KEY=sk-...' >> .env
-
 # Write a brief to a plain-text file (any path you like):
 echo 'A 10-minute debate on universal basic income.' > my_brief.txt
 
@@ -273,7 +341,14 @@ Integration tests (`@pytest.mark.integration`) make real DeepSeek API calls and 
 
 ## Dependencies
 
-- Python 3.12+
+**System (install via your OS package manager — not pip):**
+- `ffmpeg` — audio mixing backend (`brew install ffmpeg` / `apt install ffmpeg`)
+- `espeak-ng` — phoneme library required by Piper TTS (`brew install espeak-ng` / `apt install espeak-ng`)
+- `git-lfs` — required to pull Piper ONNX voice models (`brew install git-lfs` / `apt install git-lfs`)
+- Optional: `pango cairo gdk-pixbuf libffi` — PDF publish output via WeasyPrint (`brew install pango cairo gdk-pixbuf libffi`)
+- Optional: `ollama` — local LLM for university mode (`brew install ollama`)
+
+**Python packages (`pip install -r requirements.txt`):**
 - `openai` — DeepSeek API client (OpenAI SDK via `base_url` override)
 - `python-dotenv` — `.env` loading
 - `kokoro` — English TTS engine (local, no API key needed)

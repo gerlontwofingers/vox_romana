@@ -325,11 +325,11 @@ class MusicGenEngine:
 
         # Tell the model how many audio tokens to generate.
         # MusicGen encodes audio at 50 tokens/second internally.
-        self._model.set_generation_params(duration=duration)
+        max_new_tokens = int(duration * 50)
 
         # Generate — disable gradient tracking (we're doing inference only).
         with torch.no_grad():
-            audio_values = self._model.generate(**inputs)
+            audio_values = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
 
         # audio_values shape: [batch, channels, samples]
         # We took one prompt → batch=1, channels=1 → extract [0, 0].
