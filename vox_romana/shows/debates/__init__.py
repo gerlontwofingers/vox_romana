@@ -38,14 +38,15 @@ from .conductor import DebateConductor, DebateConductorResult
 from .config import (
     AudienceConfig,
     DebateConfig,
-    DirectorBrief,
+    DebateDirectorBrief,
+    DirectorBrief,  # backwards-compat alias for DebateDirectorBrief
     ModeratorConfig,
     ParticipantProfile,
     ShowHostConfig,
 )
 from .director import DebateDirector
 from .merge import DebateDocumentMerger, DebateMergeError
-from .models import DebateChunk, DebateEvent, MergedDebate, ParsedDebateDocument
+from .models import DebateChunk, DebateEvent, DebateSegment, MergedDebate, ParsedDebateDocument
 from .parsers import (
     DebateParserError,
     DebateParserRegistry,
@@ -64,7 +65,8 @@ __all__ = [
     "DebateBootstrap",
     "DebateConductor",
     "DebateConductorResult",
-    "DebateChunk",
+    "DebateChunk",  # backwards-compat alias for DebateSegment
+    "DebateSegment",
     "DebateConfig",
     "DebateDirector",
     "DebateDocumentMerger",
@@ -79,7 +81,8 @@ __all__ = [
     "DebateTemplate01Parser",
     "DebateTemplate02Parser",
     "DebateValidator",
-    "DirectorBrief",
+    "DebateDirectorBrief",
+    "DirectorBrief",  # backwards-compat alias for DebateDirectorBrief
     "MergedDebate",
     "ModeratorConfig",
     "ParsedDebateDocument",

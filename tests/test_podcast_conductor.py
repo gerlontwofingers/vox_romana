@@ -131,19 +131,32 @@ def make_test_config(
 def make_segment_response(speakers: list[str], num_turns: int = 4) -> str:
     """Build a canned JSON array response for a segment.
 
+    Each turn contains enough words (~80) to comfortably clear the
+    podcast conductor's segment-retry threshold (currently 70% of the
+    segment target_words) for typical test segment targets of 200-300.
+
     Returns a JSON string like:
     [
-      {"speaker_name": "Host A", "text": "Line 1", "tone": "warm", ...},
-      {"speaker_name": "Host B", "text": "Line 2", "tone": "playful", ...},
+      {"speaker_name": "Host A", "text": "Line 1 ...", "tone": "warm", ...},
       ...
     ]
     """
+    # ~80 words of filler per turn keeps these tests focused on event
+    # count / wiring instead of accidentally stress-testing retry logic.
+    filler = (
+        " Quite frankly the deeper we dig into this story the more nuance "
+        "appears, and the easier it becomes to mistake confidence for clarity. "
+        "Listeners deserve the full picture, not just the convenient half, so "
+        "let's keep unpacking the layers underneath the headline numbers and "
+        "see whether the trend really tells the story everyone seems to think "
+        "it does, before we hand out any verdicts on the matter today."
+    )
     turns = []
     for i in range(num_turns):
         speaker = speakers[i % len(speakers)]
         turns.append({
             "speaker_name": speaker,
-            "text": f"This is line {i + 1} from {speaker}.",
+            "text": f"This is line {i + 1} from {speaker}.{filler}",
             "tone": "warm" if i % 2 == 0 else "playful",
             "volume": "moderate",
             "pace": "medium",
@@ -1070,3 +1083,120 @@ class TestImports:
         )
         assert PodcastConductor is not None
         assert PodcastSerializer is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TEST 12: Bootstrap Preflight Fact-Check
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestBootstrapPreflight:
+    """_preflight_check_bootstrap() gates generation on bootstrap claims."""
+
+    def _make_preflight_config(self, *, allow_fabrications=False, fact_check="quick"):
+        """Return a minimal PodcastConfig with a single segment and director."""
+        config = make_test_config(num_hosts=2, num_segments=1, with_director=True)
+        config.fact_check = fact_check
+        config.allow_bootstrap_fabrications = allow_fabrications
+        config.topic = "The life of Ernie Dosio, born in 1951"
+        config.segments[0].topic = "Dosio career highlights"
+        config.director_brief.arc = "Open with birth year context, close with legacy."
+        return config
+
+    def _make_fc_report(self, *, has_fabrications: bool):
+        """Return a mock ChunkFactCheckReport."""
+        from vox_romana.core.editing.models import (
+            ChunkFactCheckReport,
+            FactCheckResult,
+        )
+        if has_fabrications:
+            result = FactCheckResult(
+                claim="Ernie Dosio is 68 years old",
+                explanation="Dosio was born in 1951; the correct age in 2026 is 75.",
+                verdict="fabricated",
+            )
+        else:
+            result = FactCheckResult(
+                claim="Ernie Dosio was born in 1951",
+                explanation="Confirmed by multiple sources.",
+                verdict="verified",
+            )
+        return ChunkFactCheckReport(chunk_id="bootstrap", mode="quick", results=[result])
+
+    def test_bootstrap_preflight_blocks_on_fabrication(self, capsys):
+        """When bootstrap has fabrications and allow=False, raises SystemExit(1)."""
+        from unittest.mock import MagicMock, patch
+
+        config = self._make_preflight_config(allow_fabrications=False)
+        client = MagicMock()
+
+        bad_report = self._make_fc_report(has_fabrications=True)
+        mock_fc = MagicMock()
+        mock_fc.check_chunk.return_value = bad_report
+
+        conductor = PodcastConductor(config, client=client)
+        conductor._fact_checker = mock_fc
+        conductor._content_mode = "factual"
+
+        with pytest.raises(SystemExit) as exc_info:
+            conductor._preflight_check_bootstrap()
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "BOOTSTRAP PRE-FLIGHT" in out
+        assert "Ernie Dosio is 68 years old" in out
+
+    def test_bootstrap_preflight_passes_when_clean(self, capsys):
+        """When bootstrap has no fabrications, no abort and no warning printed."""
+        from unittest.mock import MagicMock
+
+        config = self._make_preflight_config(allow_fabrications=False)
+        client = MagicMock()
+
+        clean_report = self._make_fc_report(has_fabrications=False)
+        mock_fc = MagicMock()
+        mock_fc.check_chunk.return_value = clean_report
+
+        conductor = PodcastConductor(config, client=client)
+        conductor._fact_checker = mock_fc
+        conductor._content_mode = "factual"
+
+        # Should not raise.
+        conductor._preflight_check_bootstrap()
+
+        out = capsys.readouterr().out
+        assert "BOOTSTRAP PRE-FLIGHT" not in out
+
+    def test_bootstrap_preflight_skipped_when_fact_check_off(self):
+        """When fact_check='off', _fact_checker is None → preflight is a no-op."""
+        from unittest.mock import MagicMock
+
+        config = self._make_preflight_config(fact_check="off")
+        client = MagicMock()
+
+        conductor = PodcastConductor(config, client=client)
+        conductor._fact_checker = None  # Explicitly simulate off state.
+
+        # Should not raise and not call any checker.
+        conductor._preflight_check_bootstrap()
+
+    def test_bootstrap_preflight_allow_flag_continues_with_warning(self, capsys):
+        """When allow_bootstrap_fabrications=True, prints warning but does not abort."""
+        from unittest.mock import MagicMock
+
+        config = self._make_preflight_config(allow_fabrications=True)
+        client = MagicMock()
+
+        bad_report = self._make_fc_report(has_fabrications=True)
+        mock_fc = MagicMock()
+        mock_fc.check_chunk.return_value = bad_report
+
+        conductor = PodcastConductor(config, client=client)
+        conductor._fact_checker = mock_fc
+        conductor._content_mode = "factual"
+
+        # Should NOT raise even though fabrications were detected.
+        conductor._preflight_check_bootstrap()
+
+        out = capsys.readouterr().out
+        assert "BOOTSTRAP PRE-FLIGHT" in out
+        assert "allow-bootstrap-fabrications" in out

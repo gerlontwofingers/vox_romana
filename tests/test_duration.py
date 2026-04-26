@@ -115,6 +115,26 @@ class TestParseDurationFromText:
     def test_no_duration(self):
         assert parse_duration_from_text("discuss AI ethics") is None
 
+    # ── Word-form number support ──────────────────────────────────────
+
+    def test_word_hours_three(self):
+        assert parse_duration_from_text("three hour podcast") == 180.0
+
+    def test_word_hours_two(self):
+        assert parse_duration_from_text("a two hour documentary") == 120.0
+
+    def test_word_minutes_twelve(self):
+        assert parse_duration_from_text("a twelve minute segment") == 12.0
+
+    def test_word_hours_and_minutes(self):
+        assert parse_duration_from_text("two hour thirty minute show") == 150.0
+
+    def test_word_hours_uppercase(self):
+        assert parse_duration_from_text("THREE HOUR SHOW") == 180.0
+
+    def test_word_hours_mixed_case(self):
+        assert parse_duration_from_text("make me a Three Hour podcast") == 180.0
+
 
 # ── SpeechRateAdvisor ────────────────────────────────────────────────────
 

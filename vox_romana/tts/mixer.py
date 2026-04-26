@@ -65,10 +65,13 @@ EXAMPLE:
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydub import AudioSegment
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -117,6 +120,7 @@ class AudioClip:
     Attributes:
         segment:      The pydub AudioSegment (the actual audio data).
         pause_before: Silence to insert BEFORE this clip (ms).
+        pause_after:  Silence to insert AFTER this clip (ms).
         overlap:      How much to overlap with the PREVIOUS clip (ms).
                       0 = no overlap. Positive = interrupt effect.
         speaker:      Who said this (for logging/debugging).
@@ -124,6 +128,7 @@ class AudioClip:
 
     segment: AudioSegment
     pause_before: int = DEFAULT_PAUSE_MS
+    pause_after: int = 0
     overlap: int = 0
     speaker: str = ""
 
@@ -156,6 +161,7 @@ class AudioMixer:
         lazily when you call mix() or export().
         """
         self._clips: list[AudioClip] = []
+        self._last_mix_duration_ms: int = 0
 
     def add_clip(
         self,
@@ -163,6 +169,7 @@ class AudioMixer:
         *,
         sample_rate: int = 22050,
         pause_before: int = DEFAULT_PAUSE_MS,
+        pause_after: int = 0,
         overlap: int = 0,
         speaker: str = "",
     ) -> None:
@@ -190,6 +197,7 @@ class AudioMixer:
         self._clips.append(AudioClip(
             segment=segment,
             pause_before=pause_before,
+            pause_after=pause_after,
             overlap=overlap,
             speaker=speaker,
         ))
@@ -233,6 +241,8 @@ class AudioMixer:
 
         # Start with the first clip (no pause before the very first speaker).
         mixed = self._clips[0].segment
+        if self._clips[0].pause_after > 0:
+            mixed += AudioSegment.silent(duration=self._clips[0].pause_after)
 
         # Walk through remaining clips and stitch them together.
         for clip in self._clips[1:]:
@@ -269,13 +279,19 @@ class AudioMixer:
                     mixed += AudioSegment.silent(duration=clip.pause_before)
                 mixed += clip.segment
 
+            if clip.pause_after > 0:
+                mixed += AudioSegment.silent(duration=clip.pause_after)
+
         # ── NORMALIZE ────────────────────────────────────────────────
         # Make the whole debate a consistent volume. Without this,
         # some speakers might be whisper-quiet while others blow out
         # your headphones.
         if normalize and len(mixed) > 0:
-            change_in_dbfs = TARGET_DBFS - mixed.dBFS
-            mixed = mixed.apply_gain(change_in_dbfs)
+            if mixed.rms > 0:
+                change_in_dbfs = TARGET_DBFS - mixed.dBFS
+                mixed = mixed.apply_gain(change_in_dbfs)
+            else:
+                logger.warning("AudioMixer: audio is entirely silent, skipping normalization")
 
         return mixed
 
@@ -312,7 +328,18 @@ class AudioMixer:
             export_kwargs["bitrate"] = bitrate
 
         mixed.export(str(output_path), **export_kwargs)
+        self._last_mix_duration_ms = len(mixed)
         return output_path
+
+    @property
+    def last_mix_duration_ms(self) -> int:
+        """Actual duration of the last exported mix in milliseconds.
+
+        Updated after every call to export(). Returns 0 before the first
+        export. Unlike duration_ms (which is an estimate), this is the
+        exact length of the audio pydub produced.
+        """
+        return self._last_mix_duration_ms
 
     @property
     def clip_count(self) -> int:
@@ -326,7 +353,19 @@ class AudioMixer:
         This is an estimate because it doesn't account for overlaps.
         For the exact duration, call mix() and check len(result).
         """
-        total = sum(len(c.segment) + c.pause_before for c in self._clips)
+        if not self._clips:
+            return 0
+        # First clip: no pause_before applied in mix() (no silence before the
+        # very first speaker). Include its pause_after if set.
+        total = len(self._clips[0].segment) + self._clips[0].pause_after
+        for clip in self._clips[1:]:
+            if clip.overlap > 0:
+                # Overlap clips start before the mix end; net extension is
+                # max(0, len - overlap). Clamp to 0 if fully overlapping.
+                total += max(0, len(clip.segment) - clip.overlap)
+            else:
+                total += clip.pause_before + len(clip.segment)
+            total += clip.pause_after
         return total
 
     def resolve_pause(self, pause_hint: str | None) -> int:

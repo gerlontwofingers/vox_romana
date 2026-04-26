@@ -57,8 +57,8 @@ from pathlib import Path
 from typing import Any
 
 
-# Default DB path relative to the workspace root.
-DEFAULT_DB_PATH = Path("data/vox_romana.db")
+# Default DB path — resolved via VOX_ROMANA_DATA_DIR or ~/.vox_romana/config.yaml.
+from vox_romana.core.paths import CATALOG_DB_PATH as DEFAULT_DB_PATH
 
 # Schema version — bump this when adding migrations.
 SCHEMA_VERSION = 1
@@ -193,6 +193,29 @@ class Catalog:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_wpm_type ON wpm_stats(content_type);
+
+                -- Voice registry: lock a character name to a specific voice_id
+                -- within a series/show so the same character always sounds the same.
+                -- series_key is: series_id if set, else show_name, else "global".
+                CREATE TABLE IF NOT EXISTS character_voices (
+                    character_name TEXT NOT NULL,
+                    series_key     TEXT NOT NULL,
+                    voice_id       TEXT NOT NULL,
+                    first_seen     TEXT NOT NULL,
+                    last_seen      TEXT NOT NULL,
+                    PRIMARY KEY (character_name, series_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_charvoices_series
+                    ON character_voices(series_key);
+
+                -- Global usage counter per voice_id so the fallback picker
+                -- can prefer less-used voices and avoid over-repeating any one.
+                CREATE TABLE IF NOT EXISTS voice_usage (
+                    voice_id    TEXT PRIMARY KEY,
+                    usage_count INTEGER NOT NULL DEFAULT 0,
+                    last_used   TEXT NOT NULL
+                );
             """)
 
             # FTS5 virtual table for full-text search across runs.
@@ -536,6 +559,27 @@ class Catalog:
             "min_wpm": row["min_wpm"],
             "max_wpm": row["max_wpm"],
         }
+
+    def get_wpm_stats_all(self) -> list[dict]:
+        """Return all rows from wpm_stats as a list of dicts.
+
+        Used by WPMModel.update_from_catalog() to retrain the ML predictor
+        without poking the private _conn attribute.
+
+        Returns:
+            List of dicts with keys ``content_type``, ``word_count``, ``wpm``.
+        """
+        rows = self._conn.execute(
+            "SELECT content_type, word_count, wpm FROM wpm_stats"
+        ).fetchall()
+        return [
+            {
+                "content_type": row["content_type"],
+                "word_count": row["word_count"],
+                "wpm": row["wpm"],
+            }
+            for row in rows
+        ]
 
     # ═══════════════════════════════════════════════════════════════════
     # INTERNALS

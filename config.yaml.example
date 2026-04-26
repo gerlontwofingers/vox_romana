@@ -1,0 +1,30 @@
+# vox_romana configuration
+# Copy this file to ~/.vox_romana/config.yaml and edit as needed.
+#
+# CONFIG FILE PRECEDENCE
+# ──────────────────────
+# vox_romana looks for configuration in two places, in this order:
+#
+#   1. vox_romana.yaml  (project-root, next to run.py) — takes precedence.
+#      Copy vox_romana.example.yaml to create this.  Gitignored.
+#
+#   2. ~/.vox_romana/config.yaml  (user home, system-wide) — fallback.
+#      Copy THIS file to create this.  Useful for shared defaults across
+#      multiple projects.
+#
+# Any key set in vox_romana.yaml overrides the same key in config.yaml.
+#
+# data_dir: Root directory for all runtime artifacts:
+#             - vox_romana.db       (catalog / WPM stats)
+#             - output/             (generated JSON scripts + audio)
+#             - memory/             (ingest chunks, Chroma index, encoder, LM)
+#             - piper-voices/       (TTS voice models, unless overridden below)
+#
+#           Defaults to ~/.vox_romana/ if not set.
+#           Can also be overridden with the VOX_ROMANA_DATA_DIR env var.
+data_dir: ~/.vox_romana
+
+# piper_voices_dir: Path to Piper TTS voice models.
+#                   Defaults to <data_dir>/piper-voices if not set.
+#                   Override here if your models live on a different volume.
+# piper_voices_dir: /Volumes/BigDisk/piper-voices

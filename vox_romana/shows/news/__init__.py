@@ -30,8 +30,9 @@ from .bootstrap import NewsBootstrap
 from .conductor import NewsConductor, NewsConductorResult
 from .config import (
     AnchorConfig,
-    DirectorBrief,
+    DirectorBrief,  # backwards-compat alias for NewsDirectorBrief
     NewsConfig,
+    NewsDirectorBrief,
     SegmentConfig,
 )
 from .models import MergedNewsShow, NewsEvent, NewsSegment
@@ -45,7 +46,8 @@ from .serializer import NewsSerializer
 
 __all__ = [
     "AnchorConfig",
-    "DirectorBrief",
+    "DirectorBrief",  # backwards-compat alias for NewsDirectorBrief
+    "NewsDirectorBrief",
     "MergedNewsShow",
     "NewsBootstrap",
     "NewsConductor",

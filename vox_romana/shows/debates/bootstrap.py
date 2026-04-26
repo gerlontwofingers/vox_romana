@@ -60,8 +60,11 @@ EXAMPLE — mock client for testing:
 
 from __future__ import annotations
 
+from typing import Any
+
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
-from ...core.search import BaseSearchProvider
+from ...core.search import BaseSearchProvider, build_research_provider
 from .architect import DebateArchitect
 from .config import DebateConfig, ParticipantProfile
 from .director import DebateDirector
@@ -69,7 +72,7 @@ from .profile_builder import DebateProfileBuilder
 from .researcher import DebateResearcher
 
 
-class DebateBootstrap:
+class DebateBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain.
 
     Takes a human's natural language brief and produces a fully populated
@@ -93,7 +96,7 @@ class DebateBootstrap:
         # All three agents share the same client. In production, this means
         # they share the same HTTP connection pool. In tests, you inject one
         # mock that handles all three stages.
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
         self._architect = DebateArchitect(self._client)
         self._profiler = DebateProfileBuilder(self._client)
         self._director = DebateDirector(self._client)
@@ -110,6 +113,7 @@ class DebateBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        memory: Any | None = None,
     ) -> DebateConfig:
         """Run the full bootstrap chain: brief → fully populated DebateConfig.
 
@@ -127,6 +131,12 @@ class DebateBootstrap:
                                 before running the Architect. Requires a search_provider.
             search_provider:    A BaseSearchProvider instance (e.g. GoogleSearchProvider).
                                 Required when auto_research=True. Ignored otherwise.
+            memory:             Optional MemoryRecall instance. When provided,
+                                auto-research consults the local knowledge base
+                                FIRST and only falls through to ``search_provider``
+                                if memory doesn't have enough material. Free,
+                                fast, and domain-tuned. See
+                                ``vox_romana.core.search.MemorySearchProvider``.
 
         Returns:
             A fully populated DebateConfig with:
@@ -152,13 +162,17 @@ class DebateBootstrap:
         # Think of it like a production assistant running to the library
         # before the show starts — getting everyone their prep packet.
         if auto_research and not reference_material:
-            if search_provider is None:
-                # No search provider → LLM-only research (DeepSeek compiles
-                # from training knowledge). Still useful — DeepSeek knows a
-                # lot about most topics.
+            # Build the effective search provider. Memory comes FIRST when
+            # available — it's free, sub-millisecond, and domain-tuned. We
+            # only fall through to the (paid, slower) web search when memory
+            # doesn't have enough material to ground the topic.
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
+                # No search provider AND no memory → LLM-only research
+                # (DeepSeek compiles from training knowledge). Still useful.
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ══════════════════════════════════════════════════════════════
@@ -218,10 +232,12 @@ class DebateBootstrap:
                 topic=config.topic or brief,
                 reference_material=reference_material,
             )
-            # We only need the voice_fingerprint from the profile. The host
+            # Copy voice casting fields from the profile. The host
             # doesn't have "key positions" or "factual claims" — they narrate,
             # they don't argue.
             config.show_host.voice_fingerprint = host_profile.voice_fingerprint
+            config.show_host.voice_hint = host_profile.voice_hint
+            config.show_host.voice_gender = host_profile.voice_gender
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 3: DIRECTOR BRIEF
@@ -255,17 +271,11 @@ class DebateBootstrap:
         return config
 
     @staticmethod
-    def _apply_overrides(config: DebateConfig, overrides: dict) -> None:
-        """Apply user overrides to a DebateConfig.
+    def _apply_overrides(config: DebateConfig, overrides: dict | None) -> None:
+        """Apply user overrides to a DebateConfig (delegates to base).
 
-        Only sets attributes that actually exist on DebateConfig. Unknown
-        keys are silently skipped — they might be for future config fields,
-        and complaining about them would be annoying.
-
-        Args:
-            config:    The DebateConfig to modify (in place).
-            overrides: Dict of {field_name: value} to apply.
+        Kept for backward compatibility — callers/tests may import
+        :meth:`DebateBootstrap._apply_overrides` directly. The actual
+        implementation lives on :class:`BaseShowBootstrap`.
         """
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        BaseShowBootstrap._apply_overrides(config, overrides)

@@ -42,6 +42,27 @@ class JsonParseError(Exception):
         self.raw_response = raw_response
 
 
+def strip_json_fences(raw: str) -> str:
+    """Strip surrounding markdown code fences from an LLM response.
+
+    LLMs often wrap JSON output in ```json ... ``` (or just ``` ... ```) even
+    when explicitly told not to. This helper drops the opening fence (with
+    optional language tag) and the closing fence, returning the inner text
+    stripped of leading/trailing whitespace. Input without fences is returned
+    unchanged (apart from a top-level strip()).
+
+    This is the canonical fence-stripping helper for the codebase. Other
+    modules (fact_checker, editing.editor) should import this rather than
+    re-implement it.
+    """
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        # Drop the opening fence (and optional language tag) and closing fence.
+        cleaned = "\n".join(lines[1:-1]).strip()
+    return cleaned
+
+
 def parse_json_response(raw: str) -> dict:
     """Extract and parse a JSON object from an LLM response.
 
@@ -60,13 +81,7 @@ def parse_json_response(raw: str) -> dict:
     Raises:
         JsonParseError: If no valid JSON object can be extracted.
     """
-    cleaned = raw.strip()
-
-    # Strip markdown fences if present.
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        # Remove first and last lines (the fences).
-        cleaned = "\n".join(lines[1:-1]).strip()
+    cleaned = strip_json_fences(raw)
 
     # Try direct parse first (most common case).
     try:
@@ -123,6 +138,81 @@ def parse_json_response(raw: str) -> dict:
 
     raise JsonParseError(
         f"Could not parse JSON from response (length={len(raw)})", raw
+    )
+
+
+def parse_json_array_response(raw: str) -> list:
+    """Extract and parse a JSON array from an LLM response.
+
+    Mirrors :func:`parse_json_response` but targets a ``[...]`` array
+    rather than an object.  Handles the same common LLM output patterns:
+    markdown fences, preamble/postamble text, and truncation.
+
+    Args:
+        raw: The raw LLM response string.
+
+    Returns:
+        The parsed list.
+
+    Raises:
+        JsonParseError: If no valid JSON array can be extracted.
+    """
+    cleaned = strip_json_fences(raw)
+
+    # Try direct parse first (most common case).
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Find the outermost JSON array via bracket matching.
+    start = cleaned.find("[")
+    if start == -1:
+        raise JsonParseError("No JSON array found in response", raw)
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i in range(start, len(cleaned)):
+        c = cleaned[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if c == "\\":
+            escape_next = True
+            continue
+        if c == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                candidate = cleaned[start : i + 1]
+                try:
+                    data = json.loads(candidate)
+                    if isinstance(data, list):
+                        return data
+                except (json.JSONDecodeError, TypeError):
+                    break
+
+    # Last resort: find last ] and try start..end.
+    end = cleaned.rfind("]")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(cleaned[start : end + 1])
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    raise JsonParseError(
+        f"Could not parse JSON array from response (length={len(raw)})", raw
     )
 
 

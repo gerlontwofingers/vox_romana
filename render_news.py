@@ -42,13 +42,23 @@ def make_engine(engine_name: str, **kwargs):
 
     elif engine_name == "piper":
         from vox_romana.tts.engines.piper_engine import PiperEngine
-        model_dir = kwargs.get("model_dir", "models/piper")
+        model_dir = kwargs.get("model_dir", "piper-voices")
         return PiperEngine(model_dir=model_dir)
+
+    elif engine_name == "both":
+        from vox_romana.tts.engines.multi_engine import MultiEngine
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model = kwargs.get("model", None)
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        kokoro = KokoroEngine(model=model) if model else KokoroEngine()
+        piper = PiperEngine(model_dir=model_dir)
+        return MultiEngine([kokoro, piper])
 
     else:
         raise ValueError(
             f"Unknown engine: {engine_name!r}. "
-            f"Available engines: kokoro, piper"
+            f"Available engines: kokoro, piper, both"
         )
 
 
@@ -78,9 +88,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
-        choices=["kokoro", "piper"],
-        help="TTS engine (default: kokoro).",
+        default="both",
+        choices=["kokoro", "piper", "both"],
+        help="TTS engine (default: both — uses all Kokoro + Piper voices).",
     )
 
     parser.add_argument(
@@ -108,7 +118,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="models/piper",
+        default="piper-voices",
         help="Piper model directory.",
     )
 
@@ -131,10 +141,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Suppress progress output.",
     )
 
+    # ── Series / voice registry ───────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, the "
+            "voice registry locks each character to the same voice "
+            "across all episodes that share this series ID."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Render a news-show JSON to audio.
+
+    .. deprecated::
+        Use ``render_show.py`` instead. ``render_show.py`` is content-agnostic
+        and renders any show JSON (debate, news, podcast, audiobook) through
+        the same TTS pipeline. ``render_news.py`` will be removed in a
+        future release.
+    """
+    import warnings
+    warnings.warn(
+        "render_news.py is deprecated; use 'python render_show.py <json>' "
+        "which works for all show types.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args(argv)
 
     json_path = Path(args.json_file)
@@ -174,7 +212,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error creating {args.engine} engine: {e}", file=sys.stderr)
         sys.exit(1)
 
-    renderer = TTSRenderer(engine, voice_map=voice_map)
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception:
+        pass
+
+    renderer = TTSRenderer(engine, voice_map=voice_map, registry=registry, series_key=series_key)
 
     if not args.quiet:
         print(f"  Input:  {json_path}")

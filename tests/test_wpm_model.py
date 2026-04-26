@@ -95,15 +95,9 @@ def fitted_model(tmp_path):
 def mock_catalog():
     """A mock Catalog that returns synthetic wpm_stats rows."""
     cat = MagicMock()
-    # Simulate the _conn.execute().fetchall() call in update_from_catalog.
-    rows = _make_mixed_records()
-    # Convert to sqlite3.Row-like dicts (MagicMock simulates subscript access).
-    mock_rows = []
-    for r in rows:
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda self, key, r=r: r[key]
-        mock_rows.append(mock_row)
-    cat._conn.execute.return_value.fetchall.return_value = mock_rows
+    # update_from_catalog now calls the public get_wpm_stats_all() method.
+    rows = _make_mixed_records()  # plain dicts — no Row wrapper needed
+    cat.get_wpm_stats_all.return_value = rows
     return cat
 
 
@@ -276,7 +270,7 @@ class TestCatalogIntegration:
     def test_update_from_empty_catalog(self):
         """Empty catalog should leave model unfitted."""
         cat = MagicMock()
-        cat._conn.execute.return_value.fetchall.return_value = []
+        cat.get_wpm_stats_all.return_value = []
         m = WPMModel()
         m.update_from_catalog(cat)
         assert m.is_fitted is False

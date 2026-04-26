@@ -71,9 +71,8 @@ COST:
 
 from __future__ import annotations
 
-import json
-
 from ...core.client import DeepSeekClient
+from ...core.json_retry import JsonParseError, parse_json_array_response
 from ...core.search import BaseSearchProvider, SearchResult
 
 
@@ -104,6 +103,30 @@ EXAMPLE OUTPUT:
     "arguments against universal basic income economics",
     "Finland UBI experiment 2017 employment results",
     "cost estimates universal basic income United States"
+  ]
+"""
+
+NEWS_QUERY_FORMULATOR_PROMPT = """\
+You are a research assistant preparing background material for a show.
+Given a show brief, generate 3-5 targeted search queries that will find
+the best factual background information for the topics covered.
+
+RULES:
+- Focus on: current events, statistics, named programs/policies, expert opinions.
+- Keep queries concise and search-engine-friendly (no full sentences).
+- Cover the main topics mentioned in the brief.
+- ALWAYS respond with a JSON array of strings. Nothing else.
+
+EXAMPLE INPUT:
+  "Local news broadcast covering housing costs, public transit, and city budget"
+
+EXAMPLE OUTPUT:
+  [
+    "local housing costs affordability data 2024",
+    "public transit ridership funding statistics",
+    "city budget allocations infrastructure 2024",
+    "affordable housing policy programs local government",
+    "transit expansion impact commuters"
   ]
 """
 
@@ -182,18 +205,25 @@ class DebateResearcher:
         self,
         client: DeepSeekClient,
         search_provider: BaseSearchProvider | None = None,
+        query_formulator_prompt: str | None = None,
     ) -> None:
         """Initialize the researcher.
 
         Args:
-            client:          DeepSeekClient for LLM calls.
-            search_provider: Any search provider implementing BaseSearchProvider.
-                             In production: GoogleSearchProvider().
-                             In tests: a mock.
-                             If None, run() falls back to LLM-only research.
+            client:                   DeepSeekClient for LLM calls.
+            search_provider:          Any search provider implementing BaseSearchProvider.
+                                      In production: GoogleSearchProvider().
+                                      In tests: a mock.
+                                      If None, run() falls back to LLM-only research.
+            query_formulator_prompt:  Override the system prompt used for query
+                                      formulation. Defaults to the debate-specific
+                                      QUERY_FORMULATOR_PROMPT. Pass
+                                      NEWS_QUERY_FORMULATOR_PROMPT when using this
+                                      researcher for a news show.
         """
         self._client = client
         self._search = search_provider
+        self._query_formulator_prompt = query_formulator_prompt or QUERY_FORMULATOR_PROMPT
 
     def run(self, brief: str) -> str:
         """Research a topic and return structured reference material.
@@ -242,8 +272,9 @@ class DebateResearcher:
     def formulate_queries(self, brief: str) -> list[str]:
         """Turn a brief into targeted search queries.
 
-        One LLM call. The LLM reads the brief and produces 3-5 search queries
-        designed to find balanced factual evidence.
+        One LLM call (with up to 2 retries on malformed JSON). The LLM reads
+        the brief and produces 3-5 search queries designed to find balanced
+        factual evidence.
 
         Separated from run() for testability — pass a canned brief, get
         deterministic queries back.
@@ -255,17 +286,34 @@ class DebateResearcher:
             A list of 3-5 search query strings.
 
         Raises:
-            ValueError: If the LLM returns unparseable JSON.
+            ValueError: If the LLM returns unparseable JSON after all retries.
         """
-        raw = self._client.chat(
-            messages=[
-                {"role": "system", "content": QUERY_FORMULATOR_PROMPT},
-                {"role": "user", "content": brief},
-            ],
-            temperature=0,
-        )
+        messages = [
+            {"role": "system", "content": self._query_formulator_prompt},
+            {"role": "user", "content": brief},
+        ]
+        last_error: Exception | None = None
 
-        return self.parse_queries(raw)
+        for attempt in range(1, 4):  # up to 3 attempts total
+            raw = self._client.chat(messages=messages, temperature=0)
+            try:
+                return self.parse_queries(raw)
+            except ValueError as exc:
+                last_error = exc
+                feedback = (
+                    f"Your previous response (attempt {attempt}) was not a valid "
+                    f"JSON array. Respond ONLY with a JSON array of strings — "
+                    f"no markdown fences, no explanation, no trailing commas. "
+                    f"Example: [\"query one\", \"query two\"]"
+                )
+                messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": feedback},
+                ]
+
+        raise ValueError(
+            f"Query formulator failed after 3 attempts. Last error: {last_error}"
+        ) from last_error
 
     def parse_queries(self, raw_json: str) -> list[str]:
         """Parse the LLM's query formulation response.
@@ -281,23 +329,24 @@ class DebateResearcher:
         Raises:
             ValueError: If JSON is malformed.
         """
-        cleaned = raw_json.strip()
-
-        # Strip markdown fences if the LLM wraps them.
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]).strip()
-
         try:
-            queries = json.loads(cleaned)
-        except json.JSONDecodeError as e:
+            queries = parse_json_array_response(raw_json)
+        except JsonParseError as e:
+            # Give a clearer error when the LLM returned a JSON object instead
+            # of an array (common mistake: wraps queries in `{"queries": [...]}`).
+            import json as _json
+            try:
+                parsed = _json.loads(raw_json.strip())
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        f"Expected a JSON array of strings, got {type(parsed).__name__}"
+                    )
+            except _json.JSONDecodeError:
+                pass
             raise ValueError(
                 f"Query formulator returned invalid JSON. First 200 chars: "
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
-
-        if not isinstance(queries, list):
-            raise ValueError(f"Expected a JSON array of strings, got {type(queries)}")
 
         # Cap the number of queries to avoid burning through search quota.
         return [str(q) for q in queries[:MAX_QUERIES]]

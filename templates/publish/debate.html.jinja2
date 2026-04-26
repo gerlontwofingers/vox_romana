@@ -1,0 +1,4 @@
+{% extends "_base.html.jinja2" %}
+{% block subtitle %}
+<p class="doc-subtitle">— A Stage Play in {{ doc.sections|length }} Act{% if doc.sections|length != 1 %}s{% endif %} —</p>
+{% endblock %}

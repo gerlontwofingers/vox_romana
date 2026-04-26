@@ -35,7 +35,9 @@ RULES:
 - Each host has their own personality, speech style, and expertise —
   make them sound DISTINCT from each other.
 - Hosts should RESPOND to each other. This is a conversation, not parallel
-  monologues. They react, agree, disagree, build on each other's points.
+  monologues. They react, build on each other's points, ask follow-up
+  questions, and sometimes offer a different angle — always from curiosity,
+  not from the desire to win.
 - Use hosts' NAMES naturally in conversation — this is audio-only, so the
   listener needs periodic name cues to track who's talking. Work names
   into responses like real people do: "Good point, Maven..." or "Something
@@ -48,12 +50,46 @@ RULES:
 - Vary energy levels. Not every line needs to be high-energy. Mix up:
   reflective moments, excited tangents, quiet agreement, playful teasing.
 
+CONVERSATION PHILOSOPHY:
+- This is NOT a debate. Hosts are exploring a topic together — "winning"
+  an argument is a failure mode, not a goal.
+- BUILD FIRST: when another host makes a point, find what is interesting
+  and true in it before departing from it. Even disagreement should expand
+  the idea, not shut it down.
+- CURIOSITY AS DEFAULT STANCE: when uncertain, ask. "What do you mean
+  by...?" is more interesting than a prepared counter-argument. Genuine
+  not-knowing is a feature, not a weakness.
+- YES, AND: find the truth in what was just said, then add to it. "Yes,
+  and actually that reminds me of..." beats "Actually, no, I think..."
+- PROTECT YOUR PARTNER: ask questions that let other hosts deepen their
+  point, not corner them. Leave room and exits.
+- LISTEN TO BUILD, NOT TO REBUT: reference something specific the previous
+  speaker just said before giving your own take. React to what was
+  actually said, not to the argument you were already preparing.
+
 ANTI-REPETITION:
 - NEVER repeat a phrase, talking point, or argument already used.
 - VARY sentence openers. No two consecutive lines should start the same way.
 - Once a point is made, ADVANCE to a new angle: a specific example, a
   personal anecdote, a counterpoint, a question, a tangent.
 - Draw from each host's TANGENT TOPICS when the main thread is covered.
+
+FACTUAL ACCURACY — CRITICAL:
+  Today's date is {current_date}.
+- DO NOT invent names of real people, companies, studies, statistics, court
+  cases, government programmes, URLs, or domain names. If you are not
+  certain something is real, do NOT state it as fact — say "I think" or
+  ask the other host.
+- DO NOT fabricate biographical details (birth dates, death dates, cause of
+  death, job titles) about any named person.
+- DO NOT invent revenue figures, user counts, market sizes, or other
+  statistics. If the reference material does not supply a number, say you
+  don't have the exact figure.
+- DO NOT backdate events or misstate when someone died. Use {current_date}
+  as your anchor — anyone described as a recent death must have died on or
+  before this date.
+- WHEN IN DOUBT: have the host hedge explicitly ("I don't know the exact
+  figure but...") rather than guessing a number that sounds plausible.
 
 OUTPUT FORMAT:
 Respond with ONLY a JSON array of utterance objects (no other text):
@@ -156,16 +192,24 @@ DEEP DIVE GUIDELINES:
 - Build arguments step by step. It's OK to get nerdy or technical.
 - If covering multiple sub-topics, transition naturally between them.
 - This segment should feel substantial — the listener should learn something.
+- Hosts are discovering and making sense of this together, not reciting
+  prepared positions. Thinking out loud is encouraged.
 """
 
 DRAMA_OVERLAY = """\
 DRAMA GUIDELINES:
-- High energy. Hosts have genuine disagreements or passionate takes.
-- Interruptions are expected — respect each host's interruption_tendency.
-- Build tension through the segment. Let arguments escalate naturally.
-- But keep it respectful — heated conversation, not a screaming match.
-- At least one host should play devil's advocate or take a contrarian stance.
-- End with some form of resolution or "agree to disagree" energy.
+- High stakes. Both hosts care DEEPLY about this topic, possibly from
+  different angles. The energy comes from that investment, not from
+  opposition.
+- Disagreements here are about what MATTERS, not about who is right.
+  The question is "what should we do about this?" not "who is correct?"
+- Interruptions are natural when something lands hard — respect each
+  host's interruption_tendency.
+- Let intensity build through mutual investment: "I agree with you AND
+  it's even more serious than that..." is more dramatic than "No, you're
+  wrong."
+- End with the feeling that something important was said — not a winner
+  declared.
 """
 
 OUTRO_OVERLAY = """\

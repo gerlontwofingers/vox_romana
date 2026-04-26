@@ -21,11 +21,13 @@ EXAMPLE:
 from __future__ import annotations
 
 import json
+from typing import Any
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
-from ...core.search import BaseSearchProvider
-from .config import AnchorConfig, DirectorBrief, NewsConfig, SegmentConfig
+from ...core.search import BaseSearchProvider, build_research_provider
+from .config import AnchorConfig, NewsConfig, NewsDirectorBrief, SegmentConfig
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -127,8 +129,8 @@ RULES:
 # ═══════════════════════════════════════════════════════════════════════════
 
 ANCHOR_PROFILER_PROMPT = """\
-You are creating a voice profile for a news anchor. Given their name and style,
-produce a detailed voice fingerprint — HOW they talk, not WHAT they say.
+You are creating a voice profile for a news anchor or show host. Given their
+name and style, produce a voice profile — how they SOUND and how they TALK.
 
 Anchor name: {name}
 Anchor style: {style}
@@ -137,13 +139,19 @@ Broadcast tone: {tone}
 
 Respond with ONLY a JSON object:
 {{
+  "voice_gender": "string — 'male' or 'female'. The vocal gender of this \
+person for TTS voice assignment. Base this on their name and role.",
+  "voice_hint": "string — a short TTS casting note describing how this person \
+SOUNDS. Accent, age range, energy, tone texture. Examples: 'warm authoritative \
+baritone, 50s, network news cadence', 'clear alto, 30s, steady and precise', \
+'bright tenor, 40s, BBC polish'.",
   "voice_fingerprint": "string — 2-3 sentences describing their vocal delivery, \
 cadence, verbal habits, and on-air personality. Be specific and distinctive."
 }}
 """
 
 
-class NewsBootstrap:
+class NewsBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain for news shows.
 
     Chain: brief → [Researcher] → Architect → Anchor profiler → Director → config
@@ -155,7 +163,7 @@ class NewsBootstrap:
         *,
         api_key: str | None = None,
     ) -> None:
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
 
     def from_brief(
         self,
@@ -166,6 +174,7 @@ class NewsBootstrap:
         overrides: dict | None = None,
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
+        memory: Any | None = None,
         target_words: int | None = None,
     ) -> NewsConfig:
         """Run the full bootstrap chain: brief → fully populated NewsConfig.
@@ -178,6 +187,10 @@ class NewsBootstrap:
             auto_research:      If True, research the topic before generating.
             search_provider:    Search provider for web research. If None and
                                 auto_research=True, falls back to LLM-only research.
+            memory:             Optional MemoryRecall instance. When provided,
+                                auto-research consults the local knowledge base
+                                FIRST and only falls through to ``search_provider``
+                                if memory doesn't have enough material.
 
         Returns:
             A fully populated NewsConfig.
@@ -187,13 +200,14 @@ class NewsBootstrap:
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
             # Reuse the debate researcher — it works for any topic.
-            from ..debates.researcher import DebateResearcher
-            if search_provider is None:
-                # No search provider → LLM-only research (DeepSeek compiles
-                # from training knowledge).
-                researcher = DebateResearcher(self._client)
+            from ..debates.researcher import DebateResearcher, NEWS_QUERY_FORMULATOR_PROMPT
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
+                # No search provider AND no memory → LLM-only research
+                # (DeepSeek compiles from training knowledge).
+                researcher = DebateResearcher(self._client, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
@@ -209,7 +223,7 @@ class NewsBootstrap:
 
         # ── Stage 2.5: Show host profiling ───────────────────────────
         if config.show_host and config.show_host.name:
-            config.show_host.voice_fingerprint = self._profile_host(
+            self._profile_host(
                 config.show_host,
                 topic=config.topic or brief,
             )
@@ -218,9 +232,7 @@ class NewsBootstrap:
         config.director_brief = self._run_director(config)
 
         # ── Stage 4: Apply overrides ─────────────────────────────────
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        self._apply_overrides(config, overrides)
 
         return config
 
@@ -355,13 +367,17 @@ class NewsBootstrap:
         try:
             data = json.loads(cleaned)
             anchor.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_hint"):
+                anchor.voice_hint = data["voice_hint"]
+            if data.get("voice_gender"):
+                anchor.voice_gender = data["voice_gender"]
         except (json.JSONDecodeError, TypeError):
             anchor.voice_fingerprint = "(default authoritative news delivery)"
 
         return anchor
 
-    def _profile_host(self, host: ShowHostConfig, *, topic: str) -> str:
-        """Give the show host a voice_fingerprint via LLM."""
+    def _profile_host(self, host: ShowHostConfig, *, topic: str) -> None:
+        """Enrich the show host with voice_fingerprint, voice_hint, and voice_gender via LLM."""
         prompt = ANCHOR_PROFILER_PROMPT.format(
             name=host.name,
             style=host.style or "polished and engaging",
@@ -384,11 +400,15 @@ class NewsBootstrap:
 
         try:
             data = json.loads(cleaned)
-            return data.get("voice_fingerprint", "")
+            host.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_hint"):
+                host.voice_hint = data["voice_hint"]
+            if data.get("voice_gender"):
+                host.voice_gender = data["voice_gender"]
         except (json.JSONDecodeError, TypeError):
-            return "(warm, polished broadcast host delivery)"
+            host.voice_fingerprint = "(warm, polished broadcast host delivery)"
 
-    def _run_director(self, config: NewsConfig) -> DirectorBrief:
+    def _run_director(self, config: NewsConfig) -> NewsDirectorBrief:
         """Call the Director LLM to plan the broadcast arc."""
         segment_list = "\n".join(
             f"  {i+1}. {s.headline} ({s.duration_hint}, {s.tone or config.tone or 'neutral'})"
@@ -412,8 +432,8 @@ class NewsBootstrap:
 
         return self._parse_director_response(raw)
 
-    def _parse_director_response(self, raw_json: str) -> DirectorBrief:
-        """Parse the Director's JSON into a DirectorBrief."""
+    def _parse_director_response(self, raw_json: str) -> NewsDirectorBrief:
+        """Parse the Director's JSON into a NewsDirectorBrief."""
         cleaned = raw_json.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -427,7 +447,7 @@ class NewsBootstrap:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        return DirectorBrief(
+        return NewsDirectorBrief(
             show_arc=data.get("show_arc", ""),
             mood_progression=data.get("mood_progression", []),
             segment_order_notes=data.get("segment_order_notes"),

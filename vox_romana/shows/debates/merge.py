@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 
-from .models import DebateChunk, DebateEvent, MergedDebate, ParsedDebateDocument
+from .models import DebateEvent, DebateSegment, MergedDebate, ParsedDebateDocument
 
 
 class DebateMergeError(ValueError):
@@ -24,7 +24,7 @@ class DebateDocumentMerger:
         if not document_list:
             return ()
 
-        grouped_chunks: dict[tuple[str, str], list[DebateChunk]] = defaultdict(list)
+        grouped_chunks: dict[tuple[str, str], list[DebateSegment]] = defaultdict(list)
         parser_names: dict[tuple[str, str], set[str]] = defaultdict(set)
         source_counts: dict[tuple[str, str], int] = defaultdict(int)
 
@@ -56,7 +56,7 @@ class DebateDocumentMerger:
         *,
         template_id: str,
         debate_id: str,
-        chunks: tuple[DebateChunk, ...],
+        chunks: tuple[DebateSegment, ...],
         parser_names: tuple[str, ...],
         source_count: int,
     ) -> MergedDebate:
@@ -100,7 +100,7 @@ class DebateDocumentMerger:
         )
 
 
-def _merge_events(chunks: tuple[DebateChunk, ...]) -> tuple[DebateEvent, ...]:
+def _merge_events(chunks: tuple[DebateSegment, ...]) -> tuple[DebateEvent, ...]:
     events_by_global_order: dict[int, DebateEvent] = {}
     for chunk in chunks:
         for event in sorted(chunk.events, key=_event_sort_key):
@@ -116,7 +116,7 @@ def _merge_events(chunks: tuple[DebateChunk, ...]) -> tuple[DebateEvent, ...]:
     return tuple(sorted(events_by_global_order.values(), key=_event_sort_key))
 
 
-def _coalesce_scalar(chunks: tuple[DebateChunk, ...], field_name: str) -> str | None:
+def _coalesce_scalar(chunks: tuple[DebateSegment, ...], field_name: str) -> str | None:
     values = [getattr(chunk, field_name) for chunk in chunks if getattr(chunk, field_name) is not None]
     if not values:
         return None
@@ -129,7 +129,7 @@ def _coalesce_scalar(chunks: tuple[DebateChunk, ...], field_name: str) -> str | 
     return first
 
 
-def _coalesce_bool(chunks: tuple[DebateChunk, ...], field_name: str) -> bool:
+def _coalesce_bool(chunks: tuple[DebateSegment, ...], field_name: str) -> bool:
     values = {getattr(chunk, field_name) for chunk in chunks}
     if len(values) != 1:
         raise DebateMergeError(
@@ -138,7 +138,7 @@ def _coalesce_bool(chunks: tuple[DebateChunk, ...], field_name: str) -> bool:
     return values.pop()
 
 
-def _coalesce_optional_bool(chunks: tuple[DebateChunk, ...], field_name: str) -> bool | None:
+def _coalesce_optional_bool(chunks: tuple[DebateSegment, ...], field_name: str) -> bool | None:
     values = [getattr(chunk, field_name) for chunk in chunks if getattr(chunk, field_name) is not None]
     if not values:
         return None
@@ -163,7 +163,7 @@ def _ordered_unique_name_union(groups: Iterable[tuple[str, ...]]) -> tuple[str, 
     return tuple(ordered)
 
 
-def _chunk_sort_key(chunk: DebateChunk) -> tuple[int, int, int]:
+def _chunk_sort_key(chunk: DebateSegment) -> tuple[int, int, int]:
     first_event_order = min((event.global_order for event in chunk.events), default=-1)
     return (chunk.chunk_order, first_event_order, len(chunk.events))
 

@@ -114,9 +114,9 @@ class TestParseArgs:
         assert args.no_log_audio_duration is True
 
     def test_engine_default(self, tmp_prompt):
-        """Default engine should be kokoro."""
+        """Default engine should be both (all Kokoro + Piper voices)."""
         args = parse_args([str(tmp_prompt)])
-        assert args.engine == "kokoro"
+        assert args.engine == "both"
 
     def test_format_default(self, tmp_prompt):
         """Default audio format should be mp3."""
@@ -156,11 +156,15 @@ class TestBuildArgv:
     """Verify the argv builder helpers."""
 
     def test_generate_argv_minimal(self, tmp_prompt):
-        """Minimal generate argv should include prompt and --quiet."""
+        """Minimal generate argv should contain the prompt but NOT --quiet.
+
+        --quiet is only forwarded when the user explicitly passes --quiet;
+        run_show.py should stream its own progress output by default.
+        """
         args = parse_args([str(tmp_prompt)])
         argv = _build_generate_argv(args)
         assert str(tmp_prompt) in argv
-        assert "--quiet" in argv
+        assert "--quiet" not in argv
 
     def test_generate_argv_with_overrides(self, tmp_prompt):
         """All overrides should appear in the generated argv."""
@@ -187,7 +191,7 @@ class TestBuildArgv:
         argv = _build_render_argv(tmp_json, args)
         assert str(tmp_json) in argv
         assert "--engine" in argv
-        assert "kokoro" in argv
+        assert "both" in argv
 
     def test_render_argv_with_audio_output(self, tmp_json, tmp_path):
         """--audio-output should be forwarded as --output."""
@@ -285,8 +289,10 @@ class TestModeExecution:
     @patch("run_show.main")
     def test_full_mode_calls_both(self, mock_gen, mock_render, tmp_prompt, capsys):
         """full mode should call run_show then render_show."""
+        from pathlib import Path
         fake_json = "/fake/output.json"
-        mock_gen.side_effect = lambda argv: print(fake_json)
+        # run_show.main() now returns a Path rather than printing to stdout.
+        mock_gen.return_value = Path(fake_json)
         mock_render.return_value = None
 
         run_master.main([str(tmp_prompt), "--mode", "full", "--quiet"])
@@ -295,7 +301,7 @@ class TestModeExecution:
         mock_gen.assert_called_once()
         mock_render.assert_called_once()
 
-        # render_show should receive the JSON path from run_show's output.
+        # render_show should receive the JSON path from run_show's return value.
         render_argv = mock_render.call_args[0][0]
         assert fake_json in render_argv
 
@@ -303,7 +309,8 @@ class TestModeExecution:
     @patch("run_show.main")
     def test_no_log_forwarded_in_full_mode(self, mock_gen, mock_render, tmp_prompt):
         """--no-log-audio-duration should be forwarded to render in full mode."""
-        mock_gen.side_effect = lambda argv: print("/fake/output.json")
+        from pathlib import Path
+        mock_gen.return_value = Path("/fake/output.json")
         mock_render.return_value = None
 
         run_master.main([
@@ -411,3 +418,264 @@ class TestRenderShowFlagParsing:
         from render_show import parse_args as render_parse_args
         args = render_parse_args(["fake.json", "--no-log-audio-duration"])
         assert args.no_log_audio_duration is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PUBLISH MODE — argument parsing
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPublishArgParsing:
+    def test_publish_mode_parses(self, tmp_json):
+        args = parse_args(["--mode", "publish", "--script-input", str(tmp_json)])
+        assert args.mode == "publish"
+        assert args.script_input == tmp_json
+
+    def test_publish_format_default_txt(self, tmp_json):
+        args = parse_args(["--mode", "publish", "--script-input", str(tmp_json)])
+        assert args.publish_format == "txt"
+
+    def test_publish_format_pdf(self, tmp_json):
+        args = parse_args([
+            "--mode", "publish",
+            "--script-input", str(tmp_json),
+            "--publish-format", "pdf",
+        ])
+        assert args.publish_format == "pdf"
+
+    def test_publish_format_both(self, tmp_json):
+        args = parse_args([
+            "--mode", "publish",
+            "--script-input", str(tmp_json),
+            "--publish-format", "both",
+        ])
+        assert args.publish_format == "both"
+
+    def test_publish_output_parses(self, tmp_json, tmp_path):
+        args = parse_args([
+            "--mode", "publish",
+            "--script-input", str(tmp_json),
+            "--publish-output", str(tmp_path),
+        ])
+        assert args.publish_output == tmp_path
+
+    def test_no_polish_flag(self, tmp_json):
+        args = parse_args([
+            "--mode", "publish",
+            "--script-input", str(tmp_json),
+            "--no-polish",
+        ])
+        assert args.no_polish is True
+
+    def test_publish_addon_flag_generate(self, tmp_prompt):
+        args = parse_args([str(tmp_prompt), "--mode", "generate", "--publish"])
+        assert args.publish is True
+
+    def test_publish_addon_default_false(self, tmp_prompt):
+        args = parse_args([str(tmp_prompt)])
+        assert args.publish is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PUBLISH MODE — validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPublishValidation:
+    def test_publish_mode_requires_script_input(self):
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main(["--mode", "publish"])
+        assert exc_info.value.code == 1
+
+    def test_publish_mode_missing_file_exits(self, tmp_path):
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main([
+                "--mode", "publish",
+                "--script-input", str(tmp_path / "nope.json"),
+            ])
+        assert exc_info.value.code == 1
+
+    def test_publish_addon_not_allowed_with_render(self, tmp_json):
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main([
+                "--mode", "render",
+                "--script-input", str(tmp_json),
+                "--publish",
+            ])
+        assert exc_info.value.code == 1
+
+    def test_publish_addon_not_allowed_with_ingest(self, tmp_path):
+        with pytest.raises(SystemExit) as exc_info:
+            run_master.main([
+                "--mode", "ingest",
+                "--ingest-path", str(tmp_path),
+                "--publish",
+            ])
+        assert exc_info.value.code == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PUBLISH MODE — execution (real formatter, no mocks needed)
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json as _json
+
+
+def _write_debate_json(tmp_path: Path) -> Path:
+    """Write a minimal but valid debate JSON fixture to tmp_path."""
+    events = [
+        {
+            "global_order": 1, "local_order": 1,
+            "speaker_role": "moderator", "speaker_name": "Mod",
+            "target": None, "text": "Welcome to the debate.",
+            "tone": [], "volume": "moderate", "pace": "medium",
+            "pause_before": 0.0, "pause_after": 0.0,
+            "interruption": False, "nonverbal": [],
+            "event_kind": "utterance", "overlap_with_previous": False,
+            "completion_status": "complete", "segment_id": None, "raw_fields": {},
+        },
+        {
+            "global_order": 2, "local_order": 2,
+            "speaker_role": "participant", "speaker_name": "Alice",
+            "target": None, "text": "I support the motion.",
+            "tone": [], "volume": "moderate", "pace": "medium",
+            "pause_before": 0.0, "pause_after": 0.0,
+            "interruption": False, "nonverbal": [],
+            "event_kind": "utterance", "overlap_with_previous": False,
+            "completion_status": "complete", "segment_id": None, "raw_fields": {},
+        },
+    ]
+    data = {
+        "debate_id": "run_test_01",
+        "template_id": "tpl_01",
+        "title": "CLI Test Debate",
+        "chunks": [{
+            "template_id": "tpl_01",
+            "debate_id": "run_test_01",
+            "title": "CLI Test Debate",
+            "chunk_order": 1,
+            "is_final_chunk": True,
+            "participants": ["Alice"],
+            "moderators": ["Mod"],
+            "hosts": [],
+            "audience_present": False,
+            "audience_participation": False,
+            "topic": "A test topic",
+            "debate_format": "Oxford",
+            "setting": "A room",
+            "moderator_mode": "active",
+            "continuity_notes": [],
+            "metadata": {},
+            "events": events,
+        }],
+        "events": events,
+        "parser_names": [],
+        "participants": ["Alice"],
+        "moderators": ["Mod"],
+        "hosts": [],
+        "audience_present": False,
+        "audience_participation": False,
+        "topic": "A test topic",
+        "debate_format": "Oxford",
+        "setting": "A room",
+        "moderator_mode": "active",
+        "continuity_notes": [],
+        "source_count": 0,
+    }
+    p = tmp_path / "cli_test_debate.json"
+    p.write_text(_json.dumps(data), encoding="utf-8")
+    return p
+
+
+class TestPublishModeExecution:
+    def test_standalone_publish_mode_writes_txt(self, tmp_path, capsys):
+        src = _write_debate_json(tmp_path)
+        dest = tmp_path / "out"
+        run_master.main([
+            "--mode", "publish",
+            "--script-input", str(src),
+            "--publish-output", str(dest),
+        ])
+        # txt should be written
+        out_file = dest / "cli_test_debate.txt"
+        assert out_file.exists()
+        assert out_file.stat().st_size > 50
+        text = out_file.read_text(encoding="utf-8")
+        assert "CLI TEST DEBATE" in text
+        assert "ALICE:" in text
+
+    def test_standalone_publish_mode_banner(self, tmp_path, capsys):
+        src = _write_debate_json(tmp_path)
+        run_master.main([
+            "--mode", "publish",
+            "--script-input", str(src),
+            "--publish-output", str(tmp_path),
+        ])
+        captured = capsys.readouterr()
+        assert "publish" in captured.out.lower()
+        assert "debate" in captured.out.lower()
+
+    def test_standalone_publish_quiet_suppresses_banner(self, tmp_path, capsys):
+        src = _write_debate_json(tmp_path)
+        run_master.main([
+            "--mode", "publish",
+            "--quiet",
+            "--script-input", str(src),
+            "--publish-output", str(tmp_path),
+        ])
+        captured = capsys.readouterr()
+        # Quiet: no banner, no section count.  Warnings are still printed.
+        assert "VOX ROMANA" not in captured.out
+        assert "Published" not in captured.out
+
+    def test_generate_plus_publish_addon(self, tmp_path, capsys):
+        """--mode generate --publish should call publish after generation."""
+        src = _write_debate_json(tmp_path)
+        out_dir = tmp_path / "pub"
+
+        with patch("run_show.main", return_value=src):
+            run_master.main([
+                "fake_prompt.txt",
+                "--mode", "generate",
+                "--publish",
+                "--publish-output", str(out_dir),
+                "--quiet",
+            ])
+
+        out_file = out_dir / "cli_test_debate.txt"
+        assert out_file.exists()
+
+    def test_full_plus_publish_addon(self, tmp_path):
+        """--mode full --publish should call publish after render step."""
+        src = _write_debate_json(tmp_path)
+        out_dir = tmp_path / "pub"
+
+        with patch("run_show.main", return_value=src), \
+             patch("render_show.main", return_value=None):
+            run_master.main([
+                "fake_prompt.txt",
+                "--mode", "full",
+                "--publish",
+                "--publish-output", str(out_dir),
+                "--quiet",
+            ])
+
+        out_file = out_dir / "cli_test_debate.txt"
+        assert out_file.exists()
+
+    def test_publish_format_both_no_pdf_warning(self, tmp_path, capsys):
+        """--publish-format both should warn if weasyprint missing."""
+        import vox_romana.publish.outputter as _r
+        src = _write_debate_json(tmp_path)
+        orig = _r.PDF_AVAILABLE
+        _r.PDF_AVAILABLE = False
+        try:
+            run_master.main([
+                "--mode", "publish",
+                "--script-input", str(src),
+                "--publish-format", "both",
+                "--publish-output", str(tmp_path),
+            ])
+        finally:
+            _r.PDF_AVAILABLE = orig
+        captured = capsys.readouterr()
+        assert "PDF skipped" in captured.out
+

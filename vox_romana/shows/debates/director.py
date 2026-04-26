@@ -12,7 +12,7 @@ Think of it like this:
       guides the conversation from "polite introductions" to "heated
       rebuttals" to "reluctant mutual respect."
 
-During generation, the DebateConductor consults the DirectorBrief every
+During generation, the DebateConductor consults the DebateDirectorBrief every
 `check_interval` turns and nudges the conversation toward the planned arc.
 It's not rigid — the agents improvise — but the Director provides structure
 so the debate doesn't meander or stall.
@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 
 from ...core.client import DeepSeekClient
-from .config import DirectorBrief
+from .config import DebateDirectorBrief
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ class DebateDirector:
     """Plans the dramatic arc for a debate.
 
     Takes debate metadata (topic, format, participants, tone, target length)
-    and produces a DirectorBrief with the dramatic arc, mood progression,
+    and produces a DebateDirectorBrief with the dramatic arc, mood progression,
     key moments, and closing strategy.
     """
 
@@ -132,8 +132,8 @@ class DebateDirector:
         debate_format: str = "public_forum",
         tone: str = "balanced",
         target_turns: int = 35,
-    ) -> DirectorBrief:
-        """Call the LLM and return a DirectorBrief.
+    ) -> DebateDirectorBrief:
+        """Call the LLM and return a DebateDirectorBrief.
 
         Args:
             topic:          The debate topic.
@@ -143,7 +143,7 @@ class DebateDirector:
             target_turns:   How many turns the debate should run.
 
         Returns:
-            A DirectorBrief with dramatic arc and pacing info.
+            A DebateDirectorBrief with dramatic arc and pacing info.
 
         Raises:
             ValueError: If the LLM returns unparseable JSON.
@@ -167,8 +167,8 @@ class DebateDirector:
 
         return self.parse_response(raw_response)
 
-    def parse_response(self, raw_json: str) -> DirectorBrief:
-        """Parse the LLM's JSON into a DirectorBrief.
+    def parse_response(self, raw_json: str) -> DebateDirectorBrief:
+        """Parse the LLM's JSON into a DebateDirectorBrief.
 
         Testable without the LLM — pass a canned JSON string.
 
@@ -176,7 +176,7 @@ class DebateDirector:
             raw_json: The raw string from the LLM (should be JSON).
 
         Returns:
-            A DirectorBrief with all fields populated.
+            A DebateDirectorBrief with all fields populated.
 
         Raises:
             ValueError: If JSON is malformed.
@@ -195,7 +195,7 @@ class DebateDirector:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        return DirectorBrief(
+        return DebateDirectorBrief(
             dramatic_arc=data.get("dramatic_arc", ""),
             mood_progression=data.get("mood_progression", []),
             key_moments=data.get("key_moments", []),

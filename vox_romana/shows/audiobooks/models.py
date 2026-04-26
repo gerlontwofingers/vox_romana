@@ -14,6 +14,8 @@ from typing import Any
 from ...core.models import AudioEvent
 
 # ── Event alias ──────────────────────────────────────────────────────────
+# Intentional re-export: type alias for readability within the audiobooks package.
+# AudioEvent is the canonical unified type in vox_romana.core.models.
 AudiobookEvent = AudioEvent
 
 

@@ -88,16 +88,18 @@ TESTING:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
 from .bootstrap import DebateBootstrap
 from .config import DebateConfig, ParticipantProfile
-from .models import DebateChunk, DebateEvent, MergedDebate
+from .models import DebateEvent, DebateSegment, MergedDebate
 from .prompts import (
     CONTEXT_SUMMARY_PROMPT,
     DIRECTOR_CHECK_PROMPT,
@@ -107,6 +109,8 @@ from .prompts import (
     PARTICIPANT_SYSTEM_PROMPT,
     SHOW_HOST_SYSTEM_PROMPT,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -154,7 +158,7 @@ class DebateConductorResult(ConductorResult):
     debate_events: list[DebateEvent] = field(default_factory=list)
     debate_id: str = ""
 
-    def to_merged_debate(self) -> MergedDebate:
+    def to_merged_debate(self, series_id: str | None = None) -> MergedDebate:
         """Convert this result into a MergedDebate for serialization.
 
         This bridges the conductor's output to the existing pipeline.
@@ -171,8 +175,8 @@ class DebateConductorResult(ConductorResult):
 
         events_tuple = tuple(self.debate_events)
 
-        # Build a single DebateChunk wrapping all events.
-        chunk = DebateChunk(
+        # Build a single DebateSegment wrapping all events.
+        chunk = DebateSegment(
             template_id="conductor",
             debate_id=self.debate_id,
             title=config.title or "Untitled Debate",
@@ -251,6 +255,7 @@ class DebateConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            series_id=series_id,
         )
 
 
@@ -278,6 +283,8 @@ class DebateConductor(BaseConductor):
         _llm_calls:         Counter for total LLM API calls made.
     """
 
+    _bootstrap_cls = DebateBootstrap
+
     def __init__(
         self,
         config: DebateConfig,
@@ -303,6 +310,7 @@ class DebateConductor(BaseConductor):
         self._moderator_prompt: str | None = None
         self._host_prompt: str | None = None
         self._agent_sessions: dict[str, "AgentSession"] = {}
+        self._fact_checker: FactChecker | None = None
 
         # Runtime state (reset each run):
         self._transcript: list[dict] = []  # [{speaker, text, ...}, ...]
@@ -322,45 +330,35 @@ class DebateConductor(BaseConductor):
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
     ) -> DebateConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap a DebateConfig from a brief and create a conductor.
 
-        This is the "one-shot" convenience method: brief → config → conductor.
-
-        Args:
-            brief:              Natural language description of the debate.
-            reference_material: Factual source text to ground the output.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of DebateConfig field overrides.
-            client:             Shared DeepSeekClient (used for both bootstrap and conducting).
-            api_key:            API key if client is not provided.
-
-        Returns:
-            A DebateConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief` that fixes the
+        return type for callers and tooling.
         """
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = DebateBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface implementation
     # ═══════════════════════════════════════════════════════════════════
 
     def _build_agents(self) -> None:
-        """Build system prompts for each agent from the config.
+        """Build system prompts and AgentSessions for each participant.
 
-        We don't create persistent DeepSeekAgent objects because we're
-        managing context manually (sliding window + summary). Instead,
-        we build system prompts here and use the raw DeepSeekClient.chat()
-        for each turn, constructing the full message list fresh each time.
-
-        This gives us total control over what each agent sees, which is
-        critical for the context compression strategy.
+        Each participant and the moderator (if present) gets their own
+        :class:`~vox_romana.core.session.AgentSession` with an independent
+        sliding-window context. Sessions are created here rather than at
+        init time because the config may not have been fully populated when
+        the conductor was constructed (e.g. after ``from_brief()``).  We do
+        NOT build one monolithic "DebateAgent" object — the multi-agent
+        approach (one session per character) is what produces the distinct
+        voice and perspective separation that makes debates work.
         """
         config = self.config
         if not isinstance(config, DebateConfig):
@@ -401,6 +399,68 @@ class DebateConductor(BaseConductor):
         self._director_note = ""
         self._llm_calls = 0
         self._debate_id = str(uuid.uuid4())[:8]
+
+        # ── Build FactChecker if fact-checking is enabled ────────────
+        if config.fact_check != "off":
+            self._fact_checker = FactChecker.build_default(self._client)
+        else:
+            self._fact_checker = None
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check the bootstrap output before generation begins.
+
+        Scans the debate topic and director arc for fabricated claims and
+        aborts (or warns) based on ``config.allow_bootstrap_fabrications``.
+        """
+        if self._fact_checker is None:
+            return
+        config = self.config
+        if not isinstance(config, DebateConfig):
+            return
+        surfaces: list[str] = []
+        if config.topic:
+            surfaces.append(config.topic)
+        if config.director_brief and config.director_brief.arc:
+            surfaces.append(config.director_brief.arc)
+        bootstrap_text = " ".join(surfaces).strip()
+        if not bootstrap_text:
+            return
+        try:
+            report = self._fact_checker.check_chunk(
+                bootstrap_text,
+                chunk_id="bootstrap",
+                reference_material=config.reference_material,
+                mode=config.fact_check,
+                content_mode="factual",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DebateConductor: bootstrap preflight raised: %r", exc)
+            return
+        if report.has_fabrications:
+            print(
+                "\n\u26a0  BOOTSTRAP PRE-FLIGHT: Fabricated facts detected in "
+                "the generated outline."
+            )
+            print(
+                "   The fact-checker flagged the following based on LLM knowledge:"
+            )
+            for r in report.fabricated_claims:
+                print(f"   \u2022 {r.claim}")
+                print(f"     \u2192 {r.explanation}")
+            if not config.allow_bootstrap_fabrications:
+                print(
+                    "   Generation aborted. Fix your brief or supply "
+                    "--reference-material."
+                )
+                print(
+                    "   Use --allow-bootstrap-fabrications to override "
+                    "(not recommended).\n"
+                )
+                raise SystemExit(1)
+            else:
+                print(
+                    "   Continuing anyway (--allow-bootstrap-fabrications is set).\n"
+                )
 
     def _run_turn_loop(self) -> list[dict]:
         """The main generation loop. Sequential. No parallelism.
@@ -564,6 +624,12 @@ class DebateConductor(BaseConductor):
                 wrapping_up=wrapping_up,
                 turn_number=turn_number,
                 target_turns=target_turns,
+            )
+
+            # ── Progress ─────────────────────────────────────────────
+            print(
+                f"  [turn {turn_number}/{target_turns}] {speaker_name}",
+                flush=True,
             )
 
             if speaker_role == "moderator":
@@ -992,7 +1058,7 @@ class DebateConductor(BaseConductor):
         sends it through the speaker's session (which manages its own history
         and compression), and parses the JSON response.
         """
-        # ── Compute per-turn word target (Phase 1+2) ────────────────
+        # ── Compute per-turn word target ────────────────
         # Total budget / remaining turns gives a fair share that auto-
         # compensates for prior turns running short or long.
         per_turn_target = 0
@@ -1034,7 +1100,7 @@ class DebateConductor(BaseConductor):
         # ── Parse the JSON response ──────────────────────────────────
         event_dict = self._parse_turn_response(raw_response)
 
-        # ── Length contract validation (Phase 1+2) ──────────────────
+        # ── Length contract validation ──────────────────
         if per_turn_target > 0:
             actual = len((event_dict.get("text") or "").split())
             warning = self._validate_word_count(
@@ -1059,7 +1125,115 @@ class DebateConductor(BaseConductor):
         event_dict["role"] = speaker_role
         event_dict["turn"] = turn_number
 
+        # ── Fact-check gate (blocking) ────────────────────────
+        # Policy: when fact-checking is enabled, we run the freshly generated
+        # turn through the fact-checker. If it flags fabrications or
+        # contradictions, we feed those flags back to the *same* AgentSession
+        # so the speaker can restate without losing in-character tone or
+        # session memory. We retry up to `config.max_retries` times. If the
+        # final attempt still fails, we publish anyway and append a
+        # FACT_CHECK_WARN entry to `_length_warnings` so downstream
+        # rendering/CLI can surface the issue. "Blocking" here means we hold
+        # the turn — no other turn runs until this gate either passes or
+        # exhausts retries — but we never silently drop content.
+        config = self.config
+        if (
+            self._fact_checker is not None
+            and isinstance(config, DebateConfig)
+            and config.fact_check != "off"
+        ):
+            turn_text = event_dict.get("text") or ""
+            for fc_attempt in range(config.max_retries):
+                try:
+                    fc_report = self._fact_checker.check_chunk(
+                        turn_text,
+                        chunk_id=f"turn_{turn_number}_{speaker_name}",
+                        reference_material=config.reference_material,
+                        mode=config.fact_check,
+                        content_mode="factual",
+                        prior_context=self._build_prior_context(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "DebateConductor: fact-check raised for turn %d %s: %r",
+                        turn_number, speaker_name, exc,
+                    )
+                    break
+
+                if not (fc_report.has_fabrications or fc_report.has_contradictions):
+                    break  # Turn passed — move on.
+
+                session = self._agent_sessions.get(speaker_name)
+                blocking = (
+                    fc_report.fabricated_claims + fc_report.contradicted_claims
+                )
+                if fc_attempt < config.max_retries - 1 and session is not None:
+                    claims_lines = "\n".join(
+                        f"  • {r.claim}: {r.explanation}"
+                        for r in blocking
+                    )
+                    rejection_msg = (
+                        f"FACT-CHECK REJECTION (attempt {fc_attempt + 1}/"
+                        f"{config.max_retries}): Your previous response "
+                        f"contained fabricated facts or contradictions with "
+                        f"earlier statements:\n{claims_lines}\n\n"
+                        f"Please restate your position without these issues. "
+                        f"Only include information you can verify and that is "
+                        f"consistent with what you have already said."
+                    )
+                    print(
+                        f"  [turn {turn_number} {speaker_name}] "
+                        f"fact-check fail — retry {fc_attempt + 1}/"
+                        f"{config.max_retries}",
+                        flush=True,
+                    )
+                    try:
+                        retry_raw = session.send(rejection_msg)
+                        retry_dict = self._parse_turn_response(retry_raw)
+                        retry_dict["speaker"] = speaker_name
+                        retry_dict["role"] = speaker_role
+                        retry_dict["turn"] = turn_number
+                        event_dict = retry_dict
+                        turn_text = event_dict.get("text") or ""
+                    except Exception as exc:
+                        logger.warning(
+                            "DebateConductor: fact-check retry send failed "
+                            "for turn %d %s: %r", turn_number, speaker_name, exc,
+                        )
+                        break
+                else:
+                    # Exhausted retries — publish with warning.
+                    for r in blocking:
+                        self._length_warnings.append(
+                            f"[turn_{turn_number}_{speaker_name}] FACT_CHECK_WARN: "
+                            f"Published with unresolved claim after "
+                            f"{config.max_retries} attempts: {r.claim}"
+                        )
+                    print(
+                        f"  [turn {turn_number} {speaker_name}] "
+                        f"fact-check EXHAUSTED — "
+                        f"{len(blocking)} issue(s) remain",
+                        flush=True,
+                    )
+                    break
+
         return event_dict
+
+    def _build_prior_context(self) -> str | None:
+        """Return transcript turns formatted for intra-show consistency checking.
+
+        Formats the debate transcript as labeled speaker turns so the
+        consistency verifier can apply the same-speaker rule correctly
+        (only flag when the SAME speaker asserts incompatible facts).
+        Returns ``None`` when the transcript is empty (first turn).
+        """
+        if not self._transcript:
+            return None
+        lines = [
+            f"{t['speaker']}: {t['text']}"
+            for t in self._transcript
+        ]
+        return "\n".join(lines)
 
     def _build_turn_context(
         self,
@@ -1092,7 +1266,7 @@ class DebateConductor(BaseConductor):
         if budget_status:
             parts.append(budget_status)
 
-        # ── Hard length contract for THIS turn (Phase 1+2) ───────────
+        # ── Hard length contract for THIS turn ───────────
         # Wrap-up turns and the moderator's opening get a shorter target.
         turn_target = target_words
         if wrapping_up:

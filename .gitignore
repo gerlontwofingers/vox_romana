@@ -168,6 +168,11 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# vox_romana runtime artifacts (stored in VOX_ROMANA_DATA_DIR, not the repo)
+output/
+data/
+piper-voices/
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
@@ -211,5 +216,11 @@ data/
 output/
 prompts/
 
+# User-local path configuration (copy from vox_romana.example.yaml)
+vox_romana.yaml
+
 # ignore output folder todo: creae a whole external place for all this
 /output/
+
+# ignore voices folder, which contains generated audio files that are large and can be regenerated
+/piper-voices/

@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import json
 
+from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
 from ...core.search import BaseSearchProvider
 from .config import (
     AudiobookConfig,
     ChapterConfig,
-    DirectorBrief,
+    AudiobookDirectorBrief,
     NarratorConfig,
 )
 
@@ -76,9 +77,16 @@ text outside the JSON block.
 
 RULES:
 - Plan enough chapters for the scope described. A short story: 3-5 chapters.
-  A novella: 8-15. A full novel: 20-40. Scale to match the brief.
-- If the user specifies a word count or duration, plan enough chapters and
-  beats to fill it. Each beat produces ~150-250 words of narration.
+  A novella: 8-15. A full novel: 20-60. Scale to match the brief.
+- If the user specifies a word count or duration, the TARGET LENGTH block
+  takes precedence over these defaults — scale chapters AND beats per chapter
+  up as needed to reach the word budget. Each beat produces ~150-250 words
+  of narration (~200 on average). Use this to derive your plan:
+      ideal_chapters   = max(3, target_words // 2000)
+      beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
+  A 74,000-word audiobook → ~37 chapters, ~10 beats each.
+  A 20,000-word novella  → ~10 chapters, ~10 beats each.
+  There is no upper cap on beats_per_chapter for long-form content.
 - Each chapter should have 2-6 key_points — these are the narrative beats
   the narrator will cover in order.
 - The first chapter should hook the reader. The last should resolve or conclude.
@@ -141,7 +149,7 @@ cadence, verbal habits, and narrative personality. Be specific and distinctive."
 """
 
 
-class AudiobookBootstrap:
+class AudiobookBootstrap(BaseShowBootstrap):
     """Orchestrates the brief-to-config bootstrap chain for audiobooks.
 
     Chain: brief → [Researcher] → Architect → Narrator profiler → Director → config
@@ -153,7 +161,7 @@ class AudiobookBootstrap:
         *,
         api_key: str | None = None,
     ) -> None:
-        self._client = client or DeepSeekClient(api_key=api_key)
+        super().__init__(client, api_key=api_key)
 
     def from_brief(
         self,
@@ -165,6 +173,7 @@ class AudiobookBootstrap:
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
         target_words: int | None = None,
+        memory=None,
     ) -> AudiobookConfig:
         """Run the full bootstrap chain: brief → fully populated AudiobookConfig.
 
@@ -184,11 +193,13 @@ class AudiobookBootstrap:
 
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
+            from ...core.search import build_research_provider
             from ..debates.researcher import DebateResearcher
-            if search_provider is None:
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
                 researcher = DebateResearcher(self._client)
             else:
-                researcher = DebateResearcher(self._client, search_provider)
+                researcher = DebateResearcher(self._client, effective_provider)
             reference_material = researcher.run(brief) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
@@ -208,9 +219,7 @@ class AudiobookBootstrap:
         config.director_brief = self._run_director(config)
 
         # ── Stage 4: Apply overrides ─────────────────────────────────
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        self._apply_overrides(config, overrides)
 
         return config
 
@@ -227,12 +236,22 @@ class AudiobookBootstrap:
         if reference_material:
             user_parts.append(f"\nREFERENCE MATERIAL:\n{reference_material}")
         if target_words:
+            # Derive chapter count and beats-per-chapter from the word budget
+            # so the architect gets explicit, non-contradicting targets.
+            # Formula mirrors what the system prompt documents:
+            #   ideal_chapters    = max(3, target_words // 2000)
+            #   beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
+            ideal_chapters = max(3, target_words // 2000)
+            beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
             user_parts.append(
                 f"\nTARGET LENGTH: {target_words:,} words. "
-                f"Plan enough chapters and beats to fill this — each beat "
-                f"produces ~150-250 words of narration. For a {target_words:,}-word "
-                f"audiobook, plan roughly {max(3, target_words // 500)} chapters "
-                f"with 2-4 beats each."
+                f"Plan approximately {ideal_chapters} chapters with "
+                f"~{beats_per_chapter} beats each "
+                f"({ideal_chapters} \u00d7 {beats_per_chapter} \u00d7 ~200 words/beat "
+                f"\u2248 {ideal_chapters * beats_per_chapter * 200:,} words). "
+                f"Adjust chapter count or beats-per-chapter as needed to reach "
+                f"the target — do NOT use fewer total beats than "
+                f"{ideal_chapters * beats_per_chapter}."
             )
 
         raw = self._client.chat(
@@ -355,7 +374,7 @@ class AudiobookBootstrap:
 
         return narrator
 
-    def _run_director(self, config: AudiobookConfig) -> DirectorBrief:
+    def _run_director(self, config: AudiobookConfig) -> AudiobookDirectorBrief:
         """Call the Director LLM to plan the narrative arc."""
         chapter_list = "\n".join(
             f"  {i+1}. {ch.title} ({ch.duration_hint}, {ch.tone or config.tone or 'neutral'})"
@@ -380,8 +399,8 @@ class AudiobookBootstrap:
 
         return self._parse_director_response(raw)
 
-    def _parse_director_response(self, raw_json: str) -> DirectorBrief:
-        """Parse the Director's JSON into a DirectorBrief."""
+    def _parse_director_response(self, raw_json: str) -> AudiobookDirectorBrief:
+        """Parse the Director's JSON into an AudiobookDirectorBrief."""
         cleaned = raw_json.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -401,7 +420,7 @@ class AudiobookBootstrap:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        return DirectorBrief(
+        return AudiobookDirectorBrief(
             narrative_arc=data.get("narrative_arc", ""),
             mood_progression=data.get("mood_progression", []),
             chapter_notes=data.get("chapter_notes"),

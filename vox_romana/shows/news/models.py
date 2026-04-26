@@ -4,7 +4,7 @@ NewsEvent is an alias for AudioEvent (same as DebateEvent — one universal
 event schema for all content types). The TTS renderer consumes AudioEvents
 generically regardless of show type.
 
-NewsSegment and MergedNewsShow mirror DebateChunk and MergedDebate but
+NewsSegment and MergedNewsShow mirror DebateSegment and MergedDebate but
 are shaped for a broadcast: ordered segments, each with a headline, events,
 and metadata.
 """
@@ -16,7 +16,8 @@ from typing import Any
 
 from ...core.models import AudioEvent
 
-# NewsEvent is the same universal AudioEvent used by debates.
+# Intentional re-export: type alias for readability within the news package.
+# AudioEvent is the canonical unified type in vox_romana.core.models.
 NewsEvent = AudioEvent
 
 
@@ -79,11 +80,14 @@ class MergedNewsShow:
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
+    language: str = "en"
+    series_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "show_id": self.show_id,
             "title": self.title,
+            "language": self.language,
             "segments": [s.to_dict() for s in self.segments],
             "events": [e.to_dict() for e in self.events],
             "anchors": list(self.anchors),
@@ -95,4 +99,5 @@ class MergedNewsShow:
             "voice_casting": self.voice_casting,
             "voice_hints": self.voice_hints,
             "tts_styles": self.tts_styles,
+            "series_id": self.series_id,
         }

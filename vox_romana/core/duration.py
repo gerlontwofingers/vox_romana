@@ -54,6 +54,18 @@ WPM_DEFAULTS: dict[str, int] = {
     "audiobook": 155,
 }
 
+# Per-engine WPM calibration. When the renderer engine is known at
+# planning time, these override the content-type WPM for word-budget
+# math. Calibrated from listening tests:
+#   - Kokoro: natural conversational pace, ~150 wpm
+#   - Piper:  slightly faster delivery on the same text, ~165 wpm
+#   - both:   midpoint, used when --engine both mixes the two
+WPM_BY_ENGINE: dict[str, int] = {
+    "kokoro": 150,
+    "piper": 165,
+    "both": 158,
+}
+
 # Fallback for unknown content types.
 _WPM_FALLBACK = 150
 
@@ -102,6 +114,8 @@ def estimate_total_words(
     duration_minutes: float,
     content_type: str = "debate",
     wpm: int | None = None,
+    *,
+    engine: str | None = None,
 ) -> int:
     """Estimate how many words are needed for a target duration.
 
@@ -109,11 +123,20 @@ def estimate_total_words(
         duration_minutes: Target show length in minutes.
         content_type:     Genre (selects default WPM).
         wpm:              Explicit WPM override.
+        engine:           When provided and ``wpm`` is not set, looks up
+                          a per-engine WPM (Piper runs faster than Kokoro)
+                          and overrides the content-type default. Pass
+                          ``"kokoro"``, ``"piper"``, or ``"both"``.
 
     Returns:
         Estimated word count (rounded to nearest integer).
     """
-    effective_wpm = wpm or get_wpm(content_type)
+    if wpm is not None:
+        effective_wpm = wpm
+    elif engine and engine in WPM_BY_ENGINE:
+        effective_wpm = WPM_BY_ENGINE[engine]
+    else:
+        effective_wpm = get_wpm(content_type)
     return round(duration_minutes * effective_wpm)
 
 
@@ -134,15 +157,55 @@ def tolerance_window(
     return (round(target_words - margin), round(target_words + margin))
 
 
+# ── Word-form number normalisation ───────────────────────────────────────────
+# Maps English word-form integers to their digit equivalents so that
+# parse_duration_from_text() can handle "three hour podcast" etc.
+# Range covers one–twelve — enough for any realistic episode length.
+
+_WORD_NUMBERS: dict[str, str] = {
+    "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8",
+    "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+    "fifteen": "15", "twenty": "20", "thirty": "30",
+    "forty": "40", "forty-five": "45", "fifty": "50", "sixty": "60",
+    "ninety": "90",
+}
+
+# Pre-compile once: matches any of the word-form numbers at a word boundary.
+_WORD_NUMBER_RE = re.compile(
+    r"\b(" + "|".join(_WORD_NUMBERS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_word_numbers(text: str) -> str:
+    """Replace English word-form numbers with digits.
+
+    "three hour podcast" → "3 hour podcast"
+    "a twelve minute segment" → "a 12 minute segment"
+
+    Only handles one–twelve (sufficient for any realistic duration).
+    Case-insensitive; preserves the rest of the string unchanged.
+    """
+    return _WORD_NUMBER_RE.sub(
+        lambda m: _WORD_NUMBERS[m.group(1).lower()], text
+    )
+
+
 def parse_duration_from_text(text: str) -> float | None:
     """Extract a duration in minutes from natural language.
 
-    Looks for patterns like "30 minute podcast", "1 hour debate",
-    "45-minute show", "a 20 min episode", "1.5 hour audiobook".
+    Handles both digit and word-form numbers:
+      "30 minute podcast", "1 hour debate", "45-minute show",
+      "a 20 min episode", "1.5 hour audiobook",
+      "three hour podcast", "a twelve minute segment".
 
     Returns:
         Duration in minutes, or None if nothing found.
     """
+    # Normalise word-form numbers before the digit regexes run.
+    text = _normalize_word_numbers(text)
+
     # Try "N hour(s)" first (may also have minutes after it)
     hour_pat = re.compile(
         r"(\d+(?:\.\d+)?)\s*[-–]?\s*hours?\b",
@@ -191,6 +254,14 @@ class SpeechRateAdvisor:
 
     def __init__(self, catalog: Catalog | None = None) -> None:
         self._catalog = catalog
+        # Cache the WPMModel so we don't hit disk on every effective_wpm() call.
+        self._wpm_model = None
+        if catalog is not None:
+            try:
+                from vox_romana.data.wpm_model import WPMModel
+                self._wpm_model = WPMModel.load()
+            except Exception:
+                pass
 
     def effective_wpm(self, content_type: str, word_count: int | None = None) -> int:
         """Return the best WPM estimate for a content type.
@@ -213,12 +284,10 @@ class SpeechRateAdvisor:
             Best available WPM estimate (integer).
         """
         # Try ML model first (requires sklearn + enough data).
-        if self._catalog is not None and word_count is not None:
+        if self._wpm_model is not None and word_count is not None:
             try:
-                from vox_romana.data.wpm_model import WPMModel
-                model = WPMModel.load()
-                if model is not None and model.n_samples >= 5:
-                    prediction = model.predict(content_type, word_count)
+                if self._wpm_model.n_samples >= 5:
+                    prediction = self._wpm_model.predict(content_type, word_count)
                     if prediction is not None:
                         return round(prediction)
             except Exception:
@@ -238,7 +307,11 @@ class SpeechRateAdvisor:
         content_type: str = "debate",
     ) -> int:
         """Estimate word count using the best available WPM."""
-        wpm = self.effective_wpm(content_type)
+        # Two-pass: use static/catalog WPM for an approximate word count,
+        # then feed that count into the ML model for refinement (if available).
+        wpm_base = self.effective_wpm(content_type)
+        approx_words = round(duration_minutes * wpm_base)
+        wpm = self.effective_wpm(content_type, word_count=approx_words)
         return round(duration_minutes * wpm)
 
     def tolerance_window(

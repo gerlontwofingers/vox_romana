@@ -29,8 +29,9 @@ from .bootstrap import AudiobookBootstrap
 from .conductor import AudiobookConductor, AudiobookConductorResult
 from .config import (
     AudiobookConfig,
+    AudiobookDirectorBrief,
     ChapterConfig,
-    DirectorBrief,
+    DirectorBrief,  # backwards-compat alias for AudiobookDirectorBrief
     NarratorConfig,
 )
 from .models import AudiobookChapter, AudiobookEvent, MergedAudiobook
@@ -42,10 +43,11 @@ __all__ = [
     "AudiobookConductor",
     "AudiobookConductorResult",
     "AudiobookConfig",
+    "AudiobookDirectorBrief",
     "AudiobookEvent",
     "AudiobookSerializer",
     "ChapterConfig",
-    "DirectorBrief",
+    "DirectorBrief",  # backwards-compat alias for AudiobookDirectorBrief
     "MergedAudiobook",
     "NarratorConfig",
 ]

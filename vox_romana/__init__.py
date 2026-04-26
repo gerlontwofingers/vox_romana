@@ -64,11 +64,13 @@ from .shows.debates import (
     DebatePipeline,
     DebateProfileBuilder,
     DebateResearcher,
+    DebateDirectorBrief,
+    DebateSegment,
     DebateSerializer,
     DebateTemplate01Parser,
     DebateTemplate02Parser,
     DebateValidator,
-    DirectorBrief,
+    DirectorBrief,  # backwards-compat alias for DebateDirectorBrief
     MergedDebate,
     ModeratorConfig,
     ParsedDebateDocument,
@@ -84,16 +86,12 @@ from .shows.news import (
     NewsConductor,
     NewsConductorResult,
     NewsConfig,
+    NewsDirectorBrief,
     NewsEvent,
     NewsSegment,
     NewsSerializer,
     SegmentConfig,
 )
-
-# Avoid name clash — debate's DirectorBrief is already imported.
-# News uses its own DirectorBrief from .shows.news.config.
-# Users import show-specific ones from the subpackage when needed.
-from .shows.news.config import DirectorBrief as NewsDirectorBrief
 
 # ── Audiobooks (the third show type) ──────────────────────────────────────
 from .shows.audiobooks import (
@@ -102,13 +100,13 @@ from .shows.audiobooks import (
     AudiobookConductor,
     AudiobookConductorResult,
     AudiobookConfig,
+    AudiobookDirectorBrief,
     AudiobookEvent,
     AudiobookSerializer,
     MergedAudiobook,
     NarratorConfig,
 )
 from .shows.audiobooks.config import ChapterConfig as AudiobookChapterConfig
-from .shows.audiobooks.config import DirectorBrief as AudiobookDirectorBrief
 
 # ── Podcasts (the fourth show type) ───────────────────────────────────────
 from .shows.podcast import (
@@ -152,7 +150,8 @@ __all__ = [
     "AudienceConfig",
     "DebateArchitect",
     "DebateBootstrap",
-    "DebateChunk",
+    "DebateChunk",  # backwards-compat alias for DebateSegment
+    "DebateSegment",
     "DebateConductor",
     "DebateConductorResult",
     "DebateConfig",
@@ -169,7 +168,8 @@ __all__ = [
     "DebateTemplate01Parser",
     "DebateTemplate02Parser",
     "DebateValidator",
-    "DirectorBrief",
+    "DebateDirectorBrief",
+    "DirectorBrief",  # backwards-compat alias for DebateDirectorBrief
     "MergedDebate",
     "ModeratorConfig",
     "ParsedDebateDocument",

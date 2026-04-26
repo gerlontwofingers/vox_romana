@@ -94,12 +94,109 @@ EXAMPLE:
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE DIRECTION STRIPPING
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Matches any (parenthetical) block in utterance text, e.g.:
+#   (laughs)  (dramatic pause)  (Leaning in, voice low)
+# These are LLM-generated performance directions. Standard TTS engines
+# have no way to act on them, so they end up spoken literally.
+_STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
+
+
+def _is_stage_direction(content: str) -> bool:
+    """Return True if a parenthetical looks like a performance direction.
+
+    Stage directions contain no digits and no acronyms (two or more
+    consecutive uppercase letters).  Numeric asides and acronym expansions
+    are treated as prose and left untouched.  Long prose explanations with
+    conjunctions and verb phrases are also left untouched.
+    """
+    stripped = content.strip()
+    # Numeric asides: "(3.5 million)", "(down 12%)"
+    if re.search(r'\d', stripped):
+        return False
+    # Acronym expansions: "(UBI)", "(GDP growth)"
+    if re.search(r'[A-Z]{2,}', stripped):
+        return False
+    # Long prose parentheticals with conjunctions/relative clauses are not cues
+    if len(stripped.split()) > 15:
+        return False
+    return True
+
+
+def strip_stage_directions(text: str) -> str:
+    """Remove parenthetical stage directions from TTS text.
+
+    Only strips parentheticals that look like performance cues (short,
+    no digits, no acronyms).  Prose parentheticals such as acronym
+    expansions ``(UBI)`` or numeric asides ``(down 3%)`` are preserved.
+
+    Strips all matching (parenthetical) blocks regardless of their position in
+    the string, then collapses any resulting runs of whitespace.  Adjacent
+    ellipsis and em-dash artifacts created by the removal are also merged.
+
+    Examples::
+
+        >>> strip_stage_directions("(laughs) Well, that's funny.")
+        "Well, that's funny."
+        >>> strip_stage_directions("Let me tell you... (dramatic pause) Gold.")
+        'Let me tell you... Gold.'
+        >>> strip_stage_directions("Just plain dialogue.")
+        'Just plain dialogue.'
+        >>> strip_stage_directions("Universal Basic Income (UBI) proposals")
+        'Universal Basic Income (UBI) proposals'
+    """
+    def _replace(m: re.Match) -> str:
+        if _is_stage_direction(m.group(1)):
+            return ''
+        return m.group(0)  # keep prose parentheticals intact
+
+    cleaned = _STAGE_DIR_RE.sub(_replace, text)
+    # Collapse ALL whitespace runs — including \n from removed inline directions
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    # Merge adjacent-ellipsis artifacts left by "... (direction) ...": "... ..." → "..."
+    cleaned = re.sub(r'\.\.\.[ \t]*\.\.\.', '...', cleaned)
+    # Merge adjacent em-dash artifacts left by "—(direction)—": "——" or "— —" → "—"
+    cleaned = re.sub(r'\u2014[ \t]*\u2014', '\u2014', cleaned)
+    return cleaned.strip()
+
+
+# Matches Markdown emphasis markers: *word*, **word**, _word_, __word__
+# These are written by the LLM for emphasis but have no meaning in TTS —
+# the asterisks/underscores are read aloud literally by the speech engine.
+_MD_EMPHASIS_RE = re.compile(r'(\*{1,2}|_{1,2})(.+?)\1')
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    """Remove Markdown emphasis markers from TTS text, keeping the inner word.
+
+    Strips *word*, **word**, _word_, and __word__ patterns, leaving the
+    emphasised text intact without the surrounding markers.
+
+    Examples::
+
+        >>> strip_markdown_emphasis("anything still works to come back *to*")
+        'anything still works to come back to'
+        >>> strip_markdown_emphasis("a *critiquing* son")
+        'a critiquing son'
+        >>> strip_markdown_emphasis("Plain text unchanged.")
+        'Plain text unchanged.'
+    """
+    return _MD_EMPHASIS_RE.sub(r'\2', text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -159,14 +256,33 @@ class TTSRenderer:
         engine: BaseTTSEngine,
         *,
         voice_map: dict[str, VoiceConfig] | None = None,
+        strip_directions: bool = False,
+        registry: "VoiceRegistry | None" = None,
+        series_key: str | None = None,
+        exclude_whispery: bool = False,
     ) -> None:
         """Initialize the renderer.
 
         Args:
-            engine:    Any BaseTTSEngine implementation (Piper, Kokoro, etc.).
-            voice_map: Optional manual speaker→voice mapping. If not provided,
-                       voices are auto-assigned from the engine's available
-                       voices when render() is called.
+            engine:           Any BaseTTSEngine implementation (Piper, Kokoro, etc.).
+            voice_map:        Optional manual speaker→voice mapping. If not provided,
+                              voices are auto-assigned from the engine's available
+                              voices when render() is called.
+            strip_directions: If True, strip parenthetical stage directions
+                              (e.g. "(laughs)", "(dramatic pause)") from each
+                              utterance's text before synthesis.  The original
+                              JSON is never modified — only the text sent to the
+                              TTS engine is cleaned.
+            registry:         Optional VoiceRegistry for cross-episode character
+                              consistency and global voice-usage tracking. When
+                              supplied, recurring characters in the same series
+                              are locked to the same voice and the gender-only
+                              fallback prefers least-used voices. When None,
+                              registry features are disabled (test-friendly).
+            series_key:       Override for the series identifier used for
+                              registry lookups. When None, ``render()`` derives
+                              one from the input JSON (series_id → show_name →
+                              "global").
 
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
@@ -174,6 +290,10 @@ class TTSRenderer:
         """
         self._engine = engine
         self._voice_map = voice_map or {}
+        self._strip_directions = strip_directions
+        self._registry = registry
+        self._series_key_override = series_key
+        self._exclude_whispery = exclude_whispery
 
     def render(
         self,
@@ -204,6 +324,9 @@ class TTSRenderer:
         output_path = Path(output_path)
         events = debate_data.get("events", [])
         participants = debate_data.get("participants", [])
+        # The show's language drives voice selection and is passed to every
+        # synthesize() call so the engine can validate / route appropriately.
+        language = debate_data.get("language", "en")
 
         # ── STEP 1: Assign voices to speakers ────────────────────────
         # Build the voice map (auto-assign if not manually provided).
@@ -212,7 +335,32 @@ class TTSRenderer:
         voice_casting = debate_data.get("voice_casting", {})
         voice_hints = debate_data.get("voice_hints", {})
         tts_styles = debate_data.get("tts_styles", {})
-        voice_map = self._build_voice_map(speaker_names, voice_casting, voice_hints)
+        _title = debate_data.get("title", "")
+        _seed = sum(ord(c) for c in _title[:32]) if _title else 0
+
+        # Resolve the series key for registry lookups. Priority:
+        # explicit constructor override > JSON series_id > JSON show_name > "global".
+        series_key = (
+            self._series_key_override
+            or debate_data.get("series_id")
+            or debate_data.get("show_name")
+            or "global"
+        )
+
+        voice_map = self._build_voice_map(
+            speaker_names, voice_casting, voice_hints,
+            language=language, seed=_seed,
+            registry=self._registry, series_key=series_key,
+        )
+
+        # Build a VoiceConfig map covering all auto-assigned speakers so that
+        # engine-specific extras (e.g. Piper speaker-id) are populated even
+        # when the voice was chosen automatically.  Manual overrides from
+        # self._voice_map (which carry extras set by the caller) take precedence.
+        voice_cfg_map: dict[str, VoiceConfig] = {
+            speaker: self._voice_map.get(speaker, VoiceConfig(voice_id=vid))
+            for speaker, vid in voice_map.items()
+        }
 
         if not quiet:
             print(f"  Voice assignments:")
@@ -231,12 +379,25 @@ class TTSRenderer:
             text = event.get("text", "")
             event_kind = event.get("event_kind", "utterance")
 
+            # Strip parenthetical stage directions before synthesis if enabled.
+            # We do this before the empty-text guard so that an utterance that
+            # consists *only* of a direction (e.g. "(pause)") is also skipped.
+            if self._strip_directions:
+                text = strip_stage_directions(text)
+
+            # Always strip Markdown emphasis markers (*word*, _word_, etc.).
+            # TTS engines have no concept of Markdown — the asterisks are read
+            # aloud literally.  The inner word is preserved.
+            text = strip_markdown_emphasis(text)
+
             if not text or not text.strip() or event_kind not in SPOKEN_EVENT_KINDS:
                 skipped += 1
                 continue
 
             speaker = event.get("speaker_name", "Unknown")
-            voice_id = voice_map.get(speaker, self._default_voice())
+            voice_id = voice_map.get(speaker)
+            if voice_id is None:
+                voice_id = self._default_voice()
 
             # ── Build the emotion hint from event metadata ────────
             # We combine tone, pace, volume, and nonverbal cues into
@@ -250,6 +411,7 @@ class TTSRenderer:
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))
+            pause_after = mixer.resolve_pause(event.get("pause_after")) if event.get("pause_after") else 0
             overlap = 0
             if event.get("interruption"):
                 overlap = DEFAULT_OVERLAP_MS
@@ -259,7 +421,7 @@ class TTSRenderer:
                 pause_before = 0
 
             # Get engine-specific extras from the voice config.
-            voice_cfg = self._voice_map.get(speaker, VoiceConfig(voice_id=voice_id))
+            voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
             extras = voice_cfg.extras
 
             # ── Synthesize! ───────────────────────────────────────
@@ -274,6 +436,7 @@ class TTSRenderer:
                     voice=voice_id,
                     emotion=emotion,
                     speed=speed,
+                    language=language,
                     **extras,
                 )
 
@@ -281,10 +444,22 @@ class TTSRenderer:
                     result.audio,
                     sample_rate=result.sample_rate,
                     pause_before=pause_before,
+                    pause_after=pause_after,
                     overlap=overlap,
                     speaker=speaker,
                 )
                 rendered += 1
+
+                # Bump the voice's global usage counter only after a
+                # successful synthesis.  This way, voices that fail to
+                # render (missing model, engine error, etc.) don't get
+                # penalised by the gender-fallback's least-used picker.
+                if self._registry is not None and voice_id and voice_id != "default":
+                    try:
+                        self._registry.record_usage(voice_id)
+                    except Exception:
+                        # Registry failures must never break a render.
+                        pass
 
             except Exception as e:
                 # If one clip fails, skip it rather than crashing the
@@ -300,7 +475,7 @@ class TTSRenderer:
             print(f"\n  Mixing {rendered} clips...")
 
         final_path = mixer.export(output_path, format=format, normalize=normalize)
-        duration_ms = mixer.duration_ms
+        duration_ms = mixer.last_mix_duration_ms or mixer.duration_ms
 
         return RenderResult(
             output_path=final_path,
@@ -376,17 +551,29 @@ class TTSRenderer:
         speaker_names: list[str],
         voice_casting: dict[str, str] | None = None,
         voice_hints: dict[str, str] | None = None,
+        *,
+        language: str = "en",
+        seed: int = 0,
+        registry: "VoiceRegistry | None" = None,
+        series_key: str | None = None,
     ) -> dict[str, str]:
         """Build a speaker→voice_id mapping.
 
         Priority order:
         1. Manual voice_map (passed to TTSRenderer constructor).
-        2. Catalog-matched voice using voice_hints metadata. If any
+        2. Registry lookup — lock recurring characters to their previously
+           assigned voice within ``series_key`` (when registry is provided).
+        3. Catalog-matched voice using voice_hints metadata. If any
            speaker has a voice_hint, the catalog's ``match_voices_for_cast``
            assigns distinct voices based on hint tag overlap.
-        3. Gender-aware assignment using voice_casting metadata from the
-           show JSON (maps speaker names to "male"/"female").
-        4. Round-robin through available voices (fallback).
+        4. Gender-aware assignment using voice_casting metadata from the
+           show JSON (maps speaker names to "male"/"female"), preferring
+           least-used voices when a registry is provided.
+        5. Round-robin through available voices (fallback).
+
+        After assignment, every newly chosen voice is written back to the
+        registry (if any) so future renders honor the lock and so the
+        usage-count-based fallback distributes work across the full pool.
 
         Args:
             speaker_names:  Speaker names in order of first appearance.
@@ -394,6 +581,11 @@ class TTSRenderer:
                             strings ("male" or "female") from the show JSON.
             voice_hints:    Optional dict mapping speaker names to natural-
                             language casting notes for catalog matching.
+            language:       BCP-47 code for the show. When non-English on a
+                            Piper backend, the candidate voice pool is
+                            pre-filtered to voices whose id encodes that
+                            language; catalog matching is skipped (the
+                            built-in catalogs only cover English voices).
 
         Returns:
             Dict mapping every speaker name to a voice_id string.
@@ -403,15 +595,83 @@ class TTSRenderer:
         hints = voice_hints or {}
         result: dict[str, str] = {}
 
+        # Detect which engine is active and pick the right catalog.
+        from .engine import BaseTTSEngine
+        from .voice_catalog import (
+            KOKORO_VOICE_CATALOG,
+            PIPER_VOICE_CATALOG,
+            UNIFIED_VOICE_CATALOG,
+        )
+
+        try:
+            from .engines.piper_engine import PiperEngine, _lang_from_voice_id
+            _is_piper = isinstance(self._engine, PiperEngine)
+        except Exception:
+            _is_piper = False
+            _lang_from_voice_id = lambda v: None  # type: ignore[assignment]
+
+        try:
+            from .engines.multi_engine import MultiEngine
+            _is_multi = isinstance(self._engine, MultiEngine)
+        except Exception:
+            _is_multi = False
+
+        # ── Filter the voice pool by language ─────────────────────────
+        # For Piper (and MultiEngine, which delegates to Piper for non-en),
+        # restrict the candidate voices to those whose id encodes the
+        # requested language. The built-in catalogs are English-only, so
+        # we skip catalog matching entirely for non-English shows.
+        skip_catalog = False
+        if language != "en" and (_is_piper or _is_multi):
+            available = [
+                v for v in available
+                if _lang_from_voice_id(v) == language
+            ]
+            skip_catalog = True
+
+        if _is_multi:
+            # Both Kokoro + Piper voices are valid candidates; the engine
+            # will route synthesis to the right backend based on voice_id.
+            active_catalog = UNIFIED_VOICE_CATALOG
+        elif _is_piper:
+            active_catalog = PIPER_VOICE_CATALOG
+        else:
+            active_catalog = KOKORO_VOICE_CATALOG
+
         # ── Manual overrides first ────────────────────────────────────
         for name in speaker_names:
             if name in self._voice_map:
                 result[name] = self._voice_map[name].voice_id
 
+        # ── Registry lookup: lock recurring characters ──────────────
+        # If we have a registry and the previously assigned voice is still
+        # in the available pool, reuse it so the same character keeps the
+        # same voice across episodes within the series.
+        if registry is not None and series_key:
+            available_set = set(available)
+            for name in speaker_names:
+                if name in result:
+                    continue
+                try:
+                    locked = registry.resolve(name, series_key)
+                except Exception:
+                    locked = None
+                if locked and locked in available_set:
+                    result[name] = locked
+
+        # Snapshot global usage counts once — used by both the catalog
+        # matcher and the gender-only fallback to prefer least-used voices.
+        usage_counts: dict[str, int] = {}
+        if registry is not None:
+            try:
+                usage_counts = registry.usage_counts()
+            except Exception:
+                usage_counts = {}
+
         # ── Catalog matching (when any speaker has a voice_hint) ──────
         # Build a cast dict for unassigned speakers that have hints.
         remaining = [n for n in speaker_names if n not in result]
-        if remaining and any(n in hints for n in remaining):
+        if not skip_catalog and remaining and any(n in hints for n in remaining):
             from .voice_catalog import match_voices_for_cast
 
             cast_info: dict[str, dict] = {}
@@ -423,21 +683,82 @@ class TTSRenderer:
                     info["voice_hint"] = hints[name]
                 cast_info[name] = info
 
-            # Catalog assigns unique voices for the entire cast.
-            catalog_map = match_voices_for_cast(cast_info)
+            # Catalog assigns unique voices for the entire cast. Voices
+            # already locked by the registry must not be reassigned.
+            already_used = set(result.values())
+            catalog_map = match_voices_for_cast(
+                cast_info,
+                catalog=active_catalog,
+                usage_counts=usage_counts,
+                exclude_whispery=self._exclude_whispery,
+            )
             for name, voice_id in catalog_map.items():
-                if voice_id and name not in result:
+                if voice_id and name not in result and voice_id not in already_used:
                     result[name] = voice_id
+                    already_used.add(voice_id)
 
         # ── Gender-only fallback for any still-unassigned speakers ────
-        # Partition voices by gender using the Kokoro naming convention:
-        #   af_* / bf_* = female voices
-        #   am_* / bm_* = male voices
-        male_voices = [v for v in available if v[:2] in ("am", "bm")]
-        female_voices = [v for v in available if v[:2] in ("af", "bf")]
-        male_idx = 0
-        female_idx = 0
-        fallback_idx = 0
+        # For Piper voices, the naming convention is:
+        #   en_US-lessac-high, en_US-ryan-high, en_GB-cori-high, etc.
+        # We use the catalog to split by gender; fall back to keyword
+        # heuristics for voices not in the catalog.
+        if _is_multi:
+            # Drive purely off the catalog — it covers every voice in
+            # both Kokoro and Piper, so no keyword heuristics needed.
+            male_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "male"
+            ]
+            female_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "female"
+            ]
+        elif _is_piper:
+            male_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "male"
+                or (v not in active_catalog and any(
+                    kw in v for kw in ("ryan", "joe", "danny", "norman", "bryce",
+                                       "john", "hfc_male", "sam", "alan",
+                                       "northern_english_male")
+                ))
+            ]
+            female_voices = [
+                v for v in available
+                if v in active_catalog and active_catalog[v].gender == "female"
+                or (v not in active_catalog and any(
+                    kw in v for kw in ("lessac", "amy", "kathleen", "kristin",
+                                       "hfc_female", "ljspeech", "alba", "cori",
+                                       "jenny_dioco", "southern_english_female")
+                ))
+            ]
+        else:
+            # Kokoro naming convention: af_* / bf_* = female; am_* / bm_* = male
+            male_voices = [v for v in available if v[:2] in ("am", "bm")]
+            female_voices = [v for v in available if v[:2] in ("af", "bf")]
+
+        # Filter whispery voices from all pools when requested.
+        if self._exclude_whispery:
+            def _not_whispery(v: str) -> bool:
+                desc = active_catalog.get(v)
+                return desc is None or not desc.is_whispery
+            male_voices = [v for v in male_voices if _not_whispery(v)]
+            female_voices = [v for v in female_voices if _not_whispery(v)]
+            available = [v for v in available if _not_whispery(v)]
+
+        # When usage counts are available, sort each gender pool by
+        # ascending usage so the next unassigned speaker draws from the
+        # least-used voices first. Python's sort is stable, so voices
+        # with equal counts keep their original (catalog) order — this
+        # makes behavior deterministic and reproducible.
+        if usage_counts:
+            male_voices = sorted(male_voices, key=lambda v: usage_counts.get(v, 0))
+            female_voices = sorted(female_voices, key=lambda v: usage_counts.get(v, 0))
+            available = sorted(available, key=lambda v: usage_counts.get(v, 0))
+
+        male_idx = seed % len(male_voices) if male_voices else 0
+        female_idx = seed % len(female_voices) if female_voices else 0
+        fallback_idx = seed % len(available) if available else 0
 
         for name in speaker_names:
             if name in result:
@@ -459,6 +780,22 @@ class TTSRenderer:
                 fallback_idx += 1
             else:
                 result[name] = "default"
+
+        # ── Persist assignments to the registry ──────────────────
+        # register() is idempotent: it locks the voice on first sight and
+        # only refreshes last_seen on subsequent calls (never overwrites).
+        # NOTE: usage counts are NOT bumped here — only after a clip is
+        # successfully synthesized (see the main render loop).  Counting
+        # at assignment time would penalise voices for failed renders.
+        if registry is not None and series_key:
+            for name, voice_id in result.items():
+                if not voice_id or voice_id == "default":
+                    continue
+                try:
+                    registry.register(name, voice_id, series_key)
+                except Exception:
+                    # Registry failures must never break a render.
+                    pass
 
         return result
 

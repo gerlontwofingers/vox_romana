@@ -66,7 +66,8 @@ class MemoryTrainer:
         lm_base: str = "Qwen/Qwen2-1.5B",
     ) -> None:
         self._catalog = catalog
-        root = Path(memory_root) if memory_root else Path("data/memory")
+        from vox_romana.core.paths import MEMORY_ROOT as _MEMORY_ROOT
+        root = Path(memory_root) if memory_root else _MEMORY_ROOT
         self._corpus_root = root / "corpus"
         self._document_dir = root / "documents"
         self._encoder_dir = root / "encoder"

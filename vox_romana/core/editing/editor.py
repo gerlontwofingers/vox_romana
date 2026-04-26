@@ -21,9 +21,14 @@ USAGE:
 from __future__ import annotations
 
 import json
+import logging
 
+from ..config import ContentMode
+from ..fact_checker import FactChecker
 from ..session import AgentSession
 from .models import EditorVerdict, OutlineSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 EDITOR_SYSTEM_PROMPT = """\
@@ -74,8 +79,17 @@ class ChunkEditor:
     reviews are informed by earlier ones.
     """
 
-    def __init__(self, session: AgentSession) -> None:
+    def __init__(
+        self,
+        session: AgentSession,
+        fact_checker: FactChecker | None = None,
+        reference_material: str | None = None,
+        content_mode: ContentMode = "factual",
+    ) -> None:
         self._session = session
+        self._fact_checker = fact_checker
+        self._reference_material = reference_material
+        self._content_mode = content_mode
 
     @property
     def session(self) -> AgentSession:
@@ -86,13 +100,18 @@ class ChunkEditor:
         chunk_text: str,
         outline_snapshot: OutlineSnapshot,
         chunk_id: str = "",
+        prior_context: str | None = None,
     ) -> EditorVerdict:
         """Review a chunk and return a verdict.
 
         Args:
-            chunk_text: The full text of the generated chunk.
+            chunk_text:       The full text of the generated chunk.
             outline_snapshot: Current outline version for context.
-            chunk_id: Identifier for the chunk being reviewed.
+            chunk_id:         Identifier for the chunk being reviewed.
+            prior_context:    Optional concatenated text of earlier approved
+                              segments/turns/chapters in this same show.
+                              Passed to the FactChecker for intra-show
+                              consistency checking.
 
         Returns:
             EditorVerdict with status, issues, and recommendations.
@@ -105,9 +124,84 @@ class ChunkEditor:
         )
 
         raw_response = self._session.send(prompt)
-        return self._parse_verdict(
+        verdict = self._parse_verdict(
             raw_response, chunk_id, outline_snapshot.version
         )
+
+        # ── Fact-check hook ──────────────────────────────────────────
+        # Blocking behaviour depends on content_mode:
+        #   factual             — fabricated AND contradicts_prior both BLOCK
+        #   fictional-universe  — fabricated / contradicts_prior become WARNINGS
+        #                          (CANON_WARN / CANON_CONTRADICTION labels),
+        #                          verdict.status is never flipped to "fail"
+        #   pure-fiction        — FactChecker returns empty report; nothing to do
+        if self._fact_checker is not None:
+            try:
+                report = self._fact_checker.check_chunk(
+                    chunk_text,
+                    chunk_id=chunk_id,
+                    reference_material=self._reference_material,
+                    mode="quick",
+                    content_mode=self._content_mode,
+                    prior_context=prior_context,
+                )
+
+                if self._content_mode == "fictional-universe":
+                    # Non-blocking: annotate but do not fail.
+                    for fc_result in report.fabricated_claims:
+                        verdict.issues.append(
+                            f"CANON_WARN: {fc_result.claim}"
+                        )
+                        verdict.recommendations.append(
+                            f"Canon note — {fc_result.claim}: {fc_result.explanation}"
+                        )
+                    for fc_result in report.contradicted_claims:
+                        verdict.issues.append(
+                            f"CANON_CONTRADICTION: {fc_result.claim}"
+                        )
+                        verdict.recommendations.append(
+                            f"Intra-show canon note — {fc_result.claim}: {fc_result.explanation}"
+                        )
+                    if report.fabricated_claims or report.contradicted_claims:
+                        logger.info(
+                            "ChunkEditor: chunk %r has %d canon warn(s) and "
+                            "%d intra-show canon contradiction(s) — non-blocking "
+                            "(fictional-universe mode).",
+                            chunk_id,
+                            len(report.fabricated_claims),
+                            len(report.contradicted_claims),
+                        )
+                else:
+                    # factual (or any unknown mode): block on both.
+                    blocking_claims = (
+                        [("FABRICATED", r) for r in report.fabricated_claims]
+                        + [("CONTRADICTION", r) for r in report.contradicted_claims]
+                    )
+                    if blocking_claims:
+                        verdict.status = "fail"
+                        for label, fc_result in blocking_claims:
+                            verdict.issues.append(
+                                f"{label}: {fc_result.claim}"
+                            )
+                            verdict.recommendations.append(
+                                f"Remove or correct — "
+                                f"{fc_result.claim}: {fc_result.explanation}"
+                            )
+                        logger.warning(
+                            "ChunkEditor: chunk %r failed fact-check — "
+                            "%d fabricated, %d contradicting prior.",
+                            chunk_id,
+                            len(report.fabricated_claims),
+                            len(report.contradicted_claims),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "ChunkEditor: fact-check raised unexpectedly for chunk %r: %r. "
+                    "Continuing without blocking.",
+                    chunk_id, exc,
+                )
+
+        return verdict
 
     def _parse_verdict(
         self, raw: str, chunk_id: str, outline_version: int
@@ -117,10 +211,8 @@ class ChunkEditor:
         Same robust JSON extraction as the existing conductors —
         handles markdown fences, preamble text, and garbage gracefully.
         """
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]).strip()
+        from ..json_retry import strip_json_fences
+        cleaned = strip_json_fences(raw)
 
         start = cleaned.find("{")
         end = cleaned.rfind("}")

@@ -6,14 +6,17 @@ into a ValidationReport so you can decide what to do about it.
 
 Each issue is either a WARNING (suspicious but survivable) or an ERROR
 (structurally broken — will probably break downstream).
+
+Generic primitives (``Severity``, ``ValidationIssue``, ``ValidationReport``)
+live in :mod:`vox_romana.core.validation` and are re-exported here for
+backward compatibility — older code can still
+``from vox_romana.shows.debates.validator import ValidationReport``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-
-from .models import DebateChunk, DebateEvent, ParsedDebateDocument
+from ...core.validation import Severity, ValidationIssue, ValidationReport
+from .models import DebateEvent, DebateSegment, ParsedDebateDocument
 
 # ── Allowed values ─────────────────────────────────────────────────────────
 # These mirror the template definitions. If you add a new template with new
@@ -51,55 +54,19 @@ ALLOWED_COMPLETION_STATUSES = frozenset({
 })
 
 
-# ── Report model ───────────────────────────────────────────────────────────
-
-class Severity(str, Enum):
-    WARNING = "warning"
-    ERROR = "error"
-
-
-@dataclass(slots=True)
-class ValidationIssue:
-    severity: Severity
-    chunk_order: int | None  # None for document-level issues
-    event_order: int | None  # None for chunk-level issues
-    field_name: str
-    message: str
-
-    def __str__(self) -> str:
-        location = ""
-        if self.chunk_order is not None:
-            location += f"chunk {self.chunk_order}"
-        if self.event_order is not None:
-            location += f" event {self.event_order}"
-        location = location.strip() or "document"
-        return f"[{self.severity.value.upper()}] {location} / {self.field_name}: {self.message}"
-
-
-@dataclass(slots=True)
-class ValidationReport:
-    debate_id: str | None = None
-    issues: list[ValidationIssue] = field(default_factory=list)
-
-    @property
-    def warnings(self) -> list[ValidationIssue]:
-        return [i for i in self.issues if i.severity == Severity.WARNING]
-
-    @property
-    def errors(self) -> list[ValidationIssue]:
-        return [i for i in self.issues if i.severity == Severity.ERROR]
-
-    @property
-    def is_valid(self) -> bool:
-        """True if there are zero errors. Warnings alone don't fail validation."""
-        return not self.errors
-
-    def summary(self) -> str:
-        lines = [f"Validation for '{self.debate_id or 'unknown'}': "
-                 f"{len(self.errors)} error(s), {len(self.warnings)} warning(s)"]
-        for issue in self.issues:
-            lines.append(f"  {issue}")
-        return "\n".join(lines)
+__all__ = [
+    "ALLOWED_COMPLETION_STATUSES",
+    "ALLOWED_EVENT_KINDS",
+    "ALLOWED_PACES",
+    "ALLOWED_PAUSES",
+    "ALLOWED_ROLES",
+    "ALLOWED_TONES",
+    "ALLOWED_VOLUMES",
+    "DebateValidator",
+    "Severity",
+    "ValidationIssue",
+    "ValidationReport",
+]
 
 
 # ── Validator ──────────────────────────────────────────────────────────────
@@ -168,7 +135,7 @@ class DebateValidator:
 
         return report
 
-    def _validate_chunk(self, chunk: DebateChunk, report: ValidationReport) -> None:
+    def _validate_chunk(self, chunk: DebateSegment, report: ValidationReport) -> None:
         co = chunk.chunk_order
 
         # Must have at least 2 participants
@@ -207,7 +174,7 @@ class DebateValidator:
     def _validate_event(
         self,
         event: DebateEvent,
-        chunk: DebateChunk,
+        chunk: DebateSegment,
         known_names: set[str],
         report: ValidationReport,
     ) -> None:

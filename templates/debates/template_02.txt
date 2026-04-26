@@ -1,5 +1,14 @@
 DEBATE TEMPLATE 02
 
+WHEN TO USE THIS TEMPLATE
+Use template_02 for dynamic, conversational debates where speakers interrupt,
+react, and overlap.  Best for:
+  - Heated political or panel debates with fast back-and-forth
+  - Debates where emotional intensity, interruptions, and reactions matter
+  - Situations where naturalistic, spontaneous dialogue is the goal
+For formal debates with long, structured speeches and minimal interruption,
+use template_01 instead.
+
 PURPOSE
 This template is designed for debates that should sound more dynamic, more interruptible, and more conversational than template_01 while still remaining easy to parse with Python.
 

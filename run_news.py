@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.core.client import DeepSeekClient
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.news.bootstrap import NewsBootstrap
 from vox_romana.shows.news.conductor import NewsConductor
 from vox_romana.shows.news.serializer import NewsSerializer
@@ -56,14 +57,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Directory to save the output JSON (default: output/)",
+        default=_OUTPUT_DIR,
+        help=f"Directory to save the output JSON (default: {_OUTPUT_DIR})",
     )
 
     parser.add_argument(
         "--research",
         action="store_true",
         help="Auto-research topics via Google before generating.",
+    )
+
+    parser.add_argument(
+        "--no-memory",
+        action="store_false",
+        dest="memory",
+        default=True,
+        help="Disable memory-first lookup during --research. By default, the "
+        "local knowledge base (Chroma + FTS5) is consulted before any web "
+        "search; use this flag to force web-only research.",
     )
 
     parser.add_argument(
@@ -78,6 +89,25 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Override broadcast tone (e.g., 'urgent', 'conversational').",
+    )
+
+    parser.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="off",
+        dest="fact_check",
+        help=(
+            "Fact-check mode (default: off). "
+            "'quick': verify against --reference-material. "
+            "'thorough': also web-searches unverifiable claims."
+        ),
+    )
+    parser.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material.",
     )
 
     parser.add_argument(
@@ -102,6 +132,20 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def main() -> None:
+    """Run the news show generation pipeline.
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` auto-routes to the
+        news pipeline when the brief is news-shaped. ``run_news.py`` will
+        be removed in a future release.
+    """
+    import warnings
+    warnings.warn(
+        "run_news.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the news pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     if not args.prompt.exists():
@@ -143,16 +187,39 @@ def main() -> None:
         auto_research=False,
     )
 
+    if args.fact_check != "off":
+        reference_text: str | None = None
+        if args.reference_material is not None:
+            if not args.reference_material.exists():
+                print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+                sys.exit(1)
+            reference_text = args.reference_material.read_text().strip()
+        bootstrap_kwargs["fact_check"] = args.fact_check
+        bootstrap_kwargs["reference_material"] = reference_text
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    else:
+        bootstrap_kwargs["fact_check"] = "off"
+
     if args.research:
+        bootstrap_kwargs["auto_research"] = True
+        if args.memory:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.memory.recall import MemoryRecall
+                catalog = Catalog()
+                memory = MemoryRecall(catalog=catalog)
+                bootstrap_kwargs["memory"] = memory
+                log("  Memory-first search: ON", quiet=args.quiet)
+            except Exception as e:
+                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
         try:
             from vox_romana.core.search import GoogleSearchProvider
             search_provider = GoogleSearchProvider()
-            bootstrap_kwargs["auto_research"] = True
             bootstrap_kwargs["search_provider"] = search_provider
             log("  Research mode ON — will search Google first", quiet=args.quiet)
         except ValueError as e:
-            print(f"  Warning: --research requested but Google keys missing: {e}")
-            print(f"  Continuing without research...")
+            log(f"  Warning: --research requested but Google keys missing: {e}", quiet=args.quiet)
+            log(f"  Continuing with memory + LLM only...", quiet=args.quiet)
 
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -186,7 +253,7 @@ def main() -> None:
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"news_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)

@@ -55,14 +55,21 @@ USAGE:
 
 from __future__ import annotations
 
+import datetime
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 
 from ...core.client import DeepSeekClient
+from .bootstrap import PodcastBootstrap
 from ...core.conductor import BaseConductor, ConductorResult
+from ...core.content_mode import ContentModeClassifier
+from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
 from .config import PodcastConfig, PodcastHostProfile, PodcastSegmentConfig
+
+logger = logging.getLogger(__name__)
 from .models import MergedPodcast, PodcastEvent, PodcastSegment
 from .prompts import (
     CONTEXT_SUMMARY_PROMPT,
@@ -79,11 +86,27 @@ from .prompts import (
 DEFAULT_RECENT_WINDOW = 6
 
 # Fallback word targets by duration_hint when no target_words is set.
+# These are also used as ceilings when the architect omits a target —
+# tuned to match the architect's per-segment budget (~1,100 words medium).
 DURATION_WORD_TARGETS = {
-    "short": 200,
-    "medium": 400,
-    "long": 800,
+    "short": 600,
+    "medium": 1100,
+    "long": 1600,
 }
+
+# When a segment comes back below this fraction of its word target,
+# the conductor sends one continuation request to bring it up to spec.
+SEGMENT_RETRY_THRESHOLD = 0.70
+
+# Continuation prompt sent when a segment came back too short. The {actual},
+# {target}, and {deficit} placeholders are filled by ``_run_turn_loop``.
+_SEGMENT_RETRY_TEMPLATE = (
+    "Your previous response was only {actual} words but the target was "
+    "{target}. Continue the conversation from EXACTLY where you left off "
+    "— add roughly {deficit} more words of substantive new content (more "
+    "detail, a counterpoint, an example, a quick anecdote). Do NOT recap. "
+    "Do NOT start over. Stay in the same JSON format."
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -115,7 +138,7 @@ class PodcastConductorResult(ConductorResult):
     podcast_segments: list[PodcastSegment] = field(default_factory=list)
     podcast_id: str = ""
 
-    def to_merged_podcast(self) -> MergedPodcast:
+    def to_merged_podcast(self, series_id: str | None = None) -> MergedPodcast:
         """Convert this result into a MergedPodcast for serialization.
 
         Bridges conductor output to the serialization format. Builds
@@ -149,6 +172,7 @@ class PodcastConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            series_id=series_id,
         )
 
 
@@ -174,6 +198,8 @@ class PodcastConductor(BaseConductor):
         _llm_calls:       Counter for direct LLM calls (non-session).
     """
 
+    _bootstrap_cls = PodcastBootstrap
+
     def __init__(
         self,
         config: PodcastConfig,
@@ -197,6 +223,8 @@ class PodcastConductor(BaseConductor):
         # Populated by _build_agents():
         self._system_prompt: str = ""
         self._session: AgentSession | None = None
+        self._fact_checker: FactChecker | None = None
+        self._content_mode: str = "factual"
 
         # Runtime state (reset each run):
         self._context_log: list[str] = []  # Segment summaries
@@ -204,6 +232,10 @@ class PodcastConductor(BaseConductor):
         self._director_note: str = ""
         self._llm_calls: int = 0
         self._podcast_id: str = ""
+        self._approved_segment_texts: list[str] = []
+        # Counter that lets _expansion_pass rotate through the original
+        # outline rather than fixating on the last segment's topic.
+        self._expansion_idx: int = 0
 
     @classmethod
     def from_brief(
@@ -217,34 +249,19 @@ class PodcastConductor(BaseConductor):
         api_key: str | None = None,
         target_words: int | None = None,
     ) -> PodcastConductor:
-        """Bootstrap a config from a brief and create a conductor.
+        """Bootstrap a PodcastConfig from a brief and create a conductor.
 
-        This is the "one-shot" convenience method: brief → config → conductor.
-
-        Args:
-            brief:              Natural language description of the podcast.
-            reference_material: Factual source text to ground the output.
-            fact_check:         "off", "quick", or "thorough".
-            overrides:          Dict of PodcastConfig field overrides.
-            client:             Shared DeepSeekClient.
-            api_key:            API key if client is not provided.
-            target_words:       Target word count for the episode.
-
-        Returns:
-            A PodcastConductor ready to run().
+        Thin wrapper over :meth:`BaseConductor.from_brief`.
         """
-        from .bootstrap import PodcastBootstrap
-
-        shared_client = client or DeepSeekClient(api_key=api_key)
-        bootstrap = PodcastBootstrap(client=shared_client)
-        config = bootstrap.from_brief(
+        return super().from_brief(  # type: ignore[return-value]
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
             overrides=overrides,
+            client=client,
+            api_key=api_key,
             target_words=target_words,
         )
-        return cls(config, client=shared_client)
 
     # ═══════════════════════════════════════════════════════════════════
     # BaseConductor interface implementation
@@ -271,6 +288,7 @@ class PodcastConductor(BaseConductor):
             topic=config.topic or config.brief[:200],
             tone=config.tone or "engaging",
             host_descriptions=host_descriptions,
+            current_date=datetime.date.today().isoformat(),
         )
 
         # Create a single AgentSession for all segment generation.
@@ -278,12 +296,93 @@ class PodcastConductor(BaseConductor):
             self._system_prompt, recent_window=DEFAULT_RECENT_WINDOW,
         )
 
+        # Build FactChecker if fact-checking is enabled.
+        if config.fact_check != "off":
+            self._fact_checker = FactChecker.build_default(self._client)
+            # Use explicitly-set content_mode; only call classifier when
+            # config.content_mode is still the default ("factual") meaning
+            # the user hasn't overridden it and auto-detection should run.
+            if config.content_mode != "factual":
+                self._content_mode = config.content_mode
+            else:
+                classifier = ContentModeClassifier(self._client)
+                self._content_mode = classifier.classify(
+                    brief=config.brief,
+                    show_type="podcast",
+                )
+        else:
+            self._fact_checker = None
+            self._content_mode = config.content_mode
+
         # Reset runtime state.
         self._context_log = []
         self._compressed_ctx = ""
         self._director_note = ""
         self._llm_calls = 0
         self._podcast_id = str(uuid.uuid4())[:8]
+        self._approved_segment_texts = []
+        self._expansion_idx = 0
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check the bootstrap output before generation begins.
+
+        Collects the show topic, each segment topic, and the director arc
+        into a single text block and runs it through the fact-checker.
+        Aborts (or warns) on fabricated claims based on
+        ``config.allow_bootstrap_fabrications``.
+        """
+        if self._fact_checker is None:
+            return
+        config = self.config
+        if not isinstance(config, PodcastConfig):
+            return
+        surfaces: list[str] = []
+        if config.topic:
+            surfaces.append(config.topic)
+        for seg in config.segments:
+            if seg.topic:
+                surfaces.append(seg.topic)
+        if config.director_brief and config.director_brief.arc:
+            surfaces.append(config.director_brief.arc)
+        bootstrap_text = " ".join(surfaces).strip()
+        if not bootstrap_text:
+            return
+        try:
+            report = self._fact_checker.check_chunk(
+                bootstrap_text,
+                chunk_id="bootstrap",
+                reference_material=config.reference_material,
+                mode=config.fact_check,
+                content_mode=self._content_mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PodcastConductor: bootstrap preflight raised: %r", exc)
+            return
+        if report.has_fabrications:
+            print(
+                "\n\u26a0  BOOTSTRAP PRE-FLIGHT: Fabricated facts detected in "
+                "the generated outline."
+            )
+            print(
+                "   The fact-checker flagged the following based on LLM knowledge:"
+            )
+            for r in report.fabricated_claims:
+                print(f"   \u2022 {r.claim}")
+                print(f"     \u2192 {r.explanation}")
+            if not config.allow_bootstrap_fabrications:
+                print(
+                    "   Generation aborted. Fix your brief or supply "
+                    "--reference-material."
+                )
+                print(
+                    "   Use --allow-bootstrap-fabrications to override "
+                    "(not recommended).\n"
+                )
+                raise SystemExit(1)
+            else:
+                print(
+                    "   Continuing anyway (--allow-bootstrap-fabrications is set).\n"
+                )
 
     def _run_turn_loop(self) -> list[dict]:
         """The main segment-by-segment generation loop.
@@ -319,6 +418,13 @@ class PodcastConductor(BaseConductor):
 
         for seg_idx, segment in enumerate(segments):
             seg_id = f"seg_{seg_idx:03d}"
+
+            # ── Progress ─────────────────────────────────────────────
+            topic_preview = (segment.topic or "")[:60]
+            print(
+                f"  [segment {seg_idx + 1}/{total_segments}] {topic_preview}",
+                flush=True,
+            )
 
             # ── Build context summary ────────────────────────────────
             context_summary = self._build_context_summary()
@@ -392,10 +498,66 @@ class PodcastConductor(BaseConductor):
                 global_order_start=global_order,
             )
 
-            # ── Length contract validation (Phase 1+2) ──────────────
+            # ── Length contract validation ──────────────
             actual_words = sum(
                 len((evt.get("text") or "").split()) for evt in segment_events
             )
+            # ── Retry once if the segment came back too short ────────
+            # The model often under-shoots the LENGTH REQUIREMENT block.
+            # One follow-up that explicitly cites the deficit reliably
+            # adds 60-90% of the missing content without altering tone.
+            #
+            # Threshold (70%): empirically, segments in the 70-100% band
+            # of target read fine — we accept those rather than risk a
+            # tone-breaking continuation. Below 70%, the deficit is
+            # severe enough that continuing is worth the risk.
+            #
+            # Deficit math: `max(50, target - actual)` floors the ask at
+            # 50 words so we don't request a useless 5-word stub when
+            # the gap is small but still under-threshold.
+            #
+            # Extend, don't replace: we APPEND the continuation events to
+            # the existing `segment_events` rather than discarding the
+            # original. The original is already valid speech — throwing
+            # it out would waste a successful generation and force the
+            # model to start a new arc cold. Continuation preserves the
+            # in-character voice and conversational momentum.
+            if (
+                self._session is not None
+                and target_words > 0
+                and actual_words < target_words * SEGMENT_RETRY_THRESHOLD
+            ):
+                deficit = max(50, target_words - actual_words)
+                retry_msg = _SEGMENT_RETRY_TEMPLATE.format(
+                    actual=actual_words,
+                    target=target_words,
+                    deficit=deficit,
+                )
+                print(
+                    f"  [segment {seg_idx + 1}/{total_segments}] retry "
+                    f"(was {actual_words}, target {target_words})",
+                    flush=True,
+                )
+                try:
+                    retry_raw = self._session.send(retry_msg)
+                except Exception as exc:  # noqa: BLE001
+                    self._length_warnings.append(
+                        f"[segment {seg_idx + 1}] retry LLM call failed: {exc!r}"
+                    )
+                    retry_raw = ""
+                if retry_raw:
+                    extra_events = self._parse_segment_response(
+                        retry_raw,
+                        segment_id=seg_id,
+                        segment_type=segment.segment_type,
+                        lead_host=lead_host or "",
+                        global_order_start=global_order + len(segment_events),
+                    )
+                    segment_events.extend(extra_events)
+                    actual_words = sum(
+                        len((evt.get("text") or "").split())
+                        for evt in segment_events
+                    )
             warning = self._validate_word_count(
                 declared=None,
                 actual=actual_words,
@@ -407,6 +569,87 @@ class PodcastConductor(BaseConductor):
                 self._length_warnings.append(
                     f"[segment {seg_idx + 1}/{total_segments}] {warning}"
                 )
+
+            # ── Fact-check gate (blocking) ────────────────────────
+            if self._fact_checker is not None and config.fact_check != "off":
+                for fc_attempt in range(config.max_retries):
+                    seg_text_for_check = " ".join(
+                        (evt.get("text") or "").strip() for evt in segment_events
+                    ).strip()
+                    try:
+                        fc_report = self._fact_checker.check_chunk(
+                            seg_text_for_check,
+                            chunk_id=seg_id,
+                            reference_material=config.reference_material,
+                            mode=config.fact_check,
+                            content_mode=self._content_mode,
+                            prior_context=self._build_prior_context(),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "PodcastConductor: fact-check raised for %s: %r",
+                            seg_id, exc,
+                        )
+                        break
+
+                    if not (fc_report.has_fabrications or fc_report.has_contradictions):
+                        break  # Segment passed — move on.
+
+                    blocking = (
+                        fc_report.fabricated_claims + fc_report.contradicted_claims
+                    )
+                    if fc_attempt < config.max_retries - 1:
+                        # Build rejection note and regenerate.
+                        claims_lines = "\n".join(
+                            f"  • {r.claim}: {r.explanation}"
+                            for r in blocking
+                        )
+                        rejection_msg = (
+                            f"FACT-CHECK REJECTION (attempt {fc_attempt + 1}/"
+                            f"{config.max_retries}): The previous segment "
+                            f"contained fabricated facts or contradictions with "
+                            f"previously approved content:\n{claims_lines}\n\n"
+                            f"Please rewrite the entire segment from scratch. "
+                            f"Remove all fabricated claims and contradictions. Only "
+                            f"state things confirmed by the reference material or "
+                            f"consistent with what has already been said."
+                        )
+                        print(
+                            f"  [segment {seg_idx + 1}/{total_segments}] "
+                            f"fact-check fail ({len(blocking)} issue(s)) "
+                            f"— retry {fc_attempt + 1}/{config.max_retries}",
+                            flush=True,
+                        )
+                        try:
+                            retry_raw = self._session.send(rejection_msg) if self._session else ""
+                            if retry_raw:
+                                segment_events = self._parse_segment_response(
+                                    retry_raw,
+                                    segment_id=seg_id,
+                                    segment_type=segment.segment_type,
+                                    lead_host=lead_host or "",
+                                    global_order_start=global_order,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "PodcastConductor: fact-check retry send failed "
+                                "for %s: %r", seg_id, exc,
+                            )
+                            break
+                    else:
+                        # Retries exhausted — publish with warnings attached.
+                        for r in blocking:
+                            self._length_warnings.append(
+                                f"[{seg_id}] FACT_CHECK_WARN: Published with "
+                                f"unresolved claim after "
+                                f"{config.max_retries} attempts: {r.claim}"
+                            )
+                        print(
+                            f"  [segment {seg_idx + 1}/{total_segments}] "
+                            f"fact-check EXHAUSTED — "
+                            f"{len(blocking)} issue(s) remain",
+                            flush=True,
+                        )
 
             # ── Checkpoint render to measure actual TTS duration ────
             # The combined text of all utterances in this segment is what
@@ -423,6 +666,10 @@ class PodcastConductor(BaseConductor):
                 global_order += 1
                 # ── Adaptive duration tracking ───────────────────────
                 self._record_words(evt.get("text", ""))
+
+            # ── Append approved text to prior-context buffer ─────────
+            if segment_text:
+                self._approved_segment_texts.append(segment_text)
 
             # ── Check if we've hit the budget ────────────────────────
             if self._over_budget():
@@ -441,7 +688,21 @@ class PodcastConductor(BaseConductor):
                 self._compress_context()
 
             # ── Director check-in ────────────────────────────────────
-            # Check in every few segments for pacing guidance.
+            # Periodically pause segment generation to ask the Director
+            # agent for pacing/tone guidance. The note feeds into the next
+            # segment's prompt so the show can self-correct mid-run.
+            #
+            # Cadence:
+            #   * `check_interval` defaults to 3 segments. The director
+            #     brief can override it (e.g. shorter for tight 10-segment
+            #     shows, longer for sprawling 20+).
+            #   * `seg_idx > 0` skips the very first segment — there's
+            #     nothing produced yet for the Director to react to.
+            #   * `(seg_idx + 1) % check_interval == 0` fires at the end
+            #     of segment N, N+check_interval, N+2*check_interval, …
+            #     We use `seg_idx + 1` (the 1-based count of completed
+            #     segments) so that with check_interval=3 the first
+            #     check-in happens AFTER segment 3, not 4.
             check_interval = 3
             if config.director_brief and config.director_brief.compression_interval:
                 check_interval = config.director_brief.compression_interval
@@ -455,7 +716,7 @@ class PodcastConductor(BaseConductor):
         return all_events
 
     # ═══════════════════════════════════════════════════════════════════
-    # EXPANSION PASS (Phase 7)
+    # EXPANSION PASS
     # ═══════════════════════════════════════════════════════════════════
 
     def _expansion_pass(
@@ -476,13 +737,16 @@ class PodcastConductor(BaseConductor):
         if not isinstance(config, PodcastConfig):
             return []
 
-        # Pick a topic continuation from the last segment, if any.
+        # Pick a topic continuation — rotate through the original outline
+        # so that multi-pass expansions don't keep extending the same beat.
         last_topic = ""
         if config.segments:
-            last_topic = config.segments[-1].topic or ""
+            idx = self._expansion_idx % len(config.segments)
+            last_topic = config.segments[idx].topic or ""
+            self._expansion_idx += 1
         host_names = [h.name for h in config.hosts]
-        lead_host = host_names[0] if host_names else ""
-        seg_id = f"seg_bonus_{len(config.segments):03d}"
+        lead_host = host_names[self._expansion_idx % len(host_names)] if host_names else ""
+        seg_id = f"seg_bonus_{self._expansion_idx:03d}"
 
         length_contract = self._length_contract_block(deficit_words)
         user_message = SEGMENT_PROMPT.format(
@@ -736,6 +1000,19 @@ class PodcastConductor(BaseConductor):
     # ═══════════════════════════════════════════════════════════════════
     # CONTEXT MANAGEMENT
     # ═══════════════════════════════════════════════════════════════════
+
+    def _build_prior_context(self) -> str | None:
+        """Return concatenated approved segment texts for consistency checking.
+
+        Returns ``None`` when no segments have been approved yet (skips the
+        consistency pass entirely, avoiding an unnecessary LLM call).
+        Oldest-first joining gives the consistency verifier a chronological
+        view; :func:`~vox_romana.core.fact_checker._trim_prior_context` will
+        trim to the most-recent 4 000 chars when needed.
+        """
+        if not self._approved_segment_texts:
+            return None
+        return "\n---\n".join(self._approved_segment_texts)
 
     @staticmethod
     def _summarize_segment(

@@ -107,13 +107,23 @@ def make_engine(engine_name: str, **kwargs):
 
     elif engine_name == "piper":
         from vox_romana.tts.engines.piper_engine import PiperEngine
-        model_dir = kwargs.get("model_dir", "models/piper")
+        model_dir = kwargs.get("model_dir", "piper-voices")
         return PiperEngine(model_dir=model_dir)
+
+    elif engine_name == "both":
+        from vox_romana.tts.engines.multi_engine import MultiEngine
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model = kwargs.get("model", None)
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        kokoro = KokoroEngine(model=model) if model else KokoroEngine()
+        piper = PiperEngine(model_dir=model_dir)
+        return MultiEngine([kokoro, piper])
 
     else:
         raise ValueError(
             f"Unknown engine: {engine_name!r}. "
-            f"Available engines: kokoro, piper"
+            f"Available engines: kokoro, piper, both"
         )
 
 
@@ -161,13 +171,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
-        choices=["kokoro", "piper"],
+        default="both",
+        choices=["kokoro", "piper", "both"],
         help=(
             "Which TTS engine to use. "
-            "kokoro = Apple Silicon GPU (best quality, default). "
-            "piper = CPU-only (faster setup, lower quality). "
-            "(default: kokoro)"
+            "both = all Kokoro + Piper voices (default). "
+            "kokoro = Apple Silicon GPU only. "
+            "piper = CPU-only. "
+            "(default: both)"
         ),
     )
 
@@ -206,8 +217,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="models/piper",
-        help="Piper model directory (default: models/piper). Ignored for Kokoro.",
+        default="piper-voices",
+        help="Piper model directory (default: piper-voices). Ignored for Kokoro.",
     )
 
     parser.add_argument(
@@ -234,6 +245,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Suppress progress output. Just produce the file.",
     )
 
+    # ── Series / voice registry ───────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, the "
+            "voice registry locks each character to the same voice "
+            "across all episodes that share this series ID."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -242,7 +266,20 @@ def main(argv: list[str] | None = None) -> None:
 
     Args:
         argv: Arguments (defaults to sys.argv[1:]).
+
+    .. deprecated::
+        Use ``render_show.py`` instead. ``render_show.py`` is content-agnostic
+        and renders any show JSON (debate, news, podcast, audiobook) through
+        the same TTS pipeline. ``render_debate.py`` will be removed in a
+        future release.
     """
+    import warnings
+    warnings.warn(
+        "render_debate.py is deprecated; use 'python render_show.py <json>' "
+        "which works for all show types.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args(argv)
 
     # ── Validate input ───────────────────────────────────────────────
@@ -291,7 +328,15 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     # ── Build the renderer ───────────────────────────────────────────
-    renderer = TTSRenderer(engine, voice_map=voice_map)
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception:
+        pass
+
+    renderer = TTSRenderer(engine, voice_map=voice_map, registry=registry, series_key=series_key)
 
     # ── Render! ──────────────────────────────────────────────────────
     if not args.quiet:

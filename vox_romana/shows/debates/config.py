@@ -8,7 +8,7 @@ THE CAST OF CHARACTERS (dataclasses in this file):
     DebateConfig          The whole enchilada. Everything the conductor needs.
     ModeratorConfig       Who runs the show and how.
     AudienceConfig        Is there a crowd? Do they participate?
-    DirectorBrief         The dramatic arc — tension, pacing, resolution.
+    DebateDirectorBrief         The dramatic arc — tension, pacing, resolution.
 
 RE-EXPORTED FROM CORE (shared across all show types):
 
@@ -111,8 +111,8 @@ class AudienceConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DirectorBrief
-# ─────────────────────────────────────────────────────────────────────────────
+# DebateDirectorBrief
+# ────────────────────────────────────────────────────────────────────────────
 # The dramatic arc. This is the Director agent's game plan — it tells the
 # conductor *when* to crank up the tension, *when* to let things breathe,
 # and *how* to land the ending.
@@ -121,7 +121,7 @@ class AudienceConfig:
 # dynamics instead of camera angles.
 
 @dataclass
-class DirectorBrief:
+class DebateDirectorBrief:
     """The dramatic arc plan for the debate.
 
     The Director agent runs every `check_interval` turns during generation.
@@ -260,7 +260,7 @@ class DebateConfig(ContentConfig):
     moderator: ModeratorConfig | None = None
     audience: AudienceConfig | None = None
     show_host: ShowHostConfig | None = None
-    director_brief: DirectorBrief | None = None
+    director_brief: DebateDirectorBrief | None = None
     target_turns: int | None = None
 
     def validate(self) -> list[str]:
@@ -312,3 +312,11 @@ class DebateConfig(ContentConfig):
             )
 
         return problems
+
+
+# Backwards-compatibility alias. ``DirectorBrief`` was renamed to
+# ``DebateDirectorBrief`` to disambiguate the three former DirectorBrief
+# classes that lived in debates/news/audiobooks (each with different fields).
+# External callers that imported ``DirectorBrief`` continue to work via this
+# alias; new code should use the explicit ``DebateDirectorBrief``.
+DirectorBrief = DebateDirectorBrief

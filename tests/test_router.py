@@ -243,12 +243,13 @@ class TestRunShowArgs:
         return parse_args(args)
 
     def test_prompt_only(self, tmp_path):
+        from vox_romana.core.paths import OUTPUT_DIR
         p = tmp_path / "brief.txt"
         p.write_text("test")
         args = self._parse([str(p)])
         assert args.prompt == p
         assert args.show_type is None
-        assert args.output == Path("output")
+        assert args.output == OUTPUT_DIR
 
     def test_force_type(self, tmp_path):
         p = tmp_path / "brief.txt"

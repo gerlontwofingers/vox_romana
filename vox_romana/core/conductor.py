@@ -58,6 +58,14 @@ if TYPE_CHECKING:
     from ..tts.checkpoint import CheckpointRenderer
 
 
+# Maximum number of expansion passes BaseConductor.run() will attempt
+# when the content is short of target. Each pass adds at most one bonus
+# segment / turn worth of content (~1,000–1,500 words). For a 3-hour
+# podcast (27k words) finishing at 7k words, we need ~17–20 passes to
+# close the gap. 30 gives headroom without runaway cost.
+MAX_EXPANSION_PASSES = 30
+
+
 @dataclass
 class ConductorResult:
     """The output of a conductor run.
@@ -124,16 +132,20 @@ class BaseConductor(ABC):
         self._word_lo: int | None = None
         self._word_hi: int | None = None
 
-        # ── Length-contract telemetry (Phase 1+2) ────────────────────
+        # ── Length-contract telemetry ────────────────────────────────
         # Diagnostic strings, one per segment whose actual word count
         # fell outside the target window. Inspected by the renderer/CLI.
         self._length_warnings: list[str] = []
 
-        # ── Checkpoint rendering + budget tracking (Phase 5) ─────────
+        # ── Checkpoint rendering + budget tracking ─────────────────────
         # Both are opt-in. When a CheckpointRenderer is provided, each
         # segment's text can be measured for actual TTS duration. When a
         # BudgetTracker is also provided, those measurements feed back
         # into per-segment time targets for dynamic rebalancing.
+        # When either is None, that feature is simply skipped — the
+        # conductor generates content without TTS measurement or budget
+        # feedback. None is the normal state for CLI runs that don't pass
+        # --checkpoint-renderer / --budget-tracker.
         self._checkpoint_renderer = checkpoint_renderer
         self._budget_tracker = budget_tracker
 
@@ -348,7 +360,7 @@ class BaseConductor(ABC):
         fair_share = self._remaining_words // remaining_steps
         return max(planned_words, fair_share)
 
-    # ── Hard length contract helpers (Phase 1+2) ───────────────────
+    # ── Hard length contract helpers ──────────────────────────────────
 
     @staticmethod
     def _length_contract_block(
@@ -420,7 +432,7 @@ class BaseConductor(ABC):
             )
         return None
 
-    # ── Checkpoint rendering (Phase 5) ─────────────────────────────
+    # ── Checkpoint rendering ───────────────────────────────────────────
 
     def _checkpoint_segment(
         self,
@@ -481,14 +493,43 @@ class BaseConductor(ABC):
             A ConductorResult with all generated events.
         """
         self._build_agents()
+        self._preflight_check_bootstrap()
         raw = self._run_turn_loop()
-        # ── Expansion pass (Phase 7) ───────────────────────────────
-        # If we finished short of target, give the conductor one chance
-        # to extend the content. Subclasses opt-in by overriding
-        # ``_expansion_pass()``; the default does nothing.
-        extra = self._maybe_expand(raw)
-        if extra:
+        # ── Expansion loop ────────────────────────────────────────────
+        # If we finished short of target, give the conductor multiple
+        # chances to extend the content. Each pass recalculates the
+        # remaining deficit from fresh state. Subclasses opt in by
+        # overriding ``_expansion_pass()``; the default does nothing.
+        max_passes = MAX_EXPANSION_PASSES
+        pass_count = 0
+        while pass_count < max_passes:
+            extra = self._maybe_expand(raw)
+            if not extra:
+                break
             raw.extend(extra)
+            # Update word counter so the next pass's deficit calculation
+            # reflects the events we just appended. Without this the loop
+            # would keep firing until it hit the cap even when expansion
+            # did real work.
+            for ev in extra:
+                text = ""
+                if isinstance(ev, dict):
+                    text = ev.get("text", "") or ""
+                else:
+                    text = getattr(ev, "text", "") or ""
+                if text:
+                    self._words_generated += len(text.split())
+            pass_count += 1
+        if pass_count >= max_passes:
+            self._length_warnings.append(
+                f"[expansion] hit max-pass cap ({max_passes}) — "
+                f"final word count {self._words_generated:,} may still be short."
+            )
+        elif pass_count > 0:
+            self._length_warnings.append(
+                f"[expansion] closed deficit in {pass_count} pass(es) — "
+                f"final word count {self._words_generated:,}."
+            )
         return self._package_result(raw)
 
     def _maybe_expand(self, raw_events: list[dict]) -> list[dict]:
@@ -548,6 +589,83 @@ class BaseConductor(ABC):
             subclass declines or cannot extend further.
         """
         return []
+
+    def _preflight_check_bootstrap(self) -> None:
+        """Fact-check bootstrap output before the generation loop begins.
+
+        Called in ``run()`` after ``_build_agents()`` (so
+        ``self._fact_checker`` and ``self._content_mode`` are set) but
+        before ``_run_turn_loop()``. The base implementation is a no-op.
+        Subclasses that produce bootstrap output (PodcastConductor,
+        NewsConductor, etc.) override this to scan the generated config
+        for fabricated claims and abort or warn accordingly.
+        """
+
+    # ------------------------------------------------------------------
+    # Bootstrap convenience
+    # ------------------------------------------------------------------
+
+    # Subclasses set this to their show-specific bootstrap class so that
+    # ``BaseConductor.from_brief`` can build a config without knowing the
+    # show type. Left as ``None`` on the base means subclasses must
+    # override ``from_brief`` directly (which is fine, but uncommon).
+    _bootstrap_cls: type | None = None
+
+    @classmethod
+    def from_brief(
+        cls,
+        brief: str,
+        *,
+        reference_material: str | None = None,
+        fact_check: str = "off",
+        overrides: dict | None = None,
+        client: DeepSeekClient | None = None,
+        api_key: str | None = None,
+        target_words: int | None = None,
+    ) -> "BaseConductor":
+        """Bootstrap a config from a brief and create a conductor.
+
+        Template implementation: each subclass sets ``_bootstrap_cls`` to
+        its show-specific bootstrap class, and the rest of the wiring —
+        sharing the LLM client between bootstrap and conductor, forwarding
+        ``overrides`` and (when supported) ``target_words`` — happens here.
+
+        Args:
+            brief:              Natural language description of the show.
+            reference_material: Factual source text to ground the output.
+            fact_check:         "off", "quick", or "thorough".
+            overrides:          Dict of config-field overrides (subclass-specific).
+            client:             Shared DeepSeekClient. One client is used for
+                                BOTH the bootstrap agents and the conductor.
+            api_key:            API key if ``client`` is not provided.
+            target_words:       Target word count for the show. Forwarded to
+                                bootstraps that accept it (news, podcast,
+                                audiobooks); ignored for debates.
+
+        Returns:
+            A subclass instance ready to ``run()``.
+        """
+        if cls._bootstrap_cls is None:
+            raise NotImplementedError(
+                f"{cls.__name__}._bootstrap_cls is not set. Override "
+                "from_brief() or set _bootstrap_cls on the subclass."
+            )
+        shared_client = client or DeepSeekClient(api_key=api_key)
+        bootstrap = cls._bootstrap_cls(client=shared_client)
+
+        kwargs: dict = {
+            "reference_material": reference_material,
+            "fact_check": fact_check,
+            "overrides": overrides,
+        }
+        # Only forward target_words when the bootstrap accepts it. Debates
+        # don't take a word target at the bootstrap stage; everyone else does.
+        from inspect import signature
+        if "target_words" in signature(bootstrap.from_brief).parameters:
+            kwargs["target_words"] = target_words
+
+        config = bootstrap.from_brief(brief, **kwargs)
+        return cls(config, client=shared_client)
 
     @abstractmethod
     def _build_agents(self) -> None:

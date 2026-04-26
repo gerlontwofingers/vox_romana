@@ -80,10 +80,10 @@ APPLE SILICON ONLY:
 from __future__ import annotations
 
 import io
-import struct
 import tempfile
-import wave
 from pathlib import Path
+
+from pydub import AudioSegment
 
 from ..engine import BaseTTSEngine, SynthesizedAudio
 
@@ -111,6 +111,11 @@ DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
 
 # Kokoro's native sample rate.
 KOKORO_SAMPLE_RATE = 24000
+
+# Languages Kokoro can synthesize. The mlx-community/Kokoro-82M-bf16 model
+# is English-only. If the user requests a non-English language, the renderer
+# must route to a language-capable engine (Piper) instead.
+KOKORO_LANGUAGES: frozenset[str] = frozenset({"en"})
 
 # All built-in Kokoro voices, organized by accent and gender.
 # These are baked into the model — no separate downloads needed.
@@ -167,6 +172,7 @@ class KokoroEngine(BaseTTSEngine):
         voice: str = "af_heart",
         emotion: str = "",
         speed: float = 1.0,
+        language: str = "en",
         **kwargs,
     ) -> SynthesizedAudio:
         """Synthesize text to speech using Kokoro via MLX.
@@ -180,10 +186,15 @@ class KokoroEngine(BaseTTSEngine):
                       "say this with excitement and conviction".
                       This maps to Kokoro's `instruct` parameter.
             speed:    Speed multiplier. 1.0 = normal.
+            language: BCP-47 language code. Kokoro only supports "en";
+                      any other value raises ValueError.
             **kwargs: Extra kwargs passed to generate_audio().
 
         Returns:
             SynthesizedAudio with WAV bytes and sample rate (24000 Hz).
+
+        Raises:
+            ValueError: If `language` is not "en". Kokoro is English-only.
 
         NOTE ON HOW THIS WORKS:
             mlx-audio's generate_audio() is designed to save files to disk.
@@ -195,6 +206,14 @@ class KokoroEngine(BaseTTSEngine):
             text chunking, model loading, and a bunch of edge cases we don't
             want to reimplement. The file roundtrip costs <10ms on an SSD.
         """
+        # Validate language: Kokoro only speaks English.
+        if language not in KOKORO_LANGUAGES:
+            raise ValueError(
+                f"KokoroEngine only supports English (language='en'); "
+                f"got language={language!r}. Use PiperEngine for non-English "
+                f"languages, or run vox_romana with --out-lang en."
+            )
+
         # Create a temp directory for the audio output.
         # generate_audio() writes files here; we read them back.
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -232,16 +251,23 @@ class KokoroEngine(BaseTTSEngine):
 
             if not wav_path.exists():
                 # Fallback: check for numbered segments (clip_000.wav, etc.)
+                # join_audio=True should produce a single clip.wav, but some
+                # Kokoro versions write clip_000.wav, clip_001.wav, etc. for
+                # long texts.  Concatenate ALL segments to avoid truncation.
                 wav_files = sorted(Path(tmp_dir).glob("clip*.wav"))
-                if wav_files:
-                    wav_path = wav_files[0]
-                else:
+                if not wav_files:
                     raise RuntimeError(
                         f"Kokoro generated no audio files in {tmp_dir}. "
                         f"Text was: {text[:100]!r}"
                     )
-
-            wav_bytes = wav_path.read_bytes()
+                combined = AudioSegment.from_wav(str(wav_files[0]))
+                for wf in wav_files[1:]:
+                    combined += AudioSegment.from_wav(str(wf))
+                buf = io.BytesIO()
+                combined.export(buf, format="wav")
+                wav_bytes = buf.getvalue()
+            else:
+                wav_bytes = wav_path.read_bytes()
 
         return SynthesizedAudio(
             audio=wav_bytes,

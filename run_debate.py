@@ -118,6 +118,7 @@ from vox_romana import (
     DebateConductor,
     DeepSeekClient,
 )
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.debates.serializer import DebateSerializer
 
 
@@ -159,8 +160,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Directory to save the output JSON (default: output/)",
+        default=_OUTPUT_DIR,
+        help=f"Directory to save the output JSON (default: {_OUTPUT_DIR})",
     )
 
     # ── Research ─────────────────────────────────────────────────────
@@ -171,7 +172,15 @@ def parse_args() -> argparse.Namespace:
         "keys are set (GOOGLE_API_KEY + GOOGLE_CSE_ID), falls back to LLM "
         "knowledge otherwise.",
     )
-
+    parser.add_argument(
+        "--no-memory",
+        action="store_false",
+        dest="memory",
+        default=True,
+        help="Disable memory-first lookup during --research. By default, the "
+        "local knowledge base (Chroma + FTS5) is consulted before any web "
+        "search; use this flag to force web-only research.",
+    )
     # ── Overrides ────────────────────────────────────────────────────
     # These are the "actually, change this one thing" flags.
     # They're applied AFTER the Architect reads your prompt and makes
@@ -211,6 +220,28 @@ def parse_args() -> argparse.Namespace:
     #
     # Later, when you have a payload/ directory full of JSON files,
     # this tag makes grep/sort/filter trivial.
+    # ── Fact-checking ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="off",
+        dest="fact_check",
+        help=(
+            "Fact-check mode (default: off). "
+            "'quick': verify against --reference-material. "
+            "'thorough': also web-searches unverifiable claims. "
+            "Fabricated facts trigger regeneration up to max_retries."
+        ),
+    )
+    parser.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material for fact-checking.",
+    )
+
+    # ── Tagging ─────────────────────────────────────────────────
     parser.add_argument(
         "--tag", "-t",
         type=str,
@@ -235,7 +266,21 @@ def log(msg: str, *, quiet: bool = False) -> None:
 
 
 def main() -> None:
-    """Run the full debate generation pipeline."""
+    """Run the full debate generation pipeline.
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` dispatches to the
+        correct show pipeline based on the brief (debate, news, podcast,
+        audiobook) using a single unified entry point. ``run_debate.py``
+        will be removed in a future release.
+    """
+    import warnings
+    warnings.warn(
+        "run_debate.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the debate pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     # ── Validate the prompt file exists ──────────────────────────────
@@ -265,7 +310,7 @@ def main() -> None:
         overrides["debate_format"] = args.debate_format
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 1: BOOTSTRAP — brief → fully populated config
+    # BOOTSTRAP — brief → fully populated config
     # ══════════════════════════════════════════════════════════════════
     # This is pre-production. The brief (your entire prompt file) gets
     # read by a chain of three AI agents:
@@ -297,7 +342,7 @@ def main() -> None:
     # Create a shared client so bootstrap + conductor reuse the same connection.
     client = DeepSeekClient()
 
-    log("Phase 1: Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     bootstrap_kwargs = dict(
@@ -307,9 +352,36 @@ def main() -> None:
         auto_research=False,
     )
 
+    # ── Fact-check configuration ───────────────────────────────────────
+    if args.fact_check != "off":
+        reference_text: str | None = None
+        if args.reference_material is not None:
+            if not args.reference_material.exists():
+                print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
+                sys.exit(1)
+            reference_text = args.reference_material.read_text().strip()
+        bootstrap_kwargs["fact_check"] = args.fact_check
+        bootstrap_kwargs["reference_material"] = reference_text
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    else:
+        bootstrap_kwargs["fact_check"] = "off"
+
     # ── Optional: auto-research ──────────────────────────────────────
     if args.research:
         bootstrap_kwargs["auto_research"] = True
+        # Memory-first: consult the local knowledge base before any paid
+        # search. Free, sub-millisecond, and domain-tuned. The bootstrap
+        # automatically wraps memory + web search into a chain.
+        if args.memory:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.memory.recall import MemoryRecall
+                catalog = Catalog()
+                memory = MemoryRecall(catalog=catalog)
+                bootstrap_kwargs["memory"] = memory
+                log("  Memory-first search: ON", quiet=args.quiet)
+            except Exception as e:
+                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
         try:
             from vox_romana.core.search import GoogleSearchProvider
             search_provider = GoogleSearchProvider()
@@ -329,17 +401,17 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2: CONDUCTOR — config → live debate
-    # ══════════════════════════════════════════════════════════════════
+    # CONDUCTOR — config → live debate
+    # ══════════════════════════════════════════════════════════════
     # Now we're rolling cameras. The Conductor takes the config from
-    # Phase 1 and runs the actual debate: picking who speaks next,
+    # Bootstrap and runs the actual debate: picking who speaks next,
     # generating their dialogue, having the moderator interject,
     # checking in with the Director for pacing adjustments.
     #
     # Each turn is one LLM call. A 35-turn debate = ~40 LLM calls
     # (turns + moderator interjections + director check-ins).
     # Takes roughly 30-90 seconds depending on the model.
-    log("Phase 2: Conductor (running the debate)...", quiet=args.quiet)
+    log("Conductor (running the debate)...", quiet=args.quiet)
     t2 = time.time()
 
     conductor = DebateConductor(config, client=client)
@@ -351,7 +423,7 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 3: SERIALIZE — save to JSON
+    # SERIALIZE — save to JSON
     # ══════════════════════════════════════════════════════════════════
     # The debate is done. Now we plate the dish — convert the in-memory
     # debate events into a JSON file. This file contains everything:
@@ -360,19 +432,19 @@ def main() -> None:
     #
     # This JSON is the input for the next stage (TTS), or you can just
     # read it to see what the AI came up with.
-    log("Phase 3: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_debate()
     serializer = DebateSerializer()
 
     # Build a filename from the prompt file name + tag + timestamp.
     # Examples:
-    #   ubi_debate_20260405_143022.json           (no tag)
-    #   ubi_debate_batch_01_20260405_143022.json  (with --tag batch_01)
+    #   debate_ubi_debate_20260405_143022.json           (no tag)
+    #   debate_ubi_debate_batch_01_20260405_143022.json  (with --tag batch_01)
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"debate_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save_merged(merged, output_path)

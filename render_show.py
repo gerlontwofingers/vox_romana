@@ -67,7 +67,7 @@ USAGE:
     python render_show.py output/show.json --model mlx-community/Kokoro-82M-bf16
 
     # Use a specific Piper model directory:
-    python render_show.py output/show.json --engine piper --model-dir models/piper
+    python render_show.py output/show.json --engine piper --model-dir piper-voices
 
     # Skip volume normalization (not usually recommended):
     python render_show.py output/show.json --no-normalize
@@ -99,6 +99,7 @@ ENVIRONMENT:
 
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -107,7 +108,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vox_romana.tts.engine import VoiceConfig
-from vox_romana.tts.renderer import TTSRenderer
+from vox_romana.tts.renderer import TTSRenderer, strip_stage_directions
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,13 +150,14 @@ def _count_event_words(show_data: dict) -> int:
     """Count total spoken words across all events in the show JSON.
 
     Events live under the "events" key. Each event has a "text" field
-    containing the spoken dialogue. We split on whitespace and count.
+    containing the spoken dialogue. Stage directions are stripped before
+    counting so the WPM estimate reflects only the words actually spoken.
 
     Returns:
         Total word count across all events (0 if no events found).
     """
     return sum(
-        len(event.get("text", "").split())
+        len(strip_stage_directions(event.get("text", "")).split())
         for event in show_data.get("events", [])
     )
 
@@ -188,13 +192,23 @@ def make_engine(engine_name: str, **kwargs):
 
     elif engine_name == "piper":
         from vox_romana.tts.engines.piper_engine import PiperEngine
-        model_dir = kwargs.get("model_dir", "models/piper")
+        model_dir = kwargs.get("model_dir", "piper-voices")
         return PiperEngine(model_dir=model_dir)
+
+    elif engine_name == "both":
+        from vox_romana.tts.engines.multi_engine import MultiEngine
+        from vox_romana.tts.engines.kokoro_engine import KokoroEngine
+        from vox_romana.tts.engines.piper_engine import PiperEngine
+        model = kwargs.get("model", None)
+        model_dir = kwargs.get("model_dir", "piper-voices")
+        kokoro = KokoroEngine(model=model) if model else KokoroEngine()
+        piper = PiperEngine(model_dir=model_dir)
+        return MultiEngine([kokoro, piper])
 
     else:
         raise ValueError(
             f"Unknown engine: {engine_name!r}. "
-            f"Available engines: kokoro, piper"
+            f"Available engines: kokoro, piper, both"
         )
 
 
@@ -221,7 +235,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  # Render with the default Kokoro engine:\n"
+            "  # Render with the default engine (both — all Kokoro + Piper voices):\n"
             "  python render_show.py output/text/debates/ubi_debate_20260405.json\n"
             "  python render_show.py output/text/news/tech_news_20260406.json\n"
             "\n"
@@ -260,13 +274,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine", "-e",
         type=str,
-        default="kokoro",
-        choices=["kokoro", "piper"],
+        default="both",
+        choices=["kokoro", "piper", "both"],
         help=(
             "Which TTS engine to use. "
-            "kokoro = Apple Silicon GPU (best quality, default). "
-            "piper = CPU-only (faster setup, lower quality). "
-            "(default: kokoro)"
+            "both = all Kokoro + Piper voices (default). "
+            "kokoro = Apple Silicon GPU only. "
+            "piper = CPU-only. "
+            "(default: both)"
         ),
     )
 
@@ -320,8 +335,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="models/piper",
-        help="Piper model directory (default: models/piper). Ignored for Kokoro.",
+        default="piper-voices",
+        help="Piper model directory (default: piper-voices). Ignored for Kokoro.",
     )
 
     parser.add_argument(
@@ -374,6 +389,56 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── Stage direction stripping ───────────────────────────────────────────────
+    # LLMs often write stage directions inline in utterance text,
+    # e.g. "(laughs) Well, that's funny." or "(dramatic pause) Gold."
+    # Standard TTS engines can't act on these cues, so they're spoken
+    # literally, which sounds broken.
+    #
+    # Stripping is ON by default because no supported TTS engine
+    # (Piper, Kokoro) can perform the gestures/expressions. Pass
+    # --no-strip-directions to disable if you need the raw text.
+    parser.add_argument(
+        "--no-strip-directions",
+        action="store_false",
+        default=True,
+        dest="strip_directions",
+        help=(
+            "Disable stripping of parenthetical stage directions from "
+            "utterance text before synthesis. By default, blocks like "
+            "'(laughs)' and '(dramatic pause)' are removed because no "
+            "supported TTS engine can act on them (they would be spoken "
+            "literally otherwise). The original JSON is never modified."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-whisper-voices",
+        action="store_true",
+        default=False,
+        dest="no_whisper_voices",
+        help=(
+            "Exclude airy/whispery voices (e.g. af_kore, af_sky) from "
+            "voice assignment. Useful when the listener prefers voices "
+            "with more presence. Applies to both catalog-matched and "
+            "gender-only fallback assignment."
+        ),
+    )
+
+    # ── Series / voice registry ───────────────────────────────────
+    parser.add_argument(
+        "--series-id",
+        type=str,
+        default=None,
+        dest="series_id",
+        help=(
+            "Series identifier for multi-episode shows. When set, the "
+            "voice registry locks each character to the same voice "
+            "across all episodes that share this series ID. Falls back "
+            "to the show JSON's series_id / show_name when omitted."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -422,7 +487,11 @@ def main(argv: list[str] | None = None) -> None:
         engine_kwargs["model_dir"] = args.model_dir
     elif args.engine == "kokoro" and args.model:
         engine_kwargs["model"] = args.model
-
+    elif args.engine == "both":
+        if args.model_dir:
+            engine_kwargs["model_dir"] = args.model_dir
+        if args.model:
+            engine_kwargs["model"] = args.model
     if not args.quiet:
         print(f"\n  Engine: {args.engine}")
 
@@ -433,7 +502,22 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     # ── Build the renderer and render ────────────────────────────────
-    renderer = TTSRenderer(engine, voice_map=voice_map)
+    registry = None
+    series_key = getattr(args, "series_id", None)
+    try:
+        from vox_romana.tts.voice_registry import VoiceRegistry
+        registry = VoiceRegistry()
+    except Exception as exc:
+        logger.warning("VoiceRegistry unavailable, voice locking disabled: %s", exc)
+
+    renderer = TTSRenderer(
+        engine,
+        voice_map=voice_map,
+        strip_directions=args.strip_directions,
+        registry=registry,
+        series_key=series_key,
+        exclude_whispery=args.no_whisper_voices,
+    )
 
     if not args.quiet:
         print(f"  Input:  {json_path}")

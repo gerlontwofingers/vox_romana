@@ -92,6 +92,9 @@ class VoiceDescriptor:
         tags:      Flat list of searchable keywords. These are the primary
                    matching surface when scoring a voice against a character
                    hint string. Keep them honest and descriptive.
+        engine:    Which TTS engine owns this voice — "kokoro" or "piper".
+                   Used by the MultiEngine wrapper to dispatch synthesis to
+                   the right engine when both are loaded.
     """
 
     voice_id: str
@@ -101,6 +104,8 @@ class VoiceDescriptor:
     tone: str
     best_for: str
     tags: tuple[str, ...] = ()
+    engine: str = "kokoro"
+    is_whispery: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -167,6 +172,7 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
         best_for="introspective characters, contemplation, poetry",
         tags=("soft", "thoughtful", "reflective", "gentle", "contemplative",
               "quiet", "measured", "introspective"),
+        is_whispery=True,
     ),
     "af_nicole": VoiceDescriptor(
         voice_id="af_nicole",
@@ -217,6 +223,7 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
         best_for="cheerful characters, lighter segments, youth",
         tags=("airy", "light", "optimistic", "cheerful", "youthful",
               "upbeat", "breezy", "hopeful"),
+        is_whispery=True,
     ),
 
     # ── American Male ────────────────────────────────────────────────
@@ -371,6 +378,267 @@ KOKORO_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# PIPER VOICE CATALOG
+# ═══════════════════════════════════════════════════════════════════════════
+# Voice IDs match the .onnx stem in the piper-voices/ git clone:
+#   piper-voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+#   → voice_id: "en_US-lessac-medium"
+#
+# Quality preference: high > medium > low (only best quality per speaker).
+# Multi-speaker models (arctic, libritts, vctk, etc.) are excluded here
+# because they require a numeric speaker_id to be useful.
+#
+# Gender/age annotations are based on voice name provenance and listening.
+
+PIPER_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
+
+    # ── American English Female ──────────────────────────────────────
+
+    "en_US-lessac-high": VoiceDescriptor(
+        voice_id="en_US-lessac-high",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="clear, neutral, professional",
+        best_for="narration, news delivery, professional characters",
+        tags=("clear", "neutral", "professional", "narration",
+              "smooth", "crisp", "natural", "anchor"),
+    ),
+    "en_US-amy-medium": VoiceDescriptor(
+        voice_id="en_US-amy-medium",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="warm, conversational, approachable",
+        best_for="interviews, dialogue, relatable characters",
+        tags=("warm", "conversational", "approachable", "friendly",
+              "natural", "everyday", "relatable", "casual"),
+    ),
+    "en_US-kathleen-low": VoiceDescriptor(
+        voice_id="en_US-kathleen-low",
+        gender="female",
+        accent="american",
+        age="mature",
+        tone="measured, steady, composed",
+        best_for="authority figures, formal narration, older characters",
+        tags=("measured", "steady", "composed", "authoritative",
+              "formal", "mature", "deliberate", "grounded"),
+    ),
+    "en_US-kristin-medium": VoiceDescriptor(
+        voice_id="en_US-kristin-medium",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="bright, articulate, energetic",
+        best_for="debate, discussion, animated dialogue",
+        tags=("bright", "articulate", "energetic", "animated",
+              "expressive", "lively", "confident", "debate"),
+    ),
+    "en_US-hfc_female-medium": VoiceDescriptor(
+        voice_id="en_US-hfc_female-medium",
+        gender="female",
+        accent="american",
+        age="young",
+        tone="light, youthful, clear",
+        best_for="younger characters, casual speech, modern content",
+        tags=("light", "youthful", "clear", "young", "modern",
+              "casual", "fresh", "accessible"),
+    ),
+    "en_US-ljspeech-high": VoiceDescriptor(
+        voice_id="en_US-ljspeech-high",
+        gender="female",
+        accent="american",
+        age="middle",
+        tone="crisp, precise, broadcast-quality",
+        best_for="audiobook narration, clear exposition, formal delivery",
+        tags=("crisp", "precise", "broadcast", "audiobook",
+              "narrator", "formal", "polished", "clear"),
+    ),
+
+    # ── American English Male ────────────────────────────────────────
+
+    "en_US-ryan-high": VoiceDescriptor(
+        voice_id="en_US-ryan-high",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="warm, authoritative, confident",
+        best_for="debate lead, narration, authority figures",
+        tags=("warm", "authoritative", "confident", "strong",
+              "leader", "narration", "debate", "commanding"),
+    ),
+    "en_US-joe-medium": VoiceDescriptor(
+        voice_id="en_US-joe-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="casual, conversational, friendly",
+        best_for="casual dialogue, interviews, everyday characters",
+        tags=("casual", "conversational", "friendly", "approachable",
+              "natural", "everyday", "relatable", "easygoing"),
+    ),
+    "en_US-danny-low": VoiceDescriptor(
+        voice_id="en_US-danny-low",
+        gender="male",
+        accent="american",
+        age="young",
+        tone="energetic, youthful, direct",
+        best_for="passionate arguments, younger characters, dynamic roles",
+        tags=("energetic", "youthful", "direct", "passionate",
+              "dynamic", "animated", "spirited", "young"),
+    ),
+    "en_US-norman-medium": VoiceDescriptor(
+        voice_id="en_US-norman-medium",
+        gender="male",
+        accent="american",
+        age="mature",
+        tone="deep, deliberate, gravitas",
+        best_for="serious authority, elder characters, gravitas",
+        tags=("deep", "deliberate", "gravitas", "serious",
+              "elder", "authoritative", "mature", "weighty"),
+    ),
+    "en_US-bryce-medium": VoiceDescriptor(
+        voice_id="en_US-bryce-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="smooth, professional, clear",
+        best_for="news anchor, exposition, versatile roles",
+        tags=("smooth", "professional", "clear", "versatile",
+              "anchor", "polished", "measured", "reliable"),
+    ),
+    "en_US-john-medium": VoiceDescriptor(
+        voice_id="en_US-john-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="steady, measured, balanced",
+        best_for="narration, analytical roles, moderator",
+        tags=("steady", "measured", "balanced", "analytical",
+              "narrator", "moderator", "calm", "intellectual"),
+    ),
+    "en_US-hfc_male-medium": VoiceDescriptor(
+        voice_id="en_US-hfc_male-medium",
+        gender="male",
+        accent="american",
+        age="young",
+        tone="clear, crisp, modern",
+        best_for="tech-forward content, younger characters, accessible delivery",
+        tags=("clear", "crisp", "modern", "young", "contemporary",
+              "fresh", "accessible", "tech"),
+    ),
+    "en_US-sam-medium": VoiceDescriptor(
+        voice_id="en_US-sam-medium",
+        gender="male",
+        accent="american",
+        age="middle",
+        tone="robust, expressive, resonant",
+        best_for="storytelling, character-driven dialogue, debate",
+        tags=("robust", "expressive", "resonant", "storytelling",
+              "character", "debate", "dynamic", "rich"),
+    ),
+
+    # ── British English Female ───────────────────────────────────────
+
+    "en_GB-alba-medium": VoiceDescriptor(
+        voice_id="en_GB-alba-medium",
+        gender="female",
+        accent="british",
+        age="middle",
+        tone="warm, articulate, natural",
+        best_for="narration, dialogue, approachable British characters",
+        tags=("warm", "articulate", "natural", "british", "approachable",
+              "narrator", "friendly", "clear"),
+    ),
+    "en_GB-cori-high": VoiceDescriptor(
+        voice_id="en_GB-cori-high",
+        gender="female",
+        accent="british",
+        age="middle",
+        tone="polished, refined, authoritative",
+        best_for="BBC-style delivery, formal characters, professional roles",
+        tags=("polished", "refined", "authoritative", "british", "bbc",
+              "formal", "professional", "composed"),
+    ),
+    "en_GB-jenny_dioco-medium": VoiceDescriptor(
+        voice_id="en_GB-jenny_dioco-medium",
+        gender="female",
+        accent="british",
+        age="young",
+        tone="bright, personable, engaging",
+        best_for="interviews, lighter content, younger British characters",
+        tags=("bright", "personable", "engaging", "british", "youthful",
+              "accessible", "friendly", "lively"),
+    ),
+    "en_GB-southern_english_female-low": VoiceDescriptor(
+        voice_id="en_GB-southern_english_female-low",
+        gender="female",
+        accent="british",
+        age="mature",
+        tone="measured, elegant, composed",
+        best_for="formal narration, elder characters, distinguished roles",
+        tags=("measured", "elegant", "composed", "british", "formal",
+              "mature", "distinguished", "posh"),
+    ),
+
+    # ── British English Male ─────────────────────────────────────────
+
+    "en_GB-alan-medium": VoiceDescriptor(
+        voice_id="en_GB-alan-medium",
+        gender="male",
+        accent="british",
+        age="middle",
+        tone="warm, authoritative, clear",
+        best_for="narration, authority figures, debate moderation",
+        tags=("warm", "authoritative", "clear", "british", "narrator",
+              "moderator", "confident", "professional"),
+    ),
+    "en_GB-northern_english_male-medium": VoiceDescriptor(
+        voice_id="en_GB-northern_english_male-medium",
+        gender="male",
+        accent="british",
+        age="middle",
+        tone="gruff, direct, salt-of-the-earth",
+        best_for="working-class characters, straight-talking roles, contrast",
+        tags=("gruff", "direct", "northern", "british", "blunt",
+              "earthy", "working-class", "salt-of-the-earth"),
+    ),
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENGINE TAGGING + UNIFIED CATALOG
+# ═══════════════════════════════════════════════════════════════════════════
+# VoiceDescriptor.engine defaults to "kokoro", which is correct for every
+# entry in KOKORO_VOICE_CATALOG. We re-stamp PIPER_VOICE_CATALOG entries
+# with engine="piper" via dataclasses.replace (descriptors are frozen).
+# UNIFIED_VOICE_CATALOG merges both for the MultiEngine wrapper.
+
+from dataclasses import replace as _replace
+
+PIPER_VOICE_CATALOG = {
+    vid: _replace(desc, engine="piper")
+    for vid, desc in PIPER_VOICE_CATALOG.items()
+}
+
+# Sanity check at import time: no voice_id may appear in both catalogs.
+# A collision would mean the MultiEngine couldn't unambiguously route a
+# synthesis call. If you hit this, rename one of the conflicting voices.
+_collisions = set(KOKORO_VOICE_CATALOG) & set(PIPER_VOICE_CATALOG)
+if _collisions:
+    raise RuntimeError(
+        "Voice ID collision between KOKORO and PIPER catalogs: "
+        f"{sorted(_collisions)}. Each voice_id must be unique across "
+        "engines so MultiEngine can route synthesis correctly."
+    )
+
+UNIFIED_VOICE_CATALOG: dict[str, VoiceDescriptor] = {
+    **KOKORO_VOICE_CATALOG,
+    **PIPER_VOICE_CATALOG,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CATALOG QUERY HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -418,17 +686,20 @@ def match_voice(
     available_voices: list[str] | None = None,
     exclude: set[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
+    position: int = 0,
+    usage_counts: dict[str, int] | None = None,
+    exclude_whispery: bool = False,
 ) -> str | None:
     """Find the best voice for a character description.
 
     Scores each voice in the catalog by counting how many of its tags
-    appear in the hint string. Higher score = better fit. Ties are
-    broken by catalog insertion order (which is curated: best defaults
-    come first within each group).
-
-    If no voice scores above zero, returns the first eligible voice
-    (gender-filtered, not excluded). This means the function always
-    returns something if there's any eligible voice at all.
+    appear in the hint string. Higher score = better fit. Ties among
+    voices with the same non-zero score are broken by catalog insertion
+    order. When ALL candidates score zero (no tag overlap), candidates
+    are sorted by ``usage_counts`` ascending (least-used first) so the
+    fallback distributes across the full voice pool rather than always
+    landing on the first voice alphabetically. ``position`` is used as a
+    secondary tiebreaker among voices with equal usage counts.
 
     Args:
         hint:             Natural-language character voice description.
@@ -442,6 +713,14 @@ def match_voice(
         exclude:          Voice IDs already assigned — skip these to
                           ensure every character gets a unique voice.
         catalog:          Voice catalog dict. Defaults to KOKORO_VOICE_CATALOG.
+        position:         0-based index of this speaker in the cast. Used
+                          as a secondary tiebreaker in the zero-score branch
+                          when multiple candidates share the same usage count.
+        usage_counts:     Dict of voice_id → total times used globally
+                          (from VoiceRegistry.usage_counts()). Voices not
+                          present in the dict are treated as count 0. When
+                          None, falls back to catalog insertion order
+                          (legacy behaviour — ``am_adam`` for first male).
 
     Returns:
         The best-matching voice_id string, or None if no voices
@@ -468,6 +747,8 @@ def match_voice(
             continue
         if vid in exclude:
             continue
+        if exclude_whispery and desc.is_whispery:
+            continue
         candidates.append(desc)
 
     if not candidates:
@@ -480,7 +761,29 @@ def match_voice(
     def _score(desc: VoiceDescriptor) -> int:
         return sum(1 for tag in desc.tags if tag in hint_lower)
 
-    best = max(candidates, key=_score)
+    scores = [_score(c) for c in candidates]
+    best_score = max(scores)
+    if best_score > 0:
+        # At least one tag matched — return the highest-scoring candidate.
+        best = max(candidates, key=_score)
+    else:
+        # No tag overlap — prefer least-used voices so the fallback
+        # distributes across the full pool instead of pinning to index 0.
+        # Secondary tiebreaker: position, so a same-hint cast still gets
+        # variety even on a fresh database (all counts == 0).
+        counts = usage_counts or {}
+
+        def _fallback_key(desc: VoiceDescriptor) -> tuple[int, int]:
+            # (usage_count, catalog_position) — sort ascending
+            return (counts.get(desc.voice_id, 0), candidates.index(desc))
+
+        sorted_candidates = sorted(candidates, key=_fallback_key)
+        # Group candidates that share the minimum usage count so position
+        # rotates only within truly tied entries.
+        min_count = _fallback_key(sorted_candidates[0])[0]
+        tied = [c for c in sorted_candidates
+                if counts.get(c.voice_id, 0) == min_count]
+        best = tied[position % len(tied)]
     return best.voice_id
 
 
@@ -488,6 +791,8 @@ def match_voices_for_cast(
     cast: dict[str, dict],
     available_voices: list[str] | None = None,
     catalog: dict[str, VoiceDescriptor] | None = None,
+    usage_counts: dict[str, int] | None = None,
+    exclude_whispery: bool = False,
 ) -> dict[str, str]:
     """Assign unique voices to an entire cast, best-fit first.
 
@@ -505,6 +810,10 @@ def match_voices_for_cast(
         available_voices: Only consider these voice IDs. If None,
                           uses the full catalog.
         catalog:          Voice catalog dict. Defaults to KOKORO_VOICE_CATALOG.
+        usage_counts:     Dict of voice_id → total times used globally
+                          (from VoiceRegistry.usage_counts()). Passed through
+                          to each match_voice() call so the zero-score fallback
+                          prefers least-used voices. None = legacy behaviour.
 
     Returns:
         Dict mapping speaker_name → voice_id for every speaker in cast.
@@ -520,7 +829,7 @@ def match_voices_for_cast(
     assigned: dict[str, str] = {}
     used: set[str] = set()
 
-    for speaker, info in cast.items():
+    for position, (speaker, info) in enumerate(cast.items()):
         gender = info.get("gender")
         hint = info.get("voice_hint", "")
 
@@ -530,6 +839,9 @@ def match_voices_for_cast(
             available_voices=available_voices,
             exclude=used,
             catalog=catalog,
+            position=position,
+            usage_counts=usage_counts,
+            exclude_whispery=exclude_whispery,
         )
 
         if voice_id is None:
@@ -541,6 +853,9 @@ def match_voices_for_cast(
                 available_voices=available_voices,
                 exclude=set(),
                 catalog=catalog,
+                position=position,
+                usage_counts=usage_counts,
+                exclude_whispery=exclude_whispery,
             )
 
         if voice_id:

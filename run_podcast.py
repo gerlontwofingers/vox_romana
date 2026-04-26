@@ -122,6 +122,7 @@ from vox_romana import (
     PodcastConductor,
     DeepSeekClient,
 )
+from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.shows.podcast.serializer import PodcastSerializer
 
 
@@ -158,8 +159,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("output"),
-        help="Base output directory (default: output/). Files go to text/podcasts/ under this.",
+        default=_OUTPUT_DIR,
+        help=f"Base output directory (default: {_OUTPUT_DIR}). Files go to text/podcasts/ under this.",
     )
 
     # ── Research ─────────────────────────────────────────────────────
@@ -170,7 +171,15 @@ def parse_args() -> argparse.Namespace:
         "keys are set (GOOGLE_API_KEY + GOOGLE_CSE_ID), falls back to LLM "
         "knowledge otherwise.",
     )
-
+    parser.add_argument(
+        "--no-memory",
+        action="store_false",
+        dest="memory",
+        default=True,
+        help="Disable memory-first lookup during --research. By default, the "
+        "local knowledge base (Chroma + FTS5) is consulted before any web "
+        "search; use this flag to force web-only research.",
+    )
     # ── Overrides ────────────────────────────────────────────────────
     # Post-it notes on the Architect's plan. Applied last, always win.
     parser.add_argument(
@@ -184,6 +193,27 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Override the show name (e.g. 'Trash Pandas')",
+    )
+
+    # ── Fact-checking ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--fact-check",
+        choices=["off", "quick", "thorough"],
+        default="off",
+        dest="fact_check",
+        help=(
+            "Fact-check mode for generated content (default: off). "
+            "'quick': verify claims against --reference-material only. "
+            "'thorough': also web-searches unverifiable claims. "
+            "Segments with fabricated facts are regenerated up to --max-retries times."
+        ),
+    )
+    parser.add_argument(
+        "--reference-material",
+        type=Path,
+        default=None,
+        dest="reference_material",
+        help="Path to a plain-text file with factual reference material for fact-checking.",
     )
 
     # ── Tagging ──────────────────────────────────────────────────────
@@ -217,7 +247,19 @@ def main() -> None:
       1. Bootstrap: brief → PodcastConfig (Architect + Host Profiler + Director)
       2. Conductor: config → PodcastConductorResult (segment-level generation)
       3. Serialize: result → JSON file
+
+    .. deprecated::
+        Use ``run_show.py`` instead. ``run_show.py`` auto-routes to the
+        podcast pipeline when the brief is podcast-shaped. ``run_podcast.py``
+        will be removed in a future release.
     """
+    import warnings
+    warnings.warn(
+        "run_podcast.py is deprecated; use 'python run_show.py <prompt>' "
+        "which auto-routes to the podcast pipeline.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     args = parse_args()
 
     # ── Validate the prompt file ─────────────────────────────────────
@@ -244,7 +286,7 @@ def main() -> None:
         overrides["show_name"] = args.show_name
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 1: BOOTSTRAP — brief → fully populated PodcastConfig
+    # BOOTSTRAP — brief → fully populated PodcastConfig
     # ══════════════════════════════════════════════════════════════════
     # Pre-production. Three AI agents read your brief:
     #   ARCHITECT:      Decides show name, host cast, segment structure.
@@ -263,7 +305,7 @@ def main() -> None:
     # Shared client for bootstrap + conductor.
     client = DeepSeekClient()
 
-    log("Phase 1: Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
+    log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
     bootstrap_kwargs = dict(
@@ -271,9 +313,33 @@ def main() -> None:
         auto_research=False,
     )
 
+    # ── Fact-check configuration ─────────────────────────────────────
+    if args.fact_check != "off":
+        reference_text: str | None = None
+        if args.reference_material is not None:
+            if not args.reference_material.exists():
+                print(f"Error: reference material file not found: {args.reference_material}", file=sys.stderr)
+                sys.exit(1)
+            reference_text = args.reference_material.read_text().strip()
+        bootstrap_kwargs["fact_check"] = args.fact_check
+        bootstrap_kwargs["reference_material"] = reference_text
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    else:
+        bootstrap_kwargs["fact_check"] = "off"
+
     # ── Optional: auto-research ──────────────────────────────────────
     if args.research:
         bootstrap_kwargs["auto_research"] = True
+        if args.memory:
+            try:
+                from vox_romana.core.catalog import Catalog
+                from vox_romana.memory.recall import MemoryRecall
+                catalog = Catalog()
+                memory = MemoryRecall(catalog=catalog)
+                bootstrap_kwargs["memory"] = memory
+                log("  Memory-first search: ON", quiet=args.quiet)
+            except Exception as e:
+                log(f"  Memory-first search: OFF (init failed: {e})", quiet=args.quiet)
         try:
             from vox_romana.core.search import GoogleSearchProvider
             search_provider = GoogleSearchProvider()
@@ -294,7 +360,7 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2: CONDUCTOR — config → live podcast episode
+    # CONDUCTOR — config → live podcast episode
     # ══════════════════════════════════════════════════════════════════
     # Recording studio is live. The Conductor generates each segment
     # by asking the LLM to write dialogue for the full host cast at
@@ -302,7 +368,7 @@ def main() -> None:
     #
     # After every few segments, it compresses the context window and
     # optionally checks in with the Director for pacing adjustments.
-    log("Phase 2: Conductor (generating the episode)...", quiet=args.quiet)
+    log("Conductor (generating the episode)...", quiet=args.quiet)
     t2 = time.time()
 
     conductor = PodcastConductor(config, client=client)
@@ -314,21 +380,21 @@ def main() -> None:
     print()
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 3: SERIALIZE — save to JSON
+    # SERIALIZE — save to JSON
     # ══════════════════════════════════════════════════════════════════
     # Convert the in-memory podcast to a JSON file. This file contains
     # every line of dialogue, segment structure, host metadata, voice
     # casting info — everything TTS needs to render audio.
-    log("Phase 3: Saving output...", quiet=args.quiet)
+    log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_podcast()
     serializer = PodcastSerializer()
 
-    # Build filename: {prompt_stem}_{tag}_{timestamp}.json
+    # Build filename: {classification}_{prompt_stem}_{tag}_{timestamp}.json
     stem = args.prompt.stem
     tag_part = f"_{args.tag}" if args.tag else ""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{stem}{tag_part}_{timestamp}.json"
+    filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
     output_path = output_dir / filename
 
     serializer.save(merged, output_path)
