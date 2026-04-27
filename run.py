@@ -58,12 +58,20 @@ MODES:
         python run.py prompts/ubi_debate.txt
         python run.py prompts/tech_news.txt --engine kokoro --format mp3
 
+        # --name gives the output files a fixed stem (no timestamp):
+        python run.py prompts/ubi_debate.txt --name ubi_v4
+        # → output/text/debates/ubi_v4.json  +  output/text/debates/ubi_v4.mp3
+
     generate:
         Text generation only. Produces the show JSON but no audio.
         Equivalent to calling run_show.py directly.
 
         python run.py prompts/ubi_debate.txt --mode generate
         python run.py prompts/trash_pandas_01.txt --mode generate --tag v2
+
+        # Fixed output stem:
+        python run.py prompts/ubi_debate.txt --mode generate --name ubi_v4
+        # → output/text/debates/ubi_v4.json
 
     render:
         Audio rendering only from an existing show JSON. Requires
@@ -73,6 +81,43 @@ MODES:
         python run.py --mode render --script-input output/text/debates/ubi.json
         python run.py --mode render --script-input output/text/news/tech.json \\
             --engine piper --audio-output my_show.mp3
+
+    video:
+        Full pipeline (generate + render) plus an animation pass that
+        produces an MP4 using Stable Diffusion + Ken Burns compositing.
+
+        Platform choices (--video-platform, default: youtube):
+            youtube  → 1920×1080 landscape MP4
+            tiktok   → 1080×1920 portrait MP4
+            both     → landscape + portrait in a single SDXL pass
+            fast     → 512×512, SD 1.5, 4 steps — dev / diagnostic run
+
+        python run.py prompts/ubi_debate.txt --mode video
+        # → video_youtube.mp4  (default platform)
+
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform tiktok
+        # → video_tiktok.mp4
+
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform both
+        # → video_youtube.mp4  +  video_tiktok.mp4
+
+        # --name controls the video stem too:
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --name ubi_v4 --video-platform both
+        # → ubi_v4_youtube.mp4  +  ubi_v4_tiktok.mp4
+
+        # Quick diagnostic render (SD 1.5, 512×512, 4 steps, 15 fps):
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform fast
+        # → video_fast.mp4
+
+        # Custom visual style and output directory:
+        python run.py prompts/tech_news.txt --mode video \\
+            --visual-brief "clean studio, cool blue tones" \\
+            --video-output ~/Desktop/news_video/ \\
+            --video-platform youtube
 
 USAGE:
 
@@ -90,6 +135,10 @@ USAGE:
     # Override turns, tag the run, custom audio output:
     python run.py prompts/ubi_debate.txt --turns 50 --tag v3 \\
         --audio-output output/audio/debates/ubi_v3.mp3
+
+    # Fixed output stem — same stem used for .json, .mp3, .mp4:
+    python run.py prompts/ubi_debate.txt --name ubi_v4
+    # → output/text/debates/ubi_v4.json  +  ubi_v4.mp3
 
     # Quiet mode (just prints the audio path at the end):
     python run.py prompts/ubi_debate.txt --quiet
@@ -110,6 +159,9 @@ USAGE:
     python run.py prompts/tech_news.txt --mode generate \\
         --segments 8 --tone urgent --tag breaking
 
+    # Fixed output stem:
+    python run.py prompts/ubi_debate.txt --mode generate --name ubi_v4
+
     # === RENDER MODE (audio only) ====================================
 
     # Render an existing JSON to audio:
@@ -128,6 +180,35 @@ USAGE:
     python run.py prompts/podcast/soccer.txt --type podcast --duration 30
     python run.py prompts/podcast/soccer.txt --mode generate --type podcast
     python run.py --mode render --script-input output/text/podcasts/soccer.json
+
+    # === VIDEO MODE (generate + render + animate) ====================
+
+    # Default platform (youtube = 1920×1080 landscape):
+    python run.py prompts/ubi_debate.txt --mode video
+
+    # TikTok portrait (1080×1920):
+    python run.py prompts/ubi_debate.txt --mode video --video-platform tiktok
+
+    # Both landscape + portrait in one SDXL pass:
+    python run.py prompts/ubi_debate.txt --mode video --video-platform both
+
+    # Fast diagnostic run (SD 1.5, 512×512, 4 steps):
+    python run.py prompts/ubi_debate.txt --mode video --video-platform fast
+
+    # Fixed output stem applied to all video files:
+    python run.py prompts/ubi_debate.txt --mode video \\
+        --name ubi_v4 --video-platform both
+    # → output/.../video/ubi_v4_youtube.mp4  +  ubi_v4_tiktok.mp4
+
+    # Custom visual brief and explicit output directory:
+    python run.py prompts/tech_news.txt --mode video \\
+        --visual-brief "clean studio, cool blue tones" \\
+        --video-output ~/Desktop/news_video/ \\
+        --video-platform youtube
+
+    # Write video directly to a named file:
+    python run.py prompts/ubi_debate.txt --mode video \\
+        --video-output ~/Desktop/ubi_final.mp4
 
     # === PUBLISH MODE (human-readable document from JSON) ===========
 
@@ -207,6 +288,10 @@ USAGE:
         --music-prompt "lo-fi jazz rainy day" \
         --music-duration 20 --format wav --audio-output ~/Desktop/lofi.wav
     #
+    # Fixed output stem (→ output/music/theme.mp3):
+    python run.py --mode music \
+        --music-prompt "dramatic orchestral sting" --name theme
+    #
     # Lighter model for quick tests:
     python run.py --mode music \
         --music-prompt "energetic synthwave" \
@@ -221,7 +306,25 @@ OUTPUT:
     generate mode → JSON file in output/text/{type}/
     render mode   → Audio file next to the JSON (or --audio-output)
     full mode     → Both JSON and audio files
+    video mode    → MP4 next to the audio file in a video/ subdirectory
+                    (or --video-output).  'both' platform produces two files.
     music mode    → Audio file in output/music/ (or --audio-output)
+
+NAMING (--name / -n STEM):
+    Pass --name STEM to fix the output filename across all modes.  The
+    stem is used without an extension and without a path separator.
+
+        python run.py prompts/ubi_debate.txt --name ubi_v4
+        # → ubi_v4.json  ubi_v4.mp3
+
+        python run.py prompts/ubi_debate.txt --mode video --name ubi_v4
+        # → ubi_v4.json  ubi_v4.mp3  ubi_v4_youtube.mp4  (or _tiktok / _fast)
+
+        python run.py --mode music --music-prompt "lo-fi jazz" --name lofi
+        # → output/music/lofi.mp3
+
+    Without --name, outputs use the auto-generated pattern:
+        {type}_{prompt_stem}[_{tag}]_{timestamp}.{ext}
 """
 
 from __future__ import annotations
@@ -229,6 +332,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -377,6 +481,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Values > 1 parallelize spoken-event synthesis in the render "
             "step. Recommended for Piper only — Kokoro (MLX/MPS) parallel "
             "safety is not yet validated."
+        ),
+    )
+
+    parser.add_argument(
+        "--name", "-n",
+        type=str,
+        default=None,
+        dest="name",
+        metavar="STEM",
+        help=(
+            "Output filename stem for the primary artifact. No extension, no "
+            "path separator. '--name ubi_v4' → ubi_v4.json, ubi_v4.mp3, "
+            "ubi_v4.mp4. Combines with --output (directory). Overrides the "
+            "auto-generated {type}_{prompt}_{tag}_{timestamp} stem. When both "
+            "--name and --tag are given, --name wins and no timestamp is "
+            "appended."
         ),
     )
 
@@ -777,11 +897,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="video_output",
         type=Path,
         default=None,
-        metavar="DIR",
+        metavar="DIR_OR_FILE",
         help=(
-            "Output directory for rendered video files. "
-            "Defaults to a 'video/' subdirectory next to the audio file. "
-            "Only used with --mode video."
+            "Output directory for rendered video files, OR a full file path "
+            "(e.g. ~/Desktop/ubi.mp4). When a full file path is given the "
+            "filename is used directly. Defaults to a 'video/' subdirectory "
+            "next to the audio file. Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--video-platform",
+        dest="video_platform",
+        type=str,
+        default="youtube",
+        choices=["youtube", "tiktok", "both", "fast"],
+        metavar="{youtube,tiktok,both,fast}",
+        help=(
+            "Target platform for video output (default: youtube). "
+            "'youtube' = 1920×1080 landscape. "
+            "'tiktok' = 1080×1920 portrait. "
+            "'both' = landscape + portrait in one SDXL pass. "
+            "'fast' = 512×512, SD 1.5, 4 inference steps — "
+            "dev/diagnostic speed run. Only used with --mode video."
         ),
     )
     # ── Publish flags (--mode publish or --publish add-on) ───────────
@@ -1105,6 +1242,10 @@ def _build_render_argv(
 
     if args.audio_output:
         argv += ["--output", str(args.audio_output)]
+    elif getattr(args, "name", None):
+        # --name sets the audio stem when no explicit --audio-output was given.
+        # We derive the path from the JSON's parent directory.
+        argv += ["--output", str(Path(json_path).parent / f"{args.name}.{args.format}")]
     if args.voice_map:
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
@@ -1186,38 +1327,70 @@ def _mode_video(args: argparse.Namespace) -> None:
     so the heavy animation imports (torch, diffusers, moviepy) are never
     loaded for non-video modes.
 
+    Platform dispatch is controlled by ``args.video_platform``:
+      - ``youtube`` (default) — 1920×1080 landscape MP4.
+      - ``tiktok``            — 1080×1920 portrait MP4.
+      - ``both``              — landscape + portrait in one SDXL pass;
+                                returns the YouTube path as the primary result.
+      - ``fast``              — 512×512, SD 1.5, 4 inference steps, 15 fps;
+                                intended for quick dev/diagnostic runs.
+
+    Output naming:
+      - ``args.name`` sets a fixed filename stem (no timestamp).
+        With ``both``, filenames become ``{name}_youtube.mp4`` and
+        ``{name}_tiktok.mp4``.  Without ``--name`` the defaults are
+        ``video_{platform}.mp4`` (or ``video_fast.mp4``).
+      - ``args.video_output`` can be a directory (default:
+        ``{audio_parent}/video/``) or a full file path for single-platform
+        runs.
+
     Args:
-        args: Parsed namespace from parse_args().
+        args: Parsed namespace from parse_args().  Key attributes read:
+              ``args.video_platform``, ``args.video_output``, ``args.name``,
+              ``args.visual_brief``, ``args.quiet``.
     """
     from vox_romana.cli.animation_runner import run_animation
+
+    pipeline_start = time.time()
 
     if not args.quiet:
         print(f"\n{'─' * 60}")
         print("  Step 1/3: Generating script…")
         print(f"{'─' * 60}\n")
 
+    t0 = time.time()
     json_path = _mode_generate(args)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
 
     if not args.quiet:
         print(f"\n{'─' * 60}")
         print("  Step 2/3: Rendering audio…")
         print(f"{'─' * 60}\n")
 
+    t0 = time.time()
     _mode_render(json_path, args)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
 
     audio_suffix = f".{args.format}"
     audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)
 
     if not args.quiet:
+        platform = getattr(args, "video_platform", "youtube")
         print(f"\n{'─' * 60}")
-        print("  Step 3/3: Animating…")
+        print(f"  Step 3/3: Animating [{platform}]…")
         print(f"{'─' * 60}\n")
 
+    t0 = time.time()
     video_path = run_animation(args, json_path, audio_path)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
 
     if not args.quiet:
+        total_elapsed = time.time() - pipeline_start
         print(f"\n{'═' * 60}")
-        print("  Pipeline complete!")
+        print(f"  Pipeline complete!  (total: {total_elapsed:.0f}s)")
         print(f"  Script: {json_path}")
         print(f"  Audio:  {audio_path}")
         if video_path:
@@ -1334,14 +1507,17 @@ def _mode_music(args: argparse.Namespace) -> Path:
     Accepts a prompt from ``args.music_prompt`` (inline text) or
     ``args.prompt`` (plain-text file).  Generates audio via
     :class:`MusicGenEngine`, converts to the requested format, and
-    writes the result to ``args.audio_output`` or an auto-named path
-    under ``output/music/``.
+    writes the result to the first matching path below:
+
+      1. ``args.audio_output``  — explicit ``--audio-output`` path.
+      2. ``output/music/{args.name}.{format}``  — when ``--name`` is set.
+      3. ``output/music/{slug}_{timestamp}.{format}``  — auto-generated.
 
     Args:
         args: Parsed namespace from parse_args().  Reads
               ``args.music_prompt``, ``args.prompt``, ``args.music_model``,
               ``args.music_duration``, ``args.format``, ``args.audio_output``,
-              ``args.quiet``.
+              ``args.name``, ``args.quiet``.
 
     Returns:
         Path to the generated audio file.
@@ -1379,6 +1555,11 @@ def _mode_music(args: argparse.Namespace) -> Path:
     # ── Determine output path ─────────────────────────────────────────
     if args.audio_output:
         out_path = Path(args.audio_output)
+    elif getattr(args, "name", None):
+        # --name overrides the auto-generated slug+timestamp stem.
+        out_dir = _OUTPUT_DIR / "music"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{args.name}.{args.format}"
     else:
         # Auto-name: output/music/<slug>_<timestamp>.<format>
         slug = re.sub(r"[^a-z0-9]+", "_", prompt_text[:40].lower()).strip("_")

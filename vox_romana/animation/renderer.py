@@ -108,6 +108,8 @@ class AnimationRenderer:
         event_durations: dict[int, float] | None = None,
         skip_image_gen: bool = False,
         skip_timeline_sync: bool = False,
+        output_resolution: tuple[int, int] | None = None,
+        output_filename: str | None = None,
     ) -> Path:
         """Run the full animation pipeline and return the output video path.
 
@@ -138,6 +140,19 @@ class AnimationRenderer:
                 If True, skip TimelineSync (use whatever start/end times
                 are already set, or let the backend use fallback durations).
                 Useful when timestamps were set externally.
+
+            output_resolution:
+                When set, overrides ``plan.resolution`` for the compositing
+                pass only (SD image generation is unaffected). The original
+                resolution is restored after the backend call. Use this for
+                ``--video-platform both`` where SDXL generates at 1024×1024
+                but the video is composited to 1920×1080 or 1080×1920.
+
+            output_filename:
+                Output filename (with or without extension). When set, the
+                stem replaces the default ``"video"`` stem. E.g. passing
+                ``"ubi_v4_youtube.mp4"`` writes ``ubi_v4_youtube.mp4`` to
+                ``output_dir``.
 
         Returns:
             Path to the written video file.
@@ -180,9 +195,23 @@ class AnimationRenderer:
         # AnimationPlan doesn't carry output_format directly — that's on
         # AnimationConfig. Default to mp4.
         output_ext = fmt if fmt in ("mp4", "webm") else "mp4"
-        output_path = output_dir / f"video.{output_ext}"
 
-        return backend.render(plan, audio_path=audio_path, output_path=output_path)
+        # Derive output stem: from explicit filename, else default "video".
+        stem = Path(output_filename).stem if output_filename else "video"
+        output_path = output_dir / f"{stem}.{output_ext}"
+
+        # Override plan.resolution for the compositing pass only.
+        # SD image generation (Stage 1) already completed with the original
+        # resolution; this affects only the moviepy compositing dimensions.
+        _saved_resolution = plan.resolution
+        if output_resolution is not None:
+            plan.resolution = output_resolution
+
+        try:
+            return backend.render(plan, audio_path=audio_path, output_path=output_path)
+        finally:
+            if output_resolution is not None:
+                plan.resolution = _saved_resolution
 
     # ── Backend dispatch ──────────────────────────────────────────────────
 

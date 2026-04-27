@@ -79,6 +79,7 @@ APPLE SILICON ONLY:
 
 from __future__ import annotations
 
+import contextlib
 import io
 import tempfile
 from pathlib import Path
@@ -243,7 +244,12 @@ class KokoroEngine(BaseTTSEngine):
             gen_kwargs.update(kwargs)
 
             # Generate! This is where the GPU does its thing.
-            _lazy_generate_audio(**gen_kwargs)
+            # Suppress the bare print() fired by mlx_audio's
+            # KokoroModel._get_pipeline() on every language-pipeline
+            # creation — it's not a logger and cannot be silenced via
+            # verbose=False.
+            with contextlib.redirect_stdout(io.StringIO()):
+                _lazy_generate_audio(**gen_kwargs)
 
             # Read back the generated WAV file.
             # generate_audio with join_audio=True writes: {prefix}.wav

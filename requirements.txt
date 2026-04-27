@@ -63,7 +63,7 @@ langdetect>=1.0.9           # language detection for TranslatorAgent
 # Required only when using the animation pipeline (vox_romana/animation/).
 # If not installed, ImageGenerator raises ImportError with a clear install
 # message on first use. All other vox_romana features work without these.
-diffusers>=0.30,<0.32       # Stable Diffusion pipelines (local SD inference)
+diffusers>=0.32             # Stable Diffusion pipelines (local SD inference)
 moviepy>=1.0.3,<2.0         # video compositing + audio sync backend
 Pillow>=10.4,<11.0          # image I/O (save PNG frames; PIL used by diffusers too)
 bert-score>=0.3             # back-translation quality scoring (BERTScore F1)
@@ -96,7 +96,7 @@ sentence-transformers>=5.4,<5.5
 # MusicGenEngine sets HF_HUB_ENABLE_HF_TRANSFER=1 automatically when it is present.
 hf_transfer>=0.1.8
 transformers>=4.44
-peft>=0.12,<0.14            # LoRA fine-tuning for memory system
+peft>=0.17                  # LoRA fine-tuning for memory system
 datasets>=3.0,<3.2          # dataset loading for memory trainer
 # neuralforecast>=1.7,<1.8  # uncomment for transformer-based forecasting
 

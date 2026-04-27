@@ -253,16 +253,18 @@ class TestMusicGenEngineGenerate:
     # ── Prompt and duration forwarding ────────────────────────────
 
     def test_duration_forwarded_to_set_generation_params(self):
-        """generate() calls model.set_generation_params(duration=<value>)."""
+        """generate() passes max_new_tokens=int(duration*50) to model.generate()."""
         engine, fake_model, _ = self._make_engine_with_mock_model()
         engine.generate("intro music", duration=12.5)
-        fake_model.set_generation_params.assert_called_once_with(duration=12.5)
+        call_kwargs = fake_model.generate.call_args
+        assert call_kwargs.kwargs["max_new_tokens"] == int(12.5 * 50)
 
     def test_default_duration_is_8_seconds(self):
-        """Default duration is 8.0 seconds."""
+        """Default duration produces max_new_tokens=int(8.0*50)=400."""
         engine, fake_model, _ = self._make_engine_with_mock_model()
         engine.generate("background music")
-        fake_model.set_generation_params.assert_called_once_with(duration=8.0)
+        call_kwargs = fake_model.generate.call_args
+        assert call_kwargs.kwargs["max_new_tokens"] == int(8.0 * 50)
 
     def test_prompt_forwarded_to_processor(self):
         """The prompt string is passed to the processor as text=[prompt]."""

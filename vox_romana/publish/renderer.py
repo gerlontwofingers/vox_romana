@@ -36,12 +36,10 @@ from .models import FormattedDocument, Line, PublishResult, Section
 # Detect availability without importing the heavy modules at import time.
 def _check_pdf_available() -> bool:
     try:
-        import importlib.util
-        for mod in ("weasyprint", "jinja2"):
-            if importlib.util.find_spec(mod) is None:
-                return False
+        import weasyprint  # noqa: F401
+        import jinja2  # noqa: F401
         return True
-    except Exception:  # pragma: no cover — defensive
+    except Exception:  # OSError when native libs (libgobject etc.) are absent
         return False
 
 

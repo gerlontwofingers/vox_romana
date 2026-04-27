@@ -76,6 +76,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+# Pillow ≥ 10.0 removed Image.ANTIALIAS (replaced by Image.LANCZOS).
+# moviepy 1.x still references Image.ANTIALIAS in its resize filter.
+# Patch it back in so moviepy doesn't crash on modern Pillow.
+try:
+    from PIL import Image as _PILImage
+    if not hasattr(_PILImage, "ANTIALIAS"):
+        _PILImage.ANTIALIAS = _PILImage.LANCZOS  # type: ignore[attr-defined]
+except ImportError:
+    pass
+
 from ..models import AnimationPlan, SceneSpec
 from .base import BaseAnimationBackend
 
@@ -315,12 +325,12 @@ class MoviePyBackend(BaseAnimationBackend):
 
         # Common helper: zoom in over time.
         if hint == "ken_burns_zoom_in":
-            zoom_ratio = 1.0 + _KEN_BURNS_ZOOM_DELTA
             return clip.resize(  # type: ignore[attr-defined]
                 lambda t: 1.0 + (_KEN_BURNS_ZOOM_DELTA * t / duration)
             ).crop(x_center=width / 2, y_center=height / 2, width=width, height=height)  # type: ignore[attr-defined]
 
         if hint == "ken_burns_zoom_out":
+            zoom_ratio = 1.0 + _KEN_BURNS_ZOOM_DELTA
             return clip.resize(  # type: ignore[attr-defined]
                 lambda t: zoom_ratio - (_KEN_BURNS_ZOOM_DELTA * t / duration)
             ).crop(x_center=width / 2, y_center=height / 2, width=width, height=height)  # type: ignore[attr-defined]
@@ -328,19 +338,24 @@ class MoviePyBackend(BaseAnimationBackend):
         if hint == "ken_burns_pan_left":
             pan_px = int(width * _KEN_BURNS_PAN_FRACTION)
             # Expand to wider image, pan left → right viewport movement.
+            # moviepy 1.x crop() cannot accept a callable for x1 (it
+            # evaluates x2 = x1 + width inline, crashing with TypeError).
+            # Use fl() to slice the numpy frame directly instead.
             wide = clip.resize(width=width + pan_px)  # type: ignore[attr-defined]
-            return wide.crop(  # type: ignore[attr-defined]
-                x1=lambda t: int(pan_px * (1 - t / duration)),
-                y1=0, width=width, height=height,
-            )
+            def _pan_left(get_frame, t):  # noqa: E306
+                frame = get_frame(t)
+                x1 = int(pan_px * (1 - t / duration))
+                return frame[:height, x1:x1 + width]
+            return wide.fl(_pan_left)  # type: ignore[attr-defined]
 
         if hint == "ken_burns_pan_right":
             pan_px = int(width * _KEN_BURNS_PAN_FRACTION)
             wide = clip.resize(width=width + pan_px)  # type: ignore[attr-defined]
-            return wide.crop(  # type: ignore[attr-defined]
-                x1=lambda t: int(pan_px * t / duration),
-                y1=0, width=width, height=height,
-            )
+            def _pan_right(get_frame, t):  # noqa: E306
+                frame = get_frame(t)
+                x1 = int(pan_px * t / duration)
+                return frame[:height, x1:x1 + width]
+            return wide.fl(_pan_right)  # type: ignore[attr-defined]
 
         if hint == "parallax":
             # Subtle vertical drift — parallax requires multi-layer compositing

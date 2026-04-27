@@ -446,6 +446,7 @@ class FactChecker:
         """
         self._client = client
         self._search = search_provider
+        self._warned_no_search: bool = False
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -517,11 +518,13 @@ class FactChecker:
         # \u2500\u2500 Step 2b: Thorough \u2014 search for unverifiable claims \u2500\u2500\u2500\u2500\u2500\u2500
         if mode == "thorough":
             if self._search is None:
-                logger.warning(
-                    "FactChecker: mode='thorough' requested but no search_provider "
-                    "is configured. Falling back to quick (LLM knowledge) check — "
-                    "Google web search upgrade skipped."
-                )
+                if not self._warned_no_search:
+                    logger.warning(
+                        "FactChecker: mode='thorough' requested but no search_provider "
+                        "is configured. Falling back to quick (LLM knowledge) check — "
+                        "Google web search upgrade skipped."
+                    )
+                    self._warned_no_search = True
             else:
                 results = self._upgrade_with_search(results, flagged)
 

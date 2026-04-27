@@ -428,7 +428,7 @@ class DebateConductor(BaseConductor):
         try:
             report = self._fact_checker.check_content(
                 bootstrap_text,
-                chunk_id="bootstrap",
+                content_id="bootstrap",
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode="factual",
@@ -1147,7 +1147,7 @@ class DebateConductor(BaseConductor):
                 try:
                     fc_report = self._fact_checker.check_content(
                         turn_text,
-                        chunk_id=f"turn_{turn_number}_{speaker_name}",
+                        content_id=f"turn_{turn_number}_{speaker_name}",
                         reference_material=config.reference_material,
                         mode=config.fact_check,
                         content_mode="factual",

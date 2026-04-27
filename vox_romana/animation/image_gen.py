@@ -213,11 +213,12 @@ class ImageGenerator:
             from diffusers import (  # noqa: PLC0415
                 DiffusionPipeline,
                 StableDiffusionPipeline,
+                StableDiffusionXLPipeline,
             )
         except ImportError as exc:
             raise ImportError(
                 "diffusers is required for local image generation. "
-                "Install with: pip install 'diffusers>=0.30,<0.32' Pillow"
+                "Install with: pip install 'diffusers>=0.32' Pillow"
             ) from exc
 
         logger.info(
@@ -246,6 +247,34 @@ class ImageGenerator:
             )
 
         pipeline = pipeline.to(self._device)
+
+        # MPS (Apple Silicon) VAE dtype handling differs by model family:
+        #
+        #  SDXL: float16 VAE decode produces NaN → upcast VAE to float32.
+        #        The heavier UNet stays in float16 so memory overhead is small.
+        #        See: https://github.com/huggingface/diffusers/issues/4078
+        #
+        #  SD 1.x: UNet loads in float16; the VAE *must* also be float16 or MPS
+        #          raises a dtype mismatch: "Input type (c10::Half) and bias type
+        #          (float) should be the same".
+        if self._device == "mps" and hasattr(pipeline, "vae"):
+            if isinstance(pipeline, StableDiffusionXLPipeline):
+                pipeline.vae.to(torch.float32)
+                logger.info("ImageGenerator: VAE upcast to float32 (SDXL MPS NaN workaround)")
+            else:
+                pipeline.vae.to(torch.float16)
+                logger.info("ImageGenerator: VAE cast to float16 (SD 1.x MPS dtype alignment)")
+
+        # Disable SD 1.x safety checker — fires false positives at low step
+        # counts (e.g. 4 steps in --video-platform fast), returning all-black
+        # frames.  SDXL pipelines never have a safety_checker attribute, so
+        # the hasattr guard is sufficient — no isinstance needed.
+        if hasattr(pipeline, "safety_checker") and pipeline.safety_checker is not None:
+            pipeline.safety_checker = None
+            logger.info(
+                "ImageGenerator: SD 1.x safety checker disabled "
+                "(false positives at low step counts)"
+            )
 
         # Reduce peak memory pressure — important on MPS (unified memory)
         # and CPU where there's no dedicated VRAM budget.

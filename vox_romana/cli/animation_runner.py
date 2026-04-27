@@ -166,25 +166,127 @@ def run_animation(
         print(f"  Plan: {len(plan.scenes)} scenes, style={plan.style}")
 
     # ── Stage 4: render ─────────────────────────────────────────────
+    # Resolve output directory and optional explicit filename.
+    # --video-output accepts either a directory OR a full file path
+    # (detected by a known video extension).
     video_output = getattr(args, "video_output", None)
+    platform = getattr(args, "video_platform", "youtube")
+    name_stem = getattr(args, "name", None) or None  # normalise empty str
+
+    explicit_filename: str | None = None
     if video_output is not None:
-        output_dir = Path(video_output)
+        p = Path(video_output)
+        if p.suffix.lower() in (".mp4", ".webm", ".mov"):
+            output_dir = p.parent
+            explicit_filename = p.name
+        else:
+            output_dir = p
     else:
         output_dir = audio_path.parent / "video"
+
+    # --name overrides the stem when no explicit file path was given.
+    if name_stem and not explicit_filename:
+        explicit_filename = f"{name_stem}.mp4"
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not quiet:
-        print(f"\n  Rendering video to {output_dir}…")
+        print(f"\n  Platform: {platform}")
+        print(f"  Rendering video to {output_dir}…")
 
-    renderer = AnimationRenderer()
-    # event_durations=None → TimelineSync is skipped; scenes fall back
-    # to a fixed per-scene duration.  Precise audio-synced timing is a
-    # follow-up shot once the AudioMixer can emit per-event durations.
-    video_path = renderer.render(
-        plan,
-        output_dir,
-        audio_path=audio_path,
-        event_durations=None,
-    )
+    # ── Platform dispatch ────────────────────────────────────────────
+    # SD image generation is controlled by plan.image_model (model ID)
+    # and plan.resolution (width × height).  Both are mutable so we
+    # can override them in place before calling the renderer.
+    #
+    # renderer.render() accepts output_resolution to override compositing
+    # dimensions independently of image gen dimensions (used for "both"),
+    # and output_filename to control the output file stem.
+
+    if platform == "fast":
+        # Speed-optimised diagnostic mode: SD 1.5 at 512×512, 4 steps,
+        # 15 fps.  Swaps out the default SDXL pipeline entirely.
+        # SD 1.5 does NOT need the float32 VAE upcast — only SDXL on MPS
+        # triggers the NaN / black-frame bug.
+        from vox_romana.animation.image_gen import ImageGenerator  # noqa: PLC0415
+
+        _FAST_MODEL = "runwayml/stable-diffusion-v1-5"
+        plan.resolution = (512, 512)
+        plan.fps = 15
+        plan.image_model = _FAST_MODEL
+
+        renderer = AnimationRenderer(
+            image_generator=ImageGenerator(steps=4)
+        )
+        fname = explicit_filename or "video_fast.mp4"
+        video_path = renderer.render(
+            plan,
+            output_dir,
+            audio_path=audio_path,
+            event_durations=None,
+            output_filename=fname,
+        )
+
+    elif platform == "both":
+        # Generate SDXL frames ONCE at 1024×1024 (square), then composite
+        # to landscape (YouTube) and portrait (TikTok) in two moviepy passes.
+        # The second pass uses skip_image_gen=True — no re-diffusion.
+        plan.resolution = (1024, 1024)
+
+        yt_fname = f"{name_stem}_youtube.mp4" if name_stem else "video_youtube.mp4"
+        tt_fname = f"{name_stem}_tiktok.mp4"  if name_stem else "video_tiktok.mp4"
+
+        renderer = AnimationRenderer()
+
+        # Pass 1: generate frames + composite to 1920×1080
+        renderer.render(
+            plan,
+            output_dir,
+            audio_path=audio_path,
+            event_durations=None,
+            output_resolution=(1920, 1080),
+            output_filename=yt_fname,
+        )
+        # Pass 2: reuse frames, composite to 1080×1920
+        renderer.render(
+            plan,
+            output_dir,
+            audio_path=audio_path,
+            event_durations=None,
+            skip_image_gen=True,
+            output_resolution=(1080, 1920),
+            output_filename=tt_fname,
+        )
+        # Primary return value is the YouTube file.
+        video_path = output_dir / yt_fname
+
+    else:
+        # youtube or tiktok: single render pass at the target resolution.
+        _RESOLUTIONS = {
+            "youtube": (1920, 1080),
+            "tiktok":  (1080, 1920),
+        }
+        plan.resolution = _RESOLUTIONS[platform]
+        fname = explicit_filename or f"video_{platform}.mp4"
+
+        renderer = AnimationRenderer()
+        video_path = renderer.render(
+            plan,
+            output_dir,
+            audio_path=audio_path,
+            event_durations=None,
+            output_filename=fname,
+        )
+
+    # Flush MPS command queue before returning so that torch/diffusers
+    # tensors are released while the interpreter is still in a valid
+    # state.  Without this, the MPS finalizer runs during interpreter
+    # shutdown and triggers a SIGABRT (exit 139).
+    try:
+        import torch  # noqa: PLC0415
+        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+    except ImportError:
+        pass
 
     return video_path

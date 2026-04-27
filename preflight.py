@@ -137,6 +137,61 @@ def check_hf_cache() -> Result:
     return Result("HF cache dir", True, note, info_only=True)
 
 
+# ── Video / animation checks (--mode video) ───────────────────────────────────
+
+def check_imagemagick() -> Result:
+    """ImageMagick binary — needed by moviepy TextClip for text overlays.
+
+    Not required: the video renders without it (text overlays are silently
+    skipped).  Install with: brew install imagemagick
+    """
+    # ImageMagick 7 ships a unified `magick` binary; legacy `convert` is a
+    # symlink.  Check `magick` first; fall back to `convert` so older
+    # installations are also recognised.
+    for binary in ("magick", "convert"):
+        path = shutil.which(binary)
+        if path:
+            try:
+                out = subprocess.check_output(
+                    [binary, "--version"], stderr=subprocess.STDOUT, text=True
+                )
+                version_line = out.strip().splitlines()[0][:80]
+            except Exception:
+                version_line = path
+            return Result(
+                "imagemagick",
+                True,
+                f"{version_line} ({binary})",
+                required=False,
+            )
+    return Result(
+        "imagemagick",
+        False,
+        "not found — text overlays will be skipped (brew install imagemagick)",
+        required=False,
+    )
+
+
+def check_video_python_deps() -> list[Result]:
+    """Return Results for all Python packages required by --mode video."""
+    return [
+        check_import(
+            "diffusers",
+            required=False,
+        ),
+        check_import(
+            "moviepy",
+            pkg_name="moviepy",
+            required=False,
+        ),
+        check_import(
+            "PIL",
+            pkg_name="Pillow",
+            required=False,
+        ),
+    ]
+
+
 # ── Run all checks ────────────────────────────────────────────────────────────
 
 def _run_all() -> list[Result]:
@@ -172,6 +227,10 @@ def _run_all() -> list[Result]:
         # ── Data / models ─────────────────────────────────────────────
         check_piper_voices(),
         check_hf_cache(),
+
+        # ── Animation / video (--mode video) ─────────────────────────
+        *check_video_python_deps(),
+        check_imagemagick(),
     ]
 
 

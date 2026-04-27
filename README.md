@@ -61,6 +61,7 @@ between the two stages.
 | `full` (default) | Generate script → translate → render audio → publish document |
 | `generate` | Text generation only — produces a JSON script |
 | `render` | Audio rendering only from an existing JSON |
+| `video` | Full pipeline + Stable Diffusion animation → MP4 |
 | `publish` | Format an existing JSON into TXT and/or PDF |
 | `ingest` | Feed documents into the local knowledge base for `--research` |
 
@@ -206,6 +207,43 @@ python run.py --mode publish --script-input output/text/debates/ubi.json \
 python run.py --mode publish --script-input output/text/debates/ubi.json \
     --out-lang all
 ```
+
+### Video mode
+
+Generates a script, renders audio, then produces an MP4 using Stable Diffusion
+(Ken Burns motion effects, optional lower-third text overlays).
+
+```bash
+# Default: 1920×1080 YouTube landscape
+python run.py prompts/ubi_debate.txt --mode video
+
+# TikTok portrait (1080×1920)
+python run.py prompts/ubi_debate.txt --mode video --video-platform tiktok
+
+# Both landscape + portrait in one SDXL pass
+python run.py prompts/ubi_debate.txt --mode video --video-platform both
+
+# Fast diagnostic run — SD 1.5, 512×512, 4 inference steps, 15 fps
+# Useful for checking the pipeline without waiting for full SDXL generation
+python run.py prompts/ubi_debate.txt --mode video --video-platform fast
+
+# Custom visual brief and fixed output stem
+python run.py prompts/tech_news.txt --mode video \
+    --visual-brief "clean studio, cool blue tones" \
+    --name news_v1 --video-platform youtube
+```
+
+**Platform presets:**
+
+| Platform | Resolution | Model | Steps | FPS |
+|----------|-----------|-------|-------|-----|
+| `youtube` | 1920×1080 | SDXL | 20 | 30 |
+| `tiktok` | 1080×1920 | SDXL | 20 | 30 |
+| `both` | both | SDXL | 20 | 30 |
+| `fast` | 512×512 | SD 1.5 | 4 | 15 |
+
+See [docs/SETUP_VIDEO.md](docs/SETUP_VIDEO.md) for the full setup guide
+(Python packages, Apple Silicon notes, and known limitations).
 
 ### Ingest a knowledge base
 
@@ -357,5 +395,6 @@ Integration tests (`@pytest.mark.integration`) make real DeepSeek API calls and 
 - Optional: `weasyprint` + `jinja2` — PDF publish output
 - Optional: `chromadb` + `sentence-transformers` — Vector memory for `--research`
 - Optional: `beautifulsoup4`, `python-docx`, `openpyxl` — Extra ingest formats
+- Optional: `torch`, `diffusers`, `moviepy`, `Pillow`, `accelerate`, `peft` — `--mode video` animation pipeline (Stable Diffusion + Ken Burns compositing)
 
-See `requirements.txt` for pinned versions.
+See `requirements.txt` for pinned versions.  For `--mode video` specifically, see [docs/SETUP_VIDEO.md](docs/SETUP_VIDEO.md).

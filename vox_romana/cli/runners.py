@@ -358,10 +358,13 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
     serializer = DebateSerializer()
 
-    stem = args.prompt.stem
-    tag_part = f"_{args.tag}" if args.tag else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"debate_{stem}{tag_part}_{timestamp}.json"
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"debate_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save_merged(merged, output_path)
@@ -473,10 +476,13 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
     serializer = NewsSerializer()
 
-    stem = args.prompt.stem
-    tag_part = f"_{args.tag}" if args.tag else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"news_{stem}{tag_part}_{timestamp}.json"
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"news_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)
@@ -595,10 +601,13 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
     serializer = PodcastSerializer()
 
-    stem = args.prompt.stem
-    tag_part = f"_{args.tag}" if args.tag else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)
@@ -712,10 +721,13 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     merged = result.to_merged_audiobook()
     serializer = AudiobookSerializer()
 
-    stem = args.prompt.stem
-    tag_part = f"_{args.tag}" if args.tag else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"audiobook_{stem}{tag_part}_{timestamp}.json"
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"audiobook_{stem}{tag_part}_{timestamp}.json"
     output_path = args.output / filename
 
     serializer.save(merged, output_path)
@@ -768,7 +780,7 @@ def run_generate(args: argparse.Namespace) -> Path:
     if args.fact_check != "off":
         _preflight_checker = FactChecker.build_default(client)
         _preflight_report = _preflight_checker.check_content(
-            brief, chunk_id="brief", mode="quick", content_mode="factual"
+            brief, content_id="brief", mode="quick", content_mode="factual"
         )
         if _preflight_report.has_fabrications:
             print("\n\u26a0  PRE-FLIGHT WARNING: Your brief may contain incorrect claims.")

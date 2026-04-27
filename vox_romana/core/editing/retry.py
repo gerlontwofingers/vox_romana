@@ -16,7 +16,7 @@ USAGE:
     loop = RetryLoop(editor=editor, max_retries=3)
     result = loop.execute(
         generate_fn=lambda feedback: conductor.generate_chunk(section, feedback),
-        chunk_id="intro",
+        content_id="intro",
         outline=director_outline,
     )
     if result.warning:

@@ -149,6 +149,41 @@ class TestKokoroLanguage:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# KokoroEngine — stdout suppression during synthesis
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestKokoroStdoutSuppression:
+    """synthesize() must not leak any output to stdout (e.g. the bare
+    print() fired by mlx_audio's KokoroModel._get_pipeline)."""
+
+    def test_no_stdout_during_synthesize(self, capsys):
+        """No text should appear on stdout during a synthesize() call."""
+        engine = KokoroEngine()
+
+        def _noisy_gen(**kwargs):
+            # Simulate the library's bare print() plus write a wav file.
+            import os
+            output_path = kwargs.get("output_path", ".")
+            prefix = kwargs.get("file_prefix", "clip")
+            wav_path = os.path.join(output_path, f"{prefix}.wav")
+            with open(wav_path, "wb") as f:
+                f.write(_wav_bytes())
+            print("Creating new KokoroPipeline for language: a")
+
+        with patch(
+            "vox_romana.tts.engines.kokoro_engine._lazy_generate_audio",
+            side_effect=_noisy_gen,
+        ):
+            engine.synthesize("hello", voice="af_heart")
+
+        captured = capsys.readouterr()
+        assert captured.out == "", (
+            f"Expected no stdout, got: {captured.out!r}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PiperEngine — language helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

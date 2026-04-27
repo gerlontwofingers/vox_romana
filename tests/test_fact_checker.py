@@ -434,6 +434,39 @@ class TestThoroughFallback:
         assert report.results[0].verdict == "unverifiable"
         assert not report.has_fabrications
 
+    def test_warning_emitted_only_once_across_multiple_calls(self, caplog):
+        """The no-search warning fires exactly once no matter how many calls."""
+        extractor_resp = json.dumps([
+            {"claim": "Claim X", "reason": "r", "search_query": "q"},
+        ])
+        verifier_resp = json.dumps([
+            {"claim": "Claim X", "verdict": "unverifiable",
+             "explanation": "Not found", "source": "none"},
+        ])
+        import logging
+        checker = FactChecker(
+            client=_make_client(
+                extractor_resp, verifier_resp,
+                extractor_resp, verifier_resp,
+                extractor_resp, verifier_resp,
+            ),
+            search_provider=None,
+        )
+        with caplog.at_level(logging.WARNING, logger="vox_romana.core.fact_checker"):
+            for _ in range(3):
+                checker.check_content(
+                    "Claim X text",
+                    content_id=f"seg_{_:03d}",
+                    reference_material="ref",
+                    mode="thorough",
+                )
+        warning_msgs = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "no search_provider" in r.message.lower()
+               or "falling back" in r.getMessage().lower()
+        ]
+        assert len(warning_msgs) == 1
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST: check_content (full integration)

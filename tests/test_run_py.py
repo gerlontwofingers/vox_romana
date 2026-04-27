@@ -332,6 +332,65 @@ class TestModeExecution:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# VIDEO MODE ELAPSED TIME BANNERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestVideoModeElapsed:
+    """_mode_video prints per-step and total elapsed time banners."""
+
+    def _make_args(self, tmp_prompt, extra=None):
+        argv = [str(tmp_prompt), "--mode", "video"]
+        if extra:
+            argv += extra
+        return parse_args(argv)
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_elapsed_banners_printed(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, capsys
+    ):
+        """Each step prints 'Done in Xs'; the final banner includes total elapsed."""
+        from pathlib import Path
+        import run as run_master
+
+        fake_json = tmp_prompt.parent / "out.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        run_master._mode_video(self._make_args(tmp_prompt))
+
+        captured = capsys.readouterr().out
+        assert captured.count("Done in") == 3
+        assert "total:" in captured
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_no_elapsed_when_quiet(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, capsys
+    ):
+        """--quiet suppresses all banners including elapsed lines."""
+        from pathlib import Path
+        import run as run_master
+
+        fake_json = tmp_prompt.parent / "out.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--quiet"])
+        run_master._mode_video(args)
+
+        captured = capsys.readouterr().out
+        assert "Done in" not in captured
+        assert "total:" not in captured
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RENDER_SHOW.PY FEEDBACK ADDITIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
