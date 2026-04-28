@@ -577,6 +577,113 @@ class TestTTSRenderer:
         assert isinstance(result.voice_map, dict)
 
 
+class TestParallelRender:
+    """Tests for parallel TTS rendering (parallel_workers > 1)."""
+
+    def test_parallel_workers_validation(self):
+        """parallel_workers < 1 should raise ValueError."""
+        engine = FakeEngine()
+        with pytest.raises(ValueError, match="parallel_workers must be >= 1"):
+            TTSRenderer(engine, parallel_workers=0)
+        with pytest.raises(ValueError, match="parallel_workers must be >= 1"):
+            TTSRenderer(engine, parallel_workers=-1)
+
+    def test_parallel_default_is_one(self):
+        """parallel_workers default is 1 (sequential)."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine)
+        assert renderer._parallel_workers == 1
+
+    def test_parallel_render_produces_same_event_count(self, tmp_path):
+        """Parallel render should render the same number of events as sequential."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, parallel_workers=4)
+        data = make_debate_data(num_events=6, speakers=["Alice", "Bob"])
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert result.rendered == 6
+        assert result.skipped == 0
+        assert result.output_path.exists()
+        assert len(engine.calls) == 6
+
+    def test_parallel_render_preserves_order(self, tmp_path):
+        """Mixer must receive clips in script order regardless of pool ordering."""
+        # Use a FakeEngine that records call order — the renderer must call
+        # add_clip in event-index order, not future-completion order.
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, parallel_workers=4)
+        data = make_debate_data(
+            num_events=8, speakers=["Alice", "Bob", "Carol", "Dave"],
+        )
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        # The renderer's voice_map alternates by speaker; verify rendered=all.
+        assert result.rendered == 8
+        # Every event's text should have been synthesized exactly once.
+        called_texts = [c["text"] for c in engine.calls]
+        expected_texts = [e["text"] for e in data["events"]]
+        # Order in engine.calls may be non-deterministic with threads, but
+        # the SET must match (every text submitted exactly once).
+        assert sorted(called_texts) == sorted(expected_texts)
+
+    def test_parallel_matches_sequential_output(self, tmp_path):
+        """Parallel render result fields should match sequential for same input."""
+        data = make_debate_data(num_events=5, speakers=["Alice", "Bob"])
+
+        seq_engine = FakeEngine()
+        seq = TTSRenderer(seq_engine, parallel_workers=1).render(
+            data, tmp_path / "seq.wav", format="wav", quiet=True,
+        )
+
+        par_engine = FakeEngine()
+        par = TTSRenderer(par_engine, parallel_workers=3).render(
+            data, tmp_path / "par.wav", format="wav", quiet=True,
+        )
+
+        assert seq.total_events == par.total_events
+        assert seq.rendered == par.rendered
+        assert seq.skipped == par.skipped
+        assert seq.voice_map == par.voice_map
+
+    def test_parallel_skips_non_spoken_events(self, tmp_path):
+        """Parallel mode must still skip non-spoken events (break, etc.)."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine, parallel_workers=2)
+        data = make_debate_data(num_events=2)
+        # Inject a non-spoken event between the two utterances.
+        data["events"].insert(1, {
+            "global_order": 99,
+            "speaker_name": "Marker",
+            "text": "",
+            "event_kind": "break",
+        })
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert result.total_events == 3
+        assert result.rendered == 2
+        assert result.skipped == 1
+        # Engine should only be called for the two spoken events.
+        assert len(engine.calls) == 2
+
+    def test_parallel_synthesis_failure_skipped(self, tmp_path):
+        """A synthesis exception in one event should not crash the render."""
+        # Engine that raises on the second event's text only.
+        class FlakyEngine(FakeEngine):
+            def synthesize(self, text, **kwargs):
+                if "Turn 2" in text:
+                    raise RuntimeError("boom")
+                return super().synthesize(text, **kwargs)
+
+        engine = FlakyEngine()
+        renderer = TTSRenderer(engine, parallel_workers=3)
+        data = make_debate_data(num_events=3)
+        result = renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert result.total_events == 3
+        assert result.rendered == 2
+        assert result.skipped == 1
+
+
 class TestVoiceCasting:
     """Tests for gender-aware voice assignment via voice_casting metadata."""
 

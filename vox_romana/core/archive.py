@@ -25,7 +25,7 @@ USAGE:
     archive = NoteArchive("output/studio_memory/editor_notes.jsonl")
     archive.append(EditorNote(
         broadcast_id="abc123",
-        chunk_id="chunk_01",
+        content_id="chunk_01",
         outline_version=1,
         status="fail",
         attempt_number=1,

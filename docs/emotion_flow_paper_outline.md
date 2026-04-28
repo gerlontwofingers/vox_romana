@@ -266,7 +266,7 @@ Four items, each one paragraph:
 
 ### 6.4 Narrative delivery
 
-Brief note: the same `EmotionFlowReport` feeds `run_emotion_flow_show.py`
+Brief note: the same `EmotionFlowReport` feeds `run.py --mode emotion-flow --to-show`
 to produce an audio explainer. A one-paragraph pointer and a URL to a
 sample episode; full description of the show adapter is not in scope for
 the methods paper.

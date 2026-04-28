@@ -225,6 +225,125 @@ class TestEnsureLoaded:
 
         assert gen._pipeline is not None
 
+    def test_mps_sdxl_vae_upcast_to_float32(self) -> None:
+        """On MPS with SDXL, VAE should be cast to float32 (NaN workaround)."""
+        gen = ImageGenerator(device="mps")
+
+        mock_torch = MagicMock()
+        mock_torch.float32 = "float32"
+        mock_torch.float16 = "float16"
+
+        # Real class so isinstance(pipeline, StableDiffusionXLPipeline) → True.
+        class _FakeXLPipeline:
+            def __init__(self) -> None:
+                self.vae = MagicMock()
+                self.enable_attention_slicing = MagicMock()
+
+            def to(self, device: str) -> "_FakeXLPipeline":
+                return self
+
+        fake_pipeline = _FakeXLPipeline()
+        mock_diffusers = MagicMock()
+        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline
+        mock_diffusers.DiffusionPipeline.from_pretrained.return_value = fake_pipeline
+
+        with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
+            gen._ensure_loaded("stabilityai/stable-diffusion-xl-base-1.0")
+
+        fake_pipeline.vae.to.assert_called_with("float32")
+
+    def test_mps_sd15_vae_cast_to_float16(self) -> None:
+        """On MPS with SD 1.x, VAE must match UNet dtype (float16) to avoid crash."""
+        gen = ImageGenerator(device="mps")
+
+        mock_torch = MagicMock()
+        mock_torch.float32 = "float32"
+        mock_torch.float16 = "float16"
+
+        # XL class used only for the isinstance check — pipeline is NOT this class.
+        class _FakeXLPipeline:
+            pass
+
+        class _FakeSD15Pipeline:
+            def __init__(self) -> None:
+                self.vae = MagicMock()
+                self.enable_attention_slicing = MagicMock()
+
+            def to(self, device: str) -> "_FakeSD15Pipeline":
+                return self
+
+        fake_pipeline = _FakeSD15Pipeline()
+        mock_diffusers = MagicMock()
+        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline  # pipeline is not this
+        mock_diffusers.DiffusionPipeline.from_pretrained.return_value = fake_pipeline
+
+        with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
+            gen._ensure_loaded("runwayml/stable-diffusion-v1-5")
+
+        fake_pipeline.vae.to.assert_called_with("float16")
+
+    def test_sd15_safety_checker_disabled(self) -> None:
+        """SD 1.x pipelines should have safety_checker=None after _ensure_loaded.
+
+        The safety checker fires false positives at low step counts (e.g. 4
+        steps in --video-platform fast), producing all-black output frames.
+        """
+        gen = ImageGenerator(device="cpu")
+
+        mock_torch = MagicMock()
+        mock_torch.float32 = "float32"
+        mock_torch.float16 = "float16"
+
+        class _FakeXLPipeline:
+            pass
+
+        class _FakeSD15Pipeline:
+            def __init__(self) -> None:
+                self.vae = MagicMock()
+                self.safety_checker = object()  # non-None sentinel
+                self.enable_attention_slicing = MagicMock()
+
+            def to(self, device: str) -> "_FakeSD15Pipeline":
+                return self
+
+        fake_pipeline = _FakeSD15Pipeline()
+        mock_diffusers = MagicMock()
+        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline
+        mock_diffusers.DiffusionPipeline.from_pretrained.return_value = fake_pipeline
+
+        with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
+            gen._ensure_loaded("runwayml/stable-diffusion-v1-5")
+
+        assert fake_pipeline.safety_checker is None
+
+    def test_sdxl_safety_checker_not_touched(self) -> None:
+        """SDXL pipelines do not have a safety checker; _ensure_loaded must not crash."""
+        gen = ImageGenerator(device="cpu")
+
+        mock_torch = MagicMock()
+        mock_torch.float32 = "float32"
+        mock_torch.float16 = "float16"
+
+        class _FakeXLPipeline:
+            def __init__(self) -> None:
+                self.vae = MagicMock()
+                self.enable_attention_slicing = MagicMock()
+                # No safety_checker attribute at all.
+
+            def to(self, device: str) -> "_FakeXLPipeline":
+                return self
+
+        fake_pipeline = _FakeXLPipeline()
+        mock_diffusers = MagicMock()
+        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline
+        mock_diffusers.DiffusionPipeline.from_pretrained.return_value = fake_pipeline
+
+        with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
+            gen._ensure_loaded("stabilityai/stable-diffusion-xl-base-1.0")
+
+        # Should complete without error; no safety_checker attr added.
+        assert not hasattr(fake_pipeline, "safety_checker")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageGenerator — generate()

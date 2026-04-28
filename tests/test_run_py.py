@@ -3,13 +3,12 @@
 Tests cover:
     1. Argument parsing (modes, flags, defaults)
     2. Validation (missing prompt, missing --script-input)
-    3. _build_generate_argv() flag forwarding
-    4. _build_render_argv() flag forwarding
-    5. generate mode (mocked run_show.main)
-    6. render mode (mocked render_show.main)
-    7. full mode (mocked both)
-    8. --no-log-audio-duration forwarding
-    9. --quiet output behavior
+    3. _build_render_argv() flag forwarding
+    4. generate mode (run_generate delegation via vox_romana.cli.runners)
+    5. render mode (mocked render_show.main)
+    6. full mode (mocked both)
+    7. --no-log-audio-duration forwarding
+    8. --quiet output behavior
 
 Also tests for render_show.py audio feedback additions:
     10. _detect_content_type() from JSON keys
@@ -33,11 +32,10 @@ import pytest
 
 import run as run_master
 from run import (
-    _build_generate_argv,
     _build_render_argv,
     parse_args,
 )
-from render_show import (
+from vox_romana.cli.runners import (
     _count_event_words,
     _detect_content_type,
 )
@@ -88,6 +86,37 @@ class TestParseArgs:
         """--mode generate should parse correctly."""
         args = parse_args([str(tmp_prompt), "--mode", "generate"])
         assert args.mode == "generate"
+
+    def test_video_mode_parses(self, tmp_prompt):
+        """--mode video should parse correctly."""
+        args = parse_args([str(tmp_prompt), "--mode", "video"])
+        assert args.mode == "video"
+
+    def test_visual_brief_default_none(self, tmp_prompt):
+        """--visual-brief should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.visual_brief is None
+
+    def test_visual_brief_parses(self, tmp_prompt):
+        """--visual-brief should capture the string value."""
+        args = parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--visual-brief", "documentary, warm lighting",
+        ])
+        assert args.visual_brief == "documentary, warm lighting"
+
+    def test_video_output_default_none(self, tmp_prompt):
+        """--video-output should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.video_output is None
+
+    def test_video_output_parses(self, tmp_prompt, tmp_path):
+        """--video-output should parse as a Path."""
+        args = parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--video-output", str(tmp_path),
+        ])
+        assert args.video_output == tmp_path
 
     def test_render_mode_with_script_input(self, tmp_json):
         """--mode render with --script-input should parse correctly."""
@@ -153,37 +182,7 @@ class TestParseArgs:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestBuildArgv:
-    """Verify the argv builder helpers."""
-
-    def test_generate_argv_minimal(self, tmp_prompt):
-        """Minimal generate argv should contain the prompt but NOT --quiet.
-
-        --quiet is only forwarded when the user explicitly passes --quiet;
-        run_show.py should stream its own progress output by default.
-        """
-        args = parse_args([str(tmp_prompt)])
-        argv = _build_generate_argv(args)
-        assert str(tmp_prompt) in argv
-        assert "--quiet" not in argv
-
-    def test_generate_argv_with_overrides(self, tmp_prompt):
-        """All overrides should appear in the generated argv."""
-        args = parse_args([
-            str(tmp_prompt),
-            "--type", "debate",
-            "--tag", "test",
-            "--turns", "40",
-            "--duration", "20",
-        ])
-        argv = _build_generate_argv(args)
-        assert "--type" in argv
-        assert "debate" in argv
-        assert "--tag" in argv
-        assert "test" in argv
-        assert "--turns" in argv
-        assert "40" in argv
-        assert "--duration" in argv
-        assert "20.0" in argv  # float is stringified with decimal
+    """Verify the render argv builder helper."""
 
     def test_render_argv_minimal(self, tmp_json):
         """Minimal render argv should include the JSON path and defaults."""
@@ -256,6 +255,11 @@ class TestValidation:
         with pytest.raises(SystemExit):
             run_master.main(["--mode", "full"])
 
+    def test_video_mode_requires_prompt(self):
+        """video mode without a prompt should exit with error."""
+        with pytest.raises(SystemExit):
+            run_master.main(["--mode", "video"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MODE EXECUTION (mocked sub-scripts)
@@ -264,20 +268,20 @@ class TestValidation:
 class TestModeExecution:
     """Verify each mode calls the right sub-scripts."""
 
-    @patch("run_show.main")
-    def test_generate_mode_calls_run_show(self, mock_main, tmp_prompt, capsys):
-        """generate mode should call run_show.main()."""
-        # Make run_show.main() print a fake path (simulating --quiet).
-        mock_main.side_effect = lambda argv: print("/fake/output.json")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_generate_mode_calls_run_show(self, mock_run_generate, tmp_prompt, capsys):
+        """generate mode should delegate to run_generate()."""
+        from pathlib import Path
+        mock_run_generate.return_value = Path("/fake/output.json")
         run_master.main([str(tmp_prompt), "--mode", "generate", "--quiet"])
-        mock_main.assert_called_once()
-        # The argv passed to run_show should contain --quiet.
-        call_argv = mock_main.call_args[0][0]
-        assert "--quiet" in call_argv
+        mock_run_generate.assert_called_once()
+        # The args namespace passed to run_generate should have quiet=True.
+        call_args = mock_run_generate.call_args[0][0]
+        assert call_args.quiet is True
 
-    @patch("render_show.main")
+    @patch("vox_romana.cli.runners.run_render")
     def test_render_mode_calls_render_show(self, mock_main, tmp_json):
-        """render mode should call render_show.main()."""
+        """render mode should call run_render() in vox_romana.cli.runners."""
         run_master.main([
             "--mode", "render",
             "--script-input", str(tmp_json),
@@ -285,13 +289,12 @@ class TestModeExecution:
         ])
         mock_main.assert_called_once()
 
-    @patch("render_show.main")
-    @patch("run_show.main")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
     def test_full_mode_calls_both(self, mock_gen, mock_render, tmp_prompt, capsys):
-        """full mode should call run_show then render_show."""
+        """full mode should call run_generate then run_render."""
         from pathlib import Path
         fake_json = "/fake/output.json"
-        # run_show.main() now returns a Path rather than printing to stdout.
         mock_gen.return_value = Path(fake_json)
         mock_render.return_value = None
 
@@ -301,12 +304,12 @@ class TestModeExecution:
         mock_gen.assert_called_once()
         mock_render.assert_called_once()
 
-        # render_show should receive the JSON path from run_show's return value.
+        # render_show should receive the JSON path from run_generate's return value.
         render_argv = mock_render.call_args[0][0]
         assert fake_json in render_argv
 
-    @patch("render_show.main")
-    @patch("run_show.main")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
     def test_no_log_forwarded_in_full_mode(self, mock_gen, mock_render, tmp_prompt):
         """--no-log-audio-duration should be forwarded to render in full mode."""
         from pathlib import Path
@@ -320,6 +323,71 @@ class TestModeExecution:
 
         render_argv = mock_render.call_args[0][0]
         assert "--no-log-audio-duration" in render_argv
+
+    @patch("run._mode_video")
+    def test_video_mode_dispatches_to_mode_video(self, mock_mode_video, tmp_prompt):
+        """--mode video should call _mode_video()."""
+        run_master.main([str(tmp_prompt), "--mode", "video", "--quiet"])
+        mock_mode_video.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIDEO MODE ELAPSED TIME BANNERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestVideoModeElapsed:
+    """_mode_video prints per-step and total elapsed time banners."""
+
+    def _make_args(self, tmp_prompt, extra=None):
+        argv = [str(tmp_prompt), "--mode", "video"]
+        if extra:
+            argv += extra
+        return parse_args(argv)
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_elapsed_banners_printed(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, capsys
+    ):
+        """Each step prints 'Done in Xs'; the final banner includes total elapsed."""
+        from pathlib import Path
+        import run as run_master
+
+        fake_json = tmp_prompt.parent / "out.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        run_master._mode_video(self._make_args(tmp_prompt))
+
+        captured = capsys.readouterr().out
+        assert captured.count("Done in") == 3
+        assert "total:" in captured
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_no_elapsed_when_quiet(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, capsys
+    ):
+        """--quiet suppresses all banners including elapsed lines."""
+        from pathlib import Path
+        import run as run_master
+
+        fake_json = tmp_prompt.parent / "out.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--quiet"])
+        run_master._mode_video(args)
+
+        captured = capsys.readouterr().out
+        assert "Done in" not in captured
+        assert "total:" not in captured
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -409,13 +477,13 @@ class TestRenderShowFlagParsing:
 
     def test_default_logging_on(self):
         """By default, no_log_audio_duration should be False."""
-        from render_show import parse_args as render_parse_args
+        from vox_romana.cli.runners import _render_parse_args as render_parse_args
         args = render_parse_args(["fake.json"])
         assert args.no_log_audio_duration is False
 
     def test_flag_disables_logging(self):
         """--no-log-audio-duration should set flag to True."""
-        from render_show import parse_args as render_parse_args
+        from vox_romana.cli.runners import _render_parse_args as render_parse_args
         args = render_parse_args(["fake.json", "--no-log-audio-duration"])
         assert args.no_log_audio_duration is True
 
@@ -631,7 +699,7 @@ class TestPublishModeExecution:
         src = _write_debate_json(tmp_path)
         out_dir = tmp_path / "pub"
 
-        with patch("run_show.main", return_value=src):
+        with patch("vox_romana.cli.runners.run_generate", return_value=src):
             run_master.main([
                 "fake_prompt.txt",
                 "--mode", "generate",
@@ -648,8 +716,8 @@ class TestPublishModeExecution:
         src = _write_debate_json(tmp_path)
         out_dir = tmp_path / "pub"
 
-        with patch("run_show.main", return_value=src), \
-             patch("render_show.main", return_value=None):
+        with patch("vox_romana.cli.runners.run_generate", return_value=src), \
+             patch("vox_romana.cli.runners.run_render", return_value=None):
             run_master.main([
                 "fake_prompt.txt",
                 "--mode", "full",

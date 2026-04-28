@@ -136,7 +136,7 @@ updates. Better: pass an explicit `cache_dir` and freeze the directory:
 
 ```bash
 export HF_HUB_CACHE=/path/to/vox_romana/.hf_cache
-python run_emotion_flow.py your_data.txt --cache-dir $HF_HUB_CACHE
+python run.py --mode emotion-flow your_data.txt --cache-dir $HF_HUB_CACHE
 ```
 
 Alternatively, pin by model revision at the code level; the
@@ -147,7 +147,7 @@ with specific checkpoint hashes, which can then be passed through
 ### 4.5 Run with the recorded seed
 
 ```bash
-python run_emotion_flow.py <source> \
+python run.py --mode emotion-flow <source> \
     --leader "<Leader Name>" \
     --output output/emotion_flow/ \
     --seed <manifest.seed> \

@@ -239,7 +239,7 @@ class TestRunShowArgs:
 
     def _parse(self, args: list[str]):
         # Import inline to avoid dotenv issues in test env
-        from run_show import parse_args
+        from run import parse_args
         return parse_args(args)
 
     def test_prompt_only(self, tmp_path):
@@ -260,7 +260,7 @@ class TestRunShowArgs:
     def test_debate_overrides(self, tmp_path):
         p = tmp_path / "brief.txt"
         p.write_text("test")
-        args = self._parse([str(p), "--turns", "50", "--tone", "unhinged", "--format", "oxford"])
+        args = self._parse([str(p), "--turns", "50", "--tone", "unhinged", "--debate-format", "oxford"])
         assert args.turns == 50
         assert args.tone == "unhinged"
         assert args.debate_format == "oxford"
@@ -323,7 +323,7 @@ class TestRenderShowArgs:
 
     @staticmethod
     def _parse(argv: list[str]):
-        from render_show import parse_args
+        from vox_romana.cli.runners import _render_parse_args as parse_args
         return parse_args(argv)
 
     def test_voice_policy_default_is_auto(self, tmp_path):

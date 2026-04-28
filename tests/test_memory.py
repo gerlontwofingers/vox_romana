@@ -302,7 +302,14 @@ class TestMemoryRecall:
         result = recall.query("UBI employment")
 
         context = recall.format_context(result)
-        assert "RELATED STUDIES:" in context or "(no prior knowledge found)" in context
+        # recall.py emits "RELATED STUDIES:" (catalog hits) or "SEMANTIC MATCHES:"
+        # (vector hits) or "(no prior knowledge found)" depending on which backend
+        # fires. All three are valid outputs — accept any.
+        assert (
+            "RELATED STUDIES:" in context
+            or "SEMANTIC MATCHES:" in context
+            or "(no prior knowledge found)" in context
+        )
 
     def test_format_context_empty(self, catalog):
         recall = MemoryRecall(catalog=catalog, use_chroma=False)

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from run_show import _should_use_checkpoint
+from vox_romana.cli.runners import _should_use_checkpoint
 
 
 def _args(checkpoint=None):
@@ -81,7 +81,7 @@ class TestPreflightBriefValidation:
 
     def test_preflight_warns_on_fabricated_claim_in_brief(self, tmp_path, capsys):
         """When the fact-checker finds fabrications in the brief, a WARNING is printed."""
-        from vox_romana.core.editing.models import ChunkFactCheckReport, FactCheckResult
+        from vox_romana.core.editing.models import FactCheckReport, FactCheckResult
 
         fabricated = FactCheckResult(
             claim="The Earth is flat",
@@ -89,26 +89,25 @@ class TestPreflightBriefValidation:
             explanation="The Earth is an oblate spheroid, not flat.",
             source="llm_knowledge",
         )
-        report = ChunkFactCheckReport(
-            chunk_id="brief",
+        report = FactCheckReport(
+            content_id="brief",
             mode="quick",
             results=[fabricated],
             summary="One fabricated claim found.",
         )
 
         mock_checker = MagicMock()
-        mock_checker.check_chunk.return_value = report
+        mock_checker.check_content.return_value = report
 
         args = _make_preflight_args(tmp_path, fact_check="quick")
         args.output.mkdir(parents=True, exist_ok=True)
         out_file = tmp_path / "show.json"
 
         with (
-            patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker") as MockFC,
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker") as MockFC,
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             MockFC.build_default.return_value = mock_checker
             router_instance = MockRouter.return_value
@@ -116,8 +115,8 @@ class TestPreflightBriefValidation:
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         captured = capsys.readouterr()
         assert "PRE-FLIGHT WARNING" in captured.out
@@ -133,25 +132,24 @@ class TestPreflightBriefValidation:
         mock_fc = MagicMock()
 
         with (
-            patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker", mock_fc),
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker", mock_fc),
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             router_instance = MockRouter.return_value
             router_instance.classify.return_value = MagicMock(
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         mock_fc.build_default.assert_not_called()
 
     def test_preflight_no_warning_when_brief_is_accurate(self, tmp_path, capsys):
         """When fact-checker finds no fabrications, no WARNING is printed."""
-        from vox_romana.core.editing.models import ChunkFactCheckReport, FactCheckResult
+        from vox_romana.core.editing.models import FactCheckReport, FactCheckResult
 
         verified = FactCheckResult(
             claim="Water is H2O",
@@ -159,26 +157,25 @@ class TestPreflightBriefValidation:
             explanation="Confirmed by llm knowledge.",
             source="llm_knowledge",
         )
-        report = ChunkFactCheckReport(
-            chunk_id="brief",
+        report = FactCheckReport(
+            content_id="brief",
             mode="quick",
             results=[verified],
             summary="No fabrications.",
         )
 
         mock_checker = MagicMock()
-        mock_checker.check_chunk.return_value = report
+        mock_checker.check_content.return_value = report
 
         args = _make_preflight_args(tmp_path, fact_check="quick")
         args.output.mkdir(parents=True, exist_ok=True)
         out_file = tmp_path / "show.json"
 
         with (
-            patch("run_show.parse_args", return_value=args),
-            patch("run_show.DeepSeekClient"),
-            patch("run_show.FactChecker") as MockFC,
-            patch("run_show._RUNNERS", {"news": MagicMock(return_value=out_file)}),
-            patch("run_show.ShowRouter") as MockRouter,
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker") as MockFC,
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
         ):
             MockFC.build_default.return_value = mock_checker
             router_instance = MockRouter.return_value
@@ -186,8 +183,8 @@ class TestPreflightBriefValidation:
                 show_type="news", confidence=0.9, needs_research=False, reasoning="test"
             )
 
-            import run_show
-            run_show.main()
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
 
         captured = capsys.readouterr()
         assert "PRE-FLIGHT WARNING" not in captured.out

@@ -58,12 +58,20 @@ MODES:
         python run.py prompts/ubi_debate.txt
         python run.py prompts/tech_news.txt --engine kokoro --format mp3
 
+        # --name gives the output files a fixed stem (no timestamp):
+        python run.py prompts/ubi_debate.txt --name ubi_v4
+        # → output/text/debates/ubi_v4.json  +  output/text/debates/ubi_v4.mp3
+
     generate:
         Text generation only. Produces the show JSON but no audio.
         Equivalent to calling run_show.py directly.
 
         python run.py prompts/ubi_debate.txt --mode generate
         python run.py prompts/trash_pandas_01.txt --mode generate --tag v2
+
+        # Fixed output stem:
+        python run.py prompts/ubi_debate.txt --mode generate --name ubi_v4
+        # → output/text/debates/ubi_v4.json
 
     render:
         Audio rendering only from an existing show JSON. Requires
@@ -73,6 +81,43 @@ MODES:
         python run.py --mode render --script-input output/text/debates/ubi.json
         python run.py --mode render --script-input output/text/news/tech.json \\
             --engine piper --audio-output my_show.mp3
+
+    video:
+        Full pipeline (generate + render) plus an animation pass that
+        produces an MP4 using Stable Diffusion + Ken Burns compositing.
+
+        Platform choices (--video-platform, default: youtube):
+            youtube  → 1920×1080 landscape MP4
+            tiktok   → 1080×1920 portrait MP4
+            both     → landscape + portrait in a single SDXL pass
+            fast     → 512×512, SD 1.5, 4 steps — dev / diagnostic run
+
+        python run.py prompts/ubi_debate.txt --mode video
+        # → video_youtube.mp4  (default platform)
+
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform tiktok
+        # → video_tiktok.mp4
+
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform both
+        # → video_youtube.mp4  +  video_tiktok.mp4
+
+        # --name controls the video stem too:
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --name ubi_v4 --video-platform both
+        # → ubi_v4_youtube.mp4  +  ubi_v4_tiktok.mp4
+
+        # Quick diagnostic render (SD 1.5, 512×512, 4 steps, 15 fps):
+        python run.py prompts/ubi_debate.txt --mode video \\
+            --video-platform fast
+        # → video_fast.mp4
+
+        # Custom visual style and output directory:
+        python run.py prompts/tech_news.txt --mode video \\
+            --visual-brief "clean studio, cool blue tones" \\
+            --video-output ~/Desktop/news_video/ \\
+            --video-platform youtube
 
 USAGE:
 
@@ -90,6 +135,10 @@ USAGE:
     # Override turns, tag the run, custom audio output:
     python run.py prompts/ubi_debate.txt --turns 50 --tag v3 \\
         --audio-output output/audio/debates/ubi_v3.mp3
+
+    # Fixed output stem — same stem used for .json, .mp3, .mp4:
+    python run.py prompts/ubi_debate.txt --name ubi_v4
+    # → output/text/debates/ubi_v4.json  +  ubi_v4.mp3
 
     # Quiet mode (just prints the audio path at the end):
     python run.py prompts/ubi_debate.txt --quiet
@@ -110,6 +159,9 @@ USAGE:
     python run.py prompts/tech_news.txt --mode generate \\
         --segments 8 --tone urgent --tag breaking
 
+    # Fixed output stem:
+    python run.py prompts/ubi_debate.txt --mode generate --name ubi_v4
+
     # === RENDER MODE (audio only) ====================================
 
     # Render an existing JSON to audio:
@@ -128,6 +180,35 @@ USAGE:
     python run.py prompts/podcast/soccer.txt --type podcast --duration 30
     python run.py prompts/podcast/soccer.txt --mode generate --type podcast
     python run.py --mode render --script-input output/text/podcasts/soccer.json
+
+    # === VIDEO MODE (generate + render + animate) ====================
+
+    # Default platform (youtube = 1920×1080 landscape):
+    python run.py prompts/ubi_debate.txt --mode video
+
+    # TikTok portrait (1080×1920):
+    python run.py prompts/ubi_debate.txt --mode video --video-platform tiktok
+
+    # Both landscape + portrait in one SDXL pass:
+    python run.py prompts/ubi_debate.txt --mode video --video-platform both
+
+    # Fast diagnostic run (SD 1.5, 512×512, 4 steps):
+    python run.py prompts/ubi_debate.txt --mode video --video-platform fast
+
+    # Fixed output stem applied to all video files:
+    python run.py prompts/ubi_debate.txt --mode video \\
+        --name ubi_v4 --video-platform both
+    # → output/.../video/ubi_v4_youtube.mp4  +  ubi_v4_tiktok.mp4
+
+    # Custom visual brief and explicit output directory:
+    python run.py prompts/tech_news.txt --mode video \\
+        --visual-brief "clean studio, cool blue tones" \\
+        --video-output ~/Desktop/news_video/ \\
+        --video-platform youtube
+
+    # Write video directly to a named file:
+    python run.py prompts/ubi_debate.txt --mode video \\
+        --video-output ~/Desktop/ubi_final.mp4
 
     # === PUBLISH MODE (human-readable document from JSON) ===========
 
@@ -207,6 +288,10 @@ USAGE:
         --music-prompt "lo-fi jazz rainy day" \
         --music-duration 20 --format wav --audio-output ~/Desktop/lofi.wav
     #
+    # Fixed output stem (→ output/music/theme.mp3):
+    python run.py --mode music \
+        --music-prompt "dramatic orchestral sting" --name theme
+    #
     # Lighter model for quick tests:
     python run.py --mode music \
         --music-prompt "energetic synthwave" \
@@ -221,7 +306,25 @@ OUTPUT:
     generate mode → JSON file in output/text/{type}/
     render mode   → Audio file next to the JSON (or --audio-output)
     full mode     → Both JSON and audio files
+    video mode    → MP4 next to the audio file in a video/ subdirectory
+                    (or --video-output).  'both' platform produces two files.
     music mode    → Audio file in output/music/ (or --audio-output)
+
+NAMING (--name / -n STEM):
+    Pass --name STEM to fix the output filename across all modes.  The
+    stem is used without an extension and without a path separator.
+
+        python run.py prompts/ubi_debate.txt --name ubi_v4
+        # → ubi_v4.json  ubi_v4.mp3
+
+        python run.py prompts/ubi_debate.txt --mode video --name ubi_v4
+        # → ubi_v4.json  ubi_v4.mp3  ubi_v4_youtube.mp4  (or _tiktok / _fast)
+
+        python run.py --mode music --music-prompt "lo-fi jazz" --name lofi
+        # → output/music/lofi.mp3
+
+    Without --name, outputs use the auto-generated pattern:
+        {type}_{prompt_stem}[_{tag}]_{timestamp}.{ext}
 """
 
 from __future__ import annotations
@@ -229,6 +332,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -310,12 +414,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music"],
+        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
             "'render' = audio only (from existing JSON). "
             "'full' = generate + render (default). "
+            "'video' = generate + render + animate (requires animation deps). "
             "'ingest' = feed documents into the knowledge store. "
             "'publish' = format an existing show JSON as a human-readable "
             "document (TXT/PDF). "
@@ -364,6 +469,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "By default, after rendering, the actual WPM is recorded "
             "so future duration estimates improve over time. Use this "
             "for benchmarks or dry runs."
+        ),
+    )
+
+    parser.add_argument(
+        "--tts-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of TTS worker threads (default: 1, sequential). "
+            "Values > 1 parallelize spoken-event synthesis in the render "
+            "step. Recommended for Piper only — Kokoro (MLX/MPS) parallel "
+            "safety is not yet validated."
+        ),
+    )
+
+    parser.add_argument(
+        "--name", "-n",
+        type=str,
+        default=None,
+        dest="name",
+        metavar="STEM",
+        help=(
+            "Output filename stem for the primary artifact. No extension, no "
+            "path separator. '--name ubi_v4' → ubi_v4.json, ubi_v4.mp3, "
+            "ubi_v4.mp4. Combines with --output (directory). Overrides the "
+            "auto-generated {type}_{prompt}_{tag}_{timestamp} stem. When both "
+            "--name and --tag are given, --name wins and no timestamp is "
+            "appended."
         ),
     )
 
@@ -742,6 +875,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="TAG",
         help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
     )
+    # ── Animation flags (--mode video) ──────────────────────────────
+    anim_group = parser.add_argument_group(
+        "animation (--mode video)"
+    )
+    anim_group.add_argument(
+        "--visual-brief",
+        dest="visual_brief",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Visual style hint passed to the AnimationDirector LLM. "
+            "Describes the desired look and feel of the video "
+            "(e.g. 'academic documentary, warm lighting'). "
+            "Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--video-output",
+        dest="video_output",
+        type=Path,
+        default=None,
+        metavar="DIR_OR_FILE",
+        help=(
+            "Output directory for rendered video files, OR a full file path "
+            "(e.g. ~/Desktop/ubi.mp4). When a full file path is given the "
+            "filename is used directly. Defaults to a 'video/' subdirectory "
+            "next to the audio file. Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--video-platform",
+        dest="video_platform",
+        type=str,
+        default="youtube",
+        choices=["youtube", "tiktok", "both", "fast"],
+        metavar="{youtube,tiktok,both,fast}",
+        help=(
+            "Target platform for video output (default: youtube). "
+            "'youtube' = 1920×1080 landscape. "
+            "'tiktok' = 1080×1920 portrait. "
+            "'both' = landscape + portrait in one SDXL pass. "
+            "'fast' = 512×512, SD 1.5, 4 inference steps — "
+            "dev/diagnostic speed run. Only used with --mode video."
+        ),
+    )
     # ── Publish flags (--mode publish or --publish add-on) ───────────
     pub_group = parser.add_argument_group(
         "publishing (--mode publish  /  --publish add-on)"
@@ -794,6 +973,181 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "prose.  Disabled by default (polisher not yet implemented); "
             "this flag is a no-op today but is reserved for Shot 3."
         ),
+    )
+
+    # ── Analysis flags (--mode analysis) ─────────────────────────────
+    analysis_group = parser.add_argument_group(
+        "rhetorical analysis (--mode analysis)"
+    )
+    analysis_group.add_argument(
+        "--analysis-file-b",
+        dest="analysis_file_b",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Second speaker text file.  When supplied, the positional "
+            "prompt arg is treated as speaker A's text file (text-pair "
+            "mode).  Ignored when --script-input points to a debate JSON."
+        ),
+    )
+    analysis_group.add_argument(
+        "--speaker-a",
+        dest="speaker_a",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Speaker A name or substring (case-insensitive).",
+    )
+    analysis_group.add_argument(
+        "--speaker-b",
+        dest="speaker_b",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Speaker B name or substring (case-insensitive).",
+    )
+    analysis_group.add_argument(
+        "--analysis-output",
+        dest="analysis_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory for the HTML analysis report "
+            "(default: output/text/analysis/)."
+        ),
+    )
+    analysis_group.add_argument(
+        "--n-topics",
+        dest="analysis_n_topics",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of LDA topics (default: 10).",
+    )
+    analysis_group.add_argument(
+        "--permutations",
+        dest="analysis_permutations",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Permutation test count (default: 1000).",
+    )
+    analysis_group.add_argument(
+        "--no-llm",
+        dest="analysis_no_llm",
+        action="store_true",
+        default=False,
+        help="Skip DeepSeek LLM stance extraction.",
+    )
+    analysis_group.add_argument(
+        "--no-html",
+        dest="analysis_no_html",
+        action="store_true",
+        default=False,
+        help="Print text summary to stdout only; do not save HTML.",
+    )
+    analysis_group.add_argument(
+        "--min-words",
+        dest="analysis_min_words",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Minimum words per utterance (default: 3).",
+    )
+
+    # ── Emotion-flow flags (--mode emotion-flow) ──────────────────────
+    ef_group = parser.add_argument_group(
+        "emotion flow analysis (--mode emotion-flow)"
+    )
+    ef_group.add_argument(
+        "--leader",
+        dest="ef_leader",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Speaker/leader name filter for emotion-flow analysis.  "
+            "Required for multi-speaker JSON.  Inferred from filename "
+            "when omitted."
+        ),
+    )
+    ef_group.add_argument(
+        "--emotion-output",
+        dest="emotion_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Output directory for emotion-flow reports (default: output/emotion_flow/).",
+    )
+    ef_group.add_argument(
+        "--no-translate",
+        dest="ef_no_translate",
+        action="store_true",
+        default=False,
+        help="Skip translation step (treat corpus as already English).",
+    )
+    ef_group.add_argument(
+        "--no-semantic",
+        dest="ef_no_semantic",
+        action="store_true",
+        default=False,
+        help="Skip semantic-flow correlation (no sentence-transformers needed).",
+    )
+    ef_group.add_argument(
+        "--ef-permutations",
+        dest="ef_permutations",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Permutation draws for emotion-flow null-hypothesis test (default: 1000).",
+    )
+    ef_group.add_argument(
+        "--ef-seed",
+        dest="ef_seed",
+        type=int,
+        default=42,
+        metavar="N",
+        help="RNG seed for emotion-flow analysis (default: 42).",
+    )
+    ef_group.add_argument(
+        "--ef-cache-dir",
+        dest="ef_cache_dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="HuggingFace model cache directory override for emotion-flow.",
+    )
+    ef_group.add_argument(
+        "--to-show",
+        dest="ef_to_show",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a report.json produced by emotion-flow analysis.  "
+            "Switches into show-adapter mode: converts the report to a "
+            "NewsConfig (and optionally runs the show pipeline)."
+        ),
+    )
+    ef_group.add_argument(
+        "--run-show",
+        dest="ef_run_show",
+        action="store_true",
+        default=False,
+        help=(
+            "When --to-show is set, also run the show pipeline to generate "
+            "show.json (requires DEEPSEEK_API_KEY)."
+        ),
+    )
+    ef_group.add_argument(
+        "--n-segments",
+        dest="ef_n_segments",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Segment count for the adapted emotion-flow show (default: 6).",
     )
 
     # ── Language / localisation flags ────────────────────────────────
@@ -862,78 +1216,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Argv builders for sub-scripts
+# Argv builder for render sub-script
 # ─────────────────────────────────────────────────────────────────────────────
-# run_show.py and render_show.py both accept argv: list[str] as their
-# main() parameter. These helpers build the right argv from our parsed
-# args namespace, forwarding only the flags each sub-script knows about.
-
-def _build_generate_argv(args: argparse.Namespace) -> list[str]:
-    """Build an argv list for run_show.main().
-
-    Forwards all generation-related flags to run_show.main(). Only passes
-    --quiet when the user explicitly asked for quiet mode — otherwise
-    run_show.py streams its own progress output (Phase 1-4 logs) directly
-    to the terminal so the user can see what's happening.
-
-    Args:
-        args: Parsed namespace from our parse_args().
-
-    Returns:
-        List of string arguments suitable for run_show.main(argv).
-    """
-    argv = [str(args.prompt)]
-
-    # Only suppress run_show output when the user wants quiet mode.
-    if args.quiet:
-        argv.append("--quiet")
-
-    if args.show_type:
-        argv += ["--type", args.show_type]
-    if args.output != _OUTPUT_DIR:
-        argv += ["--output", str(args.output)]
-    if args.research is True:
-        argv.append("--research")
-    elif args.research is False:
-        argv.append("--no-research")
-    if args.tag:
-        argv += ["--tag", args.tag]
-    if args.turns is not None:
-        argv += ["--turns", str(args.turns)]
-    if args.tone is not None:
-        argv += ["--tone", args.tone]
-    if args.debate_format is not None:
-        argv += ["--format", args.debate_format]
-    if args.segments is not None:
-        argv += ["--segments", str(args.segments)]
-    if args.max_retries is not None:
-        argv += ["--max-retries", str(args.max_retries)]
-    if args.duration is not None:
-        argv += ["--duration", str(args.duration)]
-    if args.tolerance is not None:
-        argv += ["--tolerance", str(args.tolerance)]
-    if args.checkpoint is True:
-        argv.append("--checkpoint")
-    elif args.checkpoint is False:
-        argv.append("--no-checkpoint")
-    # Forward the TTS engine choice so word-budget math uses per-engine WPM.
-    if args.engine:
-        argv += ["--engine", args.engine]
-    # Fact-check and content mode.
-    if hasattr(args, "fact_check") and args.fact_check:
-        argv += ["--fact-check", args.fact_check]
-    if hasattr(args, "reference_material") and args.reference_material:
-        argv += ["--reference-material", str(args.reference_material)]
-    if hasattr(args, "content_mode") and args.content_mode and args.content_mode != "auto":
-        argv += ["--content-mode", args.content_mode]
-    if getattr(args, "allow_bootstrap_fabrications", False):
-        argv.append("--allow-bootstrap-fabrications")
-    if getattr(args, "university_session", None):
-        argv += ["--university-session", args.university_session]
-
-    return argv
-
-
+# render_show.py accepts argv: list[str] as its main() parameter.  This
+# helper builds the right argv from our parsed args namespace, forwarding
+# only the flags render_show knows about.  The generate path no longer uses
+# argv serialization — it calls vox_romana.cli.runners.run_generate directly.
 def _build_render_argv(
     json_path: str | Path,
     args: argparse.Namespace,
@@ -954,6 +1242,10 @@ def _build_render_argv(
 
     if args.audio_output:
         argv += ["--output", str(args.audio_output)]
+    elif getattr(args, "name", None):
+        # --name sets the audio stem when no explicit --audio-output was given.
+        # We derive the path from the JSON's parent directory.
+        argv += ["--output", str(Path(json_path).parent / f"{args.name}.{args.format}")]
     if args.voice_map:
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
@@ -966,6 +1258,8 @@ def _build_render_argv(
         argv.append("--no-normalize")
     if args.no_log_audio_duration:
         argv.append("--no-log-audio-duration")
+    if args.tts_workers != 1:
+        argv += ["--tts-workers", str(args.tts_workers)]
     if args.no_strip_directions:
         argv.append("--no-strip-directions")
     if args.no_whisper_voices:
@@ -991,9 +1285,8 @@ def _build_render_argv(
 def _mode_generate(args: argparse.Namespace) -> Path:
     """Run generate mode: prompt → JSON.
 
-    Calls run_show.main() and uses its return value (the output Path).
-    run_show.py streams its own Phase 1-4 progress logs directly to
-    stdout unless the user passed --quiet.
+    Delegates to ``vox_romana.cli.runners.run_generate`` directly,
+    passing the already-parsed args namespace.  No argv serialization.
 
     Args:
         args: Parsed namespace from parse_args().
@@ -1001,26 +1294,110 @@ def _mode_generate(args: argparse.Namespace) -> Path:
     Returns:
         Path to the generated JSON file.
     """
-    import run_show
-
-    argv = _build_generate_argv(args)
-    output_path = run_show.main(argv)
-    return output_path
+    from vox_romana.cli.runners import run_generate
+    return run_generate(args)
 
 
 def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
     """Run render mode: JSON → audio.
 
-    Calls render_show.main() with the appropriate flags.
+    Delegates to ``vox_romana.cli.runners.run_render`` directly,
+    passing the argv list built by ``_build_render_argv``.
 
     Args:
         json_path: Path to the show JSON to render.
         args:      Parsed namespace from parse_args().
     """
-    import render_show
+    from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
-    render_show.main(argv)
+    run_render(argv)
+
+
+def _mode_video(args: argparse.Namespace) -> None:
+    """Run video mode: generate → render → animate.
+
+    Three-phase pipeline:
+      1. Generate the show JSON (same as --mode generate).
+      2. Render the audio (same as --mode render).
+      3. Run the animation pipeline: hardware scan → bootstrap →
+         director (1 LLM call) → video render.
+
+    The animation phase is driven by ``vox_romana.cli.animation_runner``
+    so the heavy animation imports (torch, diffusers, moviepy) are never
+    loaded for non-video modes.
+
+    Platform dispatch is controlled by ``args.video_platform``:
+      - ``youtube`` (default) — 1920×1080 landscape MP4.
+      - ``tiktok``            — 1080×1920 portrait MP4.
+      - ``both``              — landscape + portrait in one SDXL pass;
+                                returns the YouTube path as the primary result.
+      - ``fast``              — 512×512, SD 1.5, 4 inference steps, 15 fps;
+                                intended for quick dev/diagnostic runs.
+
+    Output naming:
+      - ``args.name`` sets a fixed filename stem (no timestamp).
+        With ``both``, filenames become ``{name}_youtube.mp4`` and
+        ``{name}_tiktok.mp4``.  Without ``--name`` the defaults are
+        ``video_{platform}.mp4`` (or ``video_fast.mp4``).
+      - ``args.video_output`` can be a directory (default:
+        ``{audio_parent}/video/``) or a full file path for single-platform
+        runs.
+
+    Args:
+        args: Parsed namespace from parse_args().  Key attributes read:
+              ``args.video_platform``, ``args.video_output``, ``args.name``,
+              ``args.visual_brief``, ``args.quiet``.
+    """
+    from vox_romana.cli.animation_runner import run_animation
+
+    pipeline_start = time.time()
+
+    if not args.quiet:
+        print(f"\n{'─' * 60}")
+        print("  Step 1/3: Generating script…")
+        print(f"{'─' * 60}\n")
+
+    t0 = time.time()
+    json_path = _mode_generate(args)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
+
+    if not args.quiet:
+        print(f"\n{'─' * 60}")
+        print("  Step 2/3: Rendering audio…")
+        print(f"{'─' * 60}\n")
+
+    t0 = time.time()
+    _mode_render(json_path, args)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
+
+    audio_suffix = f".{args.format}"
+    audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)
+
+    if not args.quiet:
+        platform = getattr(args, "video_platform", "youtube")
+        print(f"\n{'─' * 60}")
+        print(f"  Step 3/3: Animating [{platform}]…")
+        print(f"{'─' * 60}\n")
+
+    t0 = time.time()
+    video_path = run_animation(args, json_path, audio_path)
+    if not args.quiet:
+        print(f"\n  Done in {time.time() - t0:.0f}s")
+
+    if not args.quiet:
+        total_elapsed = time.time() - pipeline_start
+        print(f"\n{'═' * 60}")
+        print(f"  Pipeline complete!  (total: {total_elapsed:.0f}s)")
+        print(f"  Script: {json_path}")
+        print(f"  Audio:  {audio_path}")
+        if video_path:
+            print(f"  Video:  {video_path}")
+        print(f"{'═' * 60}\n")
+    elif video_path:
+        print(video_path)
 
 
 def _mode_ingest(args: argparse.Namespace) -> None:
@@ -1130,14 +1507,17 @@ def _mode_music(args: argparse.Namespace) -> Path:
     Accepts a prompt from ``args.music_prompt`` (inline text) or
     ``args.prompt`` (plain-text file).  Generates audio via
     :class:`MusicGenEngine`, converts to the requested format, and
-    writes the result to ``args.audio_output`` or an auto-named path
-    under ``output/music/``.
+    writes the result to the first matching path below:
+
+      1. ``args.audio_output``  — explicit ``--audio-output`` path.
+      2. ``output/music/{args.name}.{format}``  — when ``--name`` is set.
+      3. ``output/music/{slug}_{timestamp}.{format}``  — auto-generated.
 
     Args:
         args: Parsed namespace from parse_args().  Reads
               ``args.music_prompt``, ``args.prompt``, ``args.music_model``,
               ``args.music_duration``, ``args.format``, ``args.audio_output``,
-              ``args.quiet``.
+              ``args.name``, ``args.quiet``.
 
     Returns:
         Path to the generated audio file.
@@ -1175,6 +1555,11 @@ def _mode_music(args: argparse.Namespace) -> Path:
     # ── Determine output path ─────────────────────────────────────────
     if args.audio_output:
         out_path = Path(args.audio_output)
+    elif getattr(args, "name", None):
+        # --name overrides the auto-generated slug+timestamp stem.
+        out_dir = _OUTPUT_DIR / "music"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{args.name}.{args.format}"
     else:
         # Auto-name: output/music/<slug>_<timestamp>.<format>
         slug = re.sub(r"[^a-z0-9]+", "_", prompt_text[:40].lower()).strip("_")
@@ -1199,6 +1584,18 @@ def _mode_music(args: argparse.Namespace) -> Path:
         print(out_path)
 
     return out_path
+
+
+def _mode_analysis(args: argparse.Namespace) -> None:
+    """Delegate to vox_romana.cli.analysis.run_analysis()."""
+    from vox_romana.cli.analysis import run_analysis
+    run_analysis(args)
+
+
+def _mode_emotion_flow(args: argparse.Namespace) -> None:
+    """Delegate to vox_romana.cli.emotion_flow.run_emotion_flow()."""
+    from vox_romana.cli.emotion_flow import run_emotion_flow
+    run_emotion_flow(args)
 
 
 def _mode_publish(
@@ -1426,6 +1823,23 @@ def _run_language_matrix(
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_university_argv(argv: list[str]) -> list[str] | None:
+    """If ``--mode university`` (or ``-m university``) is in ``argv``, return
+    everything after ``university`` as the argv to forward to the University
+    CLI; otherwise return None.
+
+    University mode uses a subcommand grammar (study/list/inspect/ask/chat/
+    extend/export) that does not fit run.py's flat namespace, so we intercept
+    early and hand the remainder off to ``vox_romana.university.cli.main``.
+    """
+    for i, tok in enumerate(argv):
+        if tok in ("--mode", "-m") and i + 1 < len(argv) and argv[i + 1] == "university":
+            return list(argv[i + 2:])
+        if tok in ("--mode=university", "-m=university"):
+            return list(argv[i + 1:])
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the vox_romana master pipeline.
 
@@ -1436,6 +1850,15 @@ def main(argv: list[str] | None = None) -> None:
         argv: CLI arguments. Defaults to sys.argv[1:] if None.
               Exposed as a parameter so tests can call main() directly.
     """
+    # University mode has its own subcommand grammar and is dispatched
+    # before the master parser runs.
+    raw_argv = list(sys.argv[1:]) if argv is None else list(argv)
+    uni_argv = _extract_university_argv(raw_argv)
+    if uni_argv is not None:
+        from vox_romana.university.cli import main as university_main
+        university_main(uni_argv)
+        return
+
     args = parse_args(argv)
 
     # ── Music mode: apply quality defaults before validation ──────────
@@ -1456,7 +1879,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    if args.mode in ("generate", "full") and args.prompt is None:
+    if args.mode in ("generate", "full", "video") and args.prompt is None:
         print(
             "Error: prompt file is required for "
             f"'{args.mode}' mode.",
@@ -1525,6 +1948,73 @@ def main(argv: list[str] | None = None) -> None:
             )
             sys.exit(1)
 
+    if args.mode == "analysis":
+        # analysis takes either --script-input PATH.json or
+        # positional FILE_A + --analysis-file-b FILE_B.
+        if args.script_input is None and args.analysis_file_b is None:
+            print(
+                "Error: --mode analysis requires --script-input PATH.json "
+                "or a positional FILE_A plus --analysis-file-b FILE_B.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.script_input is not None and not args.script_input.exists():
+            print(
+                f"Error: script file not found: {args.script_input}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.analysis_file_b is not None:
+            if args.prompt is None:
+                print(
+                    "Error: --analysis-file-b requires a positional FILE_A "
+                    "as the first argument.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not args.prompt.exists():
+                print(
+                    f"Error: speaker A file not found: {args.prompt}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not args.analysis_file_b.exists():
+                print(
+                    f"Error: speaker B file not found: {args.analysis_file_b}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    if args.mode == "emotion-flow":
+        # Requires either --script-input / positional prompt (analysis),
+        # or --to-show PATH (show-adapter).  The two are mutually exclusive.
+        if args.ef_to_show is not None:
+            if not args.ef_to_show.exists():
+                print(
+                    f"Error: emotion-flow report not found: {args.ef_to_show}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if args.ef_run_show and args.script_input is not None:
+                # --script-input is irrelevant in to-show mode; warn rather
+                # than hard-error to stay friendly.
+                pass
+        else:
+            source = args.script_input or args.prompt
+            if source is None:
+                print(
+                    "Error: --mode emotion-flow requires --script-input PATH "
+                    "(or a positional prompt file), or --to-show report.json.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not source.exists():
+                print(
+                    f"Error: source path not found: {source}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
     # ── Validate and normalise language args ─────────────────────────
     # Normalise root_lang
     args.root_lang = args.root_lang.strip().lower()
@@ -1581,8 +2071,35 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Publish format: {fmt_label}")
             if args.publish_output:
                 print(f"  Publish output: {args.publish_output}")
-        # Language matrix (not shown for music mode — language-agnostic)
-        if args.mode != "music":
+        if args.mode == "analysis":
+            if args.script_input:
+                print(f"  Source: {args.script_input}")
+            elif args.prompt and args.analysis_file_b:
+                print(f"  Speaker A: {args.prompt}")
+                print(f"  Speaker B: {args.analysis_file_b}")
+            print(f"  Topics: {args.analysis_n_topics}  Permutations: {args.analysis_permutations}")
+            if args.analysis_no_llm:
+                print("  LLM stance extraction: off")
+            if args.analysis_no_html:
+                print("  HTML output: off (text summary only)")
+        if args.mode == "emotion-flow":
+            if args.ef_to_show is not None:
+                print(f"  Mode:         show-adapter")
+                print(f"  Report:       {args.ef_to_show}")
+                if args.ef_n_segments:
+                    print(f"  Segments:     {args.ef_n_segments}")
+                if args.ef_run_show:
+                    print("  Run show:     yes")
+            else:
+                source = args.script_input or args.prompt
+                print(f"  Source:       {source}")
+                print(f"  Permutations: {args.ef_permutations}  Seed: {args.ef_seed}")
+                if args.ef_no_translate:
+                    print("  Translation:  OFF")
+                if args.ef_no_semantic:
+                    print("  Semantic:     OFF")
+        # Language matrix (not shown for music/analysis/emotion-flow — language-agnostic)
+        if args.mode not in ("music", "analysis", "emotion-flow"):
             if len(args.out_lang_list) == 1 and args.out_lang_list[0] == args.root_lang:
                 print(f"  Language: {language_display([args.root_lang])}")
             else:
@@ -1599,6 +2116,22 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n{'═' * 60}")
             print(f"  Music generation complete!")
             print(f"  Audio → {out_path}")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "analysis":
+        # Standalone rhetorical analysis — two corpora → HTML report.
+        _mode_analysis(args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Analysis complete!")
+            print(f"{'═' * 60}\n")
+
+    elif args.mode == "emotion-flow":
+        # Cross-lingual emotion flow analysis or show adaptation.
+        _mode_emotion_flow(args)
+        if not args.quiet:
+            print(f"\n{'═' * 60}")
+            print(f"  Emotion-flow complete!")
             print(f"{'═' * 60}\n")
 
     elif args.mode == "publish":
@@ -1657,6 +2190,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "ingest":
         _mode_ingest(args)
 
+    elif args.mode == "video":
+        _mode_video(args)
     elif args.mode == "full":
         # Full pipeline — generate then render (+ optional publish),
         # fanning across every requested output language.

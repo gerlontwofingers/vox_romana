@@ -236,11 +236,9 @@ class HardwareProfile:
 class AnimationConfig:
     """User-facing configuration for animation generation.
 
-    This lives as an optional field on ContentConfig:
-        config.animation_config = AnimationConfig(enabled=True, ...)
-
-    When animation_config is None (default), the pipeline skips all
-    animation steps entirely — zero behavioral change to existing code.
+    Pass an instance of this to AnimationRenderer to control the animation
+    pipeline. When None is passed or animation is not configured, the pipeline
+    skips all animation steps entirely.
 
     Attributes:
         enabled:

@@ -52,9 +52,12 @@ USAGE:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 from ...core.client import DeepSeekClient
 from .bootstrap import NewsBootstrap
@@ -270,16 +273,15 @@ class NewsConductor(BaseConductor):
         if not bootstrap_text:
             return
         try:
-            report = self._fact_checker.check_chunk(
+            report = self._fact_checker.check_content(
                 bootstrap_text,
-                chunk_id="bootstrap",
+                content_id="bootstrap",
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode="factual",
             )
         except Exception as exc:  # noqa: BLE001
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "NewsConductor: bootstrap preflight raised: %r", exc
             )
             return
@@ -740,9 +742,9 @@ class NewsConductor(BaseConductor):
             ).strip()
             for fc_attempt in range(config.max_retries):
                 try:
-                    fc_report = self._fact_checker.check_chunk(
+                    fc_report = self._fact_checker.check_content(
                         seg_text,
-                        chunk_id=seg_id,
+                        content_id=seg_id,
                         reference_material=config.reference_material,
                         mode=config.fact_check,
                         content_mode="factual",

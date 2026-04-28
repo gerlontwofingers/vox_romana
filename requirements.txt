@@ -63,7 +63,7 @@ langdetect>=1.0.9           # language detection for TranslatorAgent
 # Required only when using the animation pipeline (vox_romana/animation/).
 # If not installed, ImageGenerator raises ImportError with a clear install
 # message on first use. All other vox_romana features work without these.
-diffusers>=0.30,<0.32       # Stable Diffusion pipelines (local SD inference)
+diffusers>=0.32             # Stable Diffusion pipelines (local SD inference)
 moviepy>=1.0.3,<2.0         # video compositing + audio sync backend
 Pillow>=10.4,<11.0          # image I/O (save PNG frames; PIL used by diffusers too)
 bert-score>=0.3             # back-translation quality scoring (BERTScore F1)
@@ -86,14 +86,17 @@ jinja2>=3.1,<3.2
 # ⚠️  PyTorch and sentence-transformers are large (~2-5 GB).
 #     Only install if you need neural-network-based analysis or
 #     transformer-based forecasting / embeddings.
-torch>=2.4,<2.6
+torch>=2.6
 # tensorflow>=2.17,<2.18   # uncomment if needed; large install
-sentence-transformers>=3.0,<3.2
+sentence-transformers>=5.4,<5.5
 # Music generation: MusicGenEngine uses MusicgenForConditionalGeneration from transformers.
 # WAV conversion uses scipy (listed above). Tensor ops use torch (listed above).
-# No new pip installs needed — all dependencies already present.
-transformers>=4.44,<4.46
-peft>=0.12,<0.14            # LoRA fine-tuning for memory system
+# hf_transfer is optional but strongly recommended for large model downloads
+# (musicgen-large is ~13.7 GB): Rust-based multi-part downloader with stall detection.
+# MusicGenEngine sets HF_HUB_ENABLE_HF_TRANSFER=1 automatically when it is present.
+hf_transfer>=0.1.8
+transformers>=4.44
+peft>=0.17                  # LoRA fine-tuning for memory system
 datasets>=3.0,<3.2          # dataset loading for memory trainer
 # neuralforecast>=1.7,<1.8  # uncomment for transformer-based forecasting
 

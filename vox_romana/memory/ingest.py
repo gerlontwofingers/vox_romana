@@ -419,27 +419,30 @@ def _extract_mbox(path: Path) -> str:
     """Extract text from mbox files using stdlib mailbox module."""
     mbox = mailbox.mbox(str(path), create=False)
     parts: list[str] = []
-    for i, msg in enumerate(mbox):
-        subject = msg.get("Subject", f"message_{i}")
-        sender = msg.get("From", "")
-        body_parts: list[str] = []
-        if hasattr(msg, "walk"):
-            for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        try:
-                            body_parts.append(
-                                payload.decode(charset, errors="replace")
-                            )
-                        except LookupError:
-                            body_parts.append(
-                                payload.decode("utf-8", errors="replace")
-                            )
-        body = "\n".join(body_parts).strip()
-        if body:
-            parts.append(f"[{sender}: {subject}]\n{body}")
+    try:
+        for i, msg in enumerate(mbox):
+            subject = msg.get("Subject", f"message_{i}")
+            sender = msg.get("From", "")
+            body_parts: list[str] = []
+            if hasattr(msg, "walk"):
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            charset = part.get_content_charset() or "utf-8"
+                            try:
+                                body_parts.append(
+                                    payload.decode(charset, errors="replace")
+                                )
+                            except LookupError:
+                                body_parts.append(
+                                    payload.decode("utf-8", errors="replace")
+                                )
+                body = "\n".join(body_parts).strip()
+            if body:
+                parts.append(f"[{sender}: {subject}]\n{body}")
+    finally:
+        mbox.close()
     return "\n\n".join(parts)
 
 

@@ -31,7 +31,7 @@ authoritative source of truth for what to build.
   - `prompts/*` — multiple prompt templates read and reviewed.
   - `vox_romana/core/search.py` — `GoogleSearchProvider` implementation and requirements.
   - `vox_romana/core/client.py` — `DeepSeekClient`; `DEEPSEEK_API_KEY` present in `.env`.
-  - `run_news.py`, `run_debate.py`, `run_show.py` — CLI flows and `--research` handling; noted inconsistency in fallback behavior across runners.
+  - `run_show.py` — unified CLI for all show types; `--research` handling and runner dispatch.
   - `shows/*` modules — bootstrap, researcher, conductor, director, parser, serializer files reviewed.
 - Persistent memory changes:
   - Created and expanded `/memories/editor_todo.md` (detailed todo with acceptance criteria, privacy, telemetry).

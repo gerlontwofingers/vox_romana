@@ -96,8 +96,8 @@
 #   deepseek-r1:32b   — Apple M 64 GB / RTX 24 GB (~32 GB RAM)
 #
 # USAGE:
-#   python run_university.py study "Japanese cars" --hours 3
-#   python run_university.py ask "First car exported to USA?" --session abc123
+#   python run.py --mode university study "Japanese cars" --hours 3
+#   python run.py --mode university ask "First car exported to USA?" --session abc123
 #   python run.py prompt.yaml --research --university-session abc123
 
 university:

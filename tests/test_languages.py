@@ -66,10 +66,6 @@ class TestSupportedLanguages:
         for code in supported_languages():
             assert code in LANGUAGE_CODES, f"{code!r} not in LANGUAGE_CODES"
 
-    def test_shot1_stub_returns_only_english(self):
-        # Shot 1 stub: only ["en"] until Shot 3 wires Piper model scanning.
-        assert supported_languages() == ["en"]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # normalize_lang_arg

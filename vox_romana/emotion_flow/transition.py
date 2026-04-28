@@ -68,7 +68,10 @@ class TransitionBuilderAgent:
         # Add-k smoothing → row-normalised probability matrix
         smoothed = count_matrix.astype(np.float64) + self._k
         row_sums = smoothed.sum(axis=1, keepdims=True)
-        matrix = (smoothed / row_sums).astype(np.float32)
+        # Avoid divide-by-zero when k=0 and an emotion is never observed as a
+        # source state.  Such rows stay all-zero after normalisation.
+        safe_row_sums = np.where(row_sums == 0, 1.0, row_sums)
+        matrix = (smoothed / safe_row_sums).astype(np.float32)
 
         # Wilson score 95% CIs computed from raw counts (before smoothing)
         raw_row_sums = count_matrix.sum(axis=1)

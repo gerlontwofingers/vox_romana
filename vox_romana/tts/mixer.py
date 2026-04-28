@@ -384,7 +384,7 @@ class AudioMixer:
         if format in ("mp3", "ogg", "aac"):
             export_kwargs["bitrate"] = bitrate
 
-        mixed.export(str(output_path), **export_kwargs)
+        mixed.export(str(output_path), **export_kwargs).close()
         self._last_mix_duration_ms = len(mixed)
         return output_path
 

@@ -212,21 +212,65 @@ class MusicGenEngine:
         Called at the start of generate(). After the first call, this is
         a no-op. The model stays in memory for the lifetime of this object,
         so subsequent generate() calls are fast.
+
+        DOWNLOAD STRATEGY:
+            Large models (musicgen-large is ~13.7 GB) can stall indefinitely
+            when using from_pretrained() directly because requests' streaming
+            mode has no read-stall timeout — if the server stops sending bytes
+            the download freezes forever.
+
+            We pre-download via huggingface_hub.snapshot_download(), which:
+            1. Uses .incomplete lock files so interrupted downloads resume
+               from where they left off (Ctrl-C and re-run is safe).
+            2. Respects HF_HUB_ENABLE_HF_TRANSFER=1, activating the optional
+               hf_transfer backend (Rust-based multi-part download with
+               built-in stall detection and retries).
+            3. Sets HF_HUB_HTTP_TIMEOUT to 120 s so a connection that stops
+               sending data is detected and retried rather than hanging.
+
+            Once the files are local we load from that path, which is
+            instantaneous (no network I/O).
         """
         if self._model is not None:
             return
 
+        import os
+
+        # Raise HTTP read timeout so a stalled connection triggers a retry
+        # instead of hanging indefinitely.  Only set if the caller hasn't
+        # already configured it.
+        os.environ.setdefault("HF_HUB_HTTP_TIMEOUT", "120")
+
+        # Enable hf_transfer if the package is installed.  It uses a
+        # Rust-based multi-part downloader that handles stalls far better
+        # than plain requests.  Silently ignored when not installed.
+        try:
+            import hf_transfer  # noqa: F401
+            os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+            logger.debug("MusicGenEngine: hf_transfer available — using fast download")
+        except ImportError:
+            pass  # fine — fall back to requests-based download
+
         logger.info(
-            "MusicGenEngine: loading model %s on %s (first use — may download ~300 MB)",
+            "MusicGenEngine: downloading/verifying %s (first use — large models "
+            "can take a while; download is resumable if interrupted)",
             self._model_name,
-            self._device,
         )
 
+        from huggingface_hub import snapshot_download
+
+        local_path = snapshot_download(
+            repo_id=self._model_name,
+            cache_dir=self._cache_dir,
+        )
+
+        logger.info("MusicGenEngine: loading model on %s from %s", self._device, local_path)
+
         self._processor = AutoProcessor.from_pretrained(
-            self._model_name, cache_dir=self._cache_dir
+            local_path, local_files_only=True
         )
         self._model = MusicgenForConditionalGeneration.from_pretrained(
-            self._model_name, cache_dir=self._cache_dir
+            local_path, local_files_only=True
         )
         self._model.to(self._device)  # type: ignore[union-attr]
 
@@ -281,11 +325,11 @@ class MusicGenEngine:
 
         # Tell the model how many audio tokens to generate.
         # MusicGen encodes audio at 50 tokens/second internally.
-        self._model.set_generation_params(duration=duration)
+        max_new_tokens = int(duration * 50)
 
         # Generate — disable gradient tracking (we're doing inference only).
         with torch.no_grad():
-            audio_values = self._model.generate(**inputs)
+            audio_values = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
 
         # audio_values shape: [batch, channels, samples]
         # We took one prompt → batch=1, channels=1 → extract [0, 0].

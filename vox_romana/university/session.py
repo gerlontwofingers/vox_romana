@@ -22,7 +22,7 @@ existing ``ChromaVectorIndex.migrate_documents()`` pipeline indexes them
 without any new wiring.
 
 A lightweight session registry at ``{UNIVERSITY_ROOT}/index.json`` keeps
-one record per session so ``run_university.py list`` is O(1) rather than
+one record per session so ``run.py --mode university list`` is O(1) rather than
 scanning every folder.
 
 IDs
@@ -318,7 +318,7 @@ class ScholarSession:
         if not json_path.exists():
             raise FileNotFoundError(
                 f"Session file not found: {json_path}. "
-                f"Check the session ID or run `run_university.py list`."
+                f"Check the session ID or run `run.py --mode university list`."
             )
         try:
             with json_path.open(encoding="utf-8") as fh:

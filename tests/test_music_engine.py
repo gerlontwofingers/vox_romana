@@ -253,16 +253,18 @@ class TestMusicGenEngineGenerate:
     # ── Prompt and duration forwarding ────────────────────────────
 
     def test_duration_forwarded_to_set_generation_params(self):
-        """generate() calls model.set_generation_params(duration=<value>)."""
+        """generate() passes max_new_tokens=int(duration*50) to model.generate()."""
         engine, fake_model, _ = self._make_engine_with_mock_model()
         engine.generate("intro music", duration=12.5)
-        fake_model.set_generation_params.assert_called_once_with(duration=12.5)
+        call_kwargs = fake_model.generate.call_args
+        assert call_kwargs.kwargs["max_new_tokens"] == int(12.5 * 50)
 
     def test_default_duration_is_8_seconds(self):
-        """Default duration is 8.0 seconds."""
+        """Default duration produces max_new_tokens=int(8.0*50)=400."""
         engine, fake_model, _ = self._make_engine_with_mock_model()
         engine.generate("background music")
-        fake_model.set_generation_params.assert_called_once_with(duration=8.0)
+        call_kwargs = fake_model.generate.call_args
+        assert call_kwargs.kwargs["max_new_tokens"] == int(8.0 * 50)
 
     def test_prompt_forwarded_to_processor(self):
         """The prompt string is passed to the processor as text=[prompt]."""
@@ -285,22 +287,24 @@ class TestMusicGenEngineGenerate:
         assert engine.is_loaded  # We pre-injected the model.
 
     def test_ensure_loaded_calls_from_pretrained(self):
-        """_ensure_loaded() calls from_pretrained on both AutoProcessor and the model class."""
+        """_ensure_loaded() pre-downloads via snapshot_download then loads locally."""
         engine = MusicGenEngine(model_name="small", device="cpu")
 
         mock_model = MagicMock()
         mock_model.generate.return_value = _make_fake_audio_tensor()
         mock_processor = MagicMock(return_value=_make_fake_inputs())
+        fake_local_path = "/tmp/hf_cache/models--facebook--musicgen-small/snapshots/abc123"
 
         with patch("vox_romana.tts.music_engine.MusicgenForConditionalGeneration") as mock_model_cls, \
-             patch("vox_romana.tts.music_engine.AutoProcessor") as mock_proc_cls:
+             patch("vox_romana.tts.music_engine.AutoProcessor") as mock_proc_cls, \
+             patch("huggingface_hub.snapshot_download", return_value=fake_local_path):
             mock_model_cls.from_pretrained.return_value = mock_model
             mock_proc_cls.from_pretrained.return_value = mock_processor
             engine._ensure_loaded()
 
         assert engine.is_loaded
-        mock_model_cls.from_pretrained.assert_called_once_with("facebook/musicgen-small", cache_dir=None)
-        mock_proc_cls.from_pretrained.assert_called_once_with("facebook/musicgen-small", cache_dir=None)
+        mock_model_cls.from_pretrained.assert_called_once_with(fake_local_path, local_files_only=True)
+        mock_proc_cls.from_pretrained.assert_called_once_with(fake_local_path, local_files_only=True)
 
     # ── Device propagation ────────────────────────────────────────
 
@@ -321,9 +325,11 @@ class TestMusicGenEngineGenerate:
         mock_model = MagicMock()
         mock_model.generate.return_value = _make_fake_audio_tensor()
         mock_processor = MagicMock(return_value=_make_fake_inputs())
+        fake_local_path = "/tmp/hf_cache/models--facebook--musicgen-small/snapshots/abc123"
 
         with patch("vox_romana.tts.music_engine.MusicgenForConditionalGeneration") as mock_model_cls, \
-             patch("vox_romana.tts.music_engine.AutoProcessor") as mock_proc_cls:
+             patch("vox_romana.tts.music_engine.AutoProcessor") as mock_proc_cls, \
+             patch("huggingface_hub.snapshot_download", return_value=fake_local_path):
             mock_model_cls.from_pretrained.return_value = mock_model
             mock_proc_cls.from_pretrained.return_value = mock_processor
             engine._ensure_loaded()

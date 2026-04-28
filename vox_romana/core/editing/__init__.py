@@ -7,7 +7,7 @@ the Editor before it reaches the final cut.
 
 The pipeline has four moving parts:
 
-    models.py   — Data contracts (OutlineSection, EditorVerdict, ChunkResult).
+    models.py   — Data contracts (OutlineSection, EditorVerdict, ContentResult).
                   Pure data, no behavior. These flow between the other three.
 
     outline.py  — DirectorOutline: a versioned, mutable show outline that
@@ -15,7 +15,7 @@ The pipeline has four moving parts:
                   (speakers, sections). The Director holds one of these for
                   the entire broadcast.
 
-    editor.py   — ChunkEditor: a persistent LLM agent (via AgentSession) that
+    editor.py   — ContentEditor: a persistent LLM agent (via AgentSession) that
                   reviews each completed chunk against the outline and a quality
                   rubric (speaker clarity, repetition, narrative coherence).
                   Returns an EditorVerdict (pass/fail with issues).
@@ -27,7 +27,7 @@ The pipeline has four moving parts:
 
 USAGE:
     from vox_romana.core.editing import (
-        ChunkEditor, DirectorOutline, OutlineSection, RetryLoop,
+        ContentEditor, DirectorOutline, OutlineSection, RetryLoop,
     )
     from vox_romana.core.session import AgentSession
 
@@ -39,22 +39,22 @@ USAGE:
 
     # Create an editor with a persistent session
     session = AgentSession(client, EDITOR_SYSTEM_PROMPT)
-    editor = ChunkEditor(session)
+    editor = ContentEditor(session)
 
     # Wrap generation in a retry loop
     loop = RetryLoop(editor, max_retries=3)
     result = loop.execute(my_generate_fn, "intro", outline)
 """
 
-from .editor import EDITOR_SYSTEM_PROMPT, ChunkEditor
-from .models import ChunkResult, EditorVerdict, OutlineSection, OutlineSnapshot
+from .editor import EDITOR_SYSTEM_PROMPT, ContentEditor
+from .models import ContentResult, EditorVerdict, OutlineSection, OutlineSnapshot
 from .outline import DirectorOutline
 from .retry import RetryLoop
 
 __all__ = [
     "EDITOR_SYSTEM_PROMPT",
-    "ChunkEditor",
-    "ChunkResult",
+    "ContentEditor",
+    "ContentResult",
     "DirectorOutline",
     "EditorVerdict",
     "OutlineSection",
