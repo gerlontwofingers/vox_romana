@@ -11,7 +11,7 @@ PYTHON ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo pytho
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install check test models clean
+.PHONY: help install check test test-integration models clean
 
 # ── help ──────────────────────────────────────────────────────────────────────
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  make install   Create .venv and install requirements.txt"
 	@echo "  make check     Run preflight.py (environment health check)"
 	@echo "  make test      Run the full pytest suite"
+	@echo "  make test-integration  Run live LLM integration tests (requires DEEPSEEK_API_KEY)"
 	@echo "  make models    Download Piper voice models via git-lfs"
 	@echo "  make clean     Remove .venv, __pycache__, and pytest artefacts"
 	@echo ""
@@ -43,6 +44,10 @@ check:
 # ── test ──────────────────────────────────────────────────────────────────────
 test:
 	$(PYTHON) -m pytest
+
+# ── test-integration ─────────────────────────────────────────────────────────
+test-integration:
+	$(PYTHON) -m pytest --run-integration -v tests/test_integration_live.py
 
 # ── models ────────────────────────────────────────────────────────────────────
 # Downloads Piper TTS voice models via git-lfs.

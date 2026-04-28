@@ -13,9 +13,11 @@ for testing without loading any model.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Callable
 
 import numpy as np
+from scipy.stats import pearsonr
 
 from .models import EMOTION_LABELS, EmotionSequence, SemanticFlowResult
 
@@ -42,8 +44,6 @@ class SemanticFlowAgent:
 
     def compute(self, sequence: EmotionSequence) -> SemanticFlowResult:
         """Compute topic/emotion shifts and their Pearson correlation."""
-        from scipy.stats import pearsonr
-
         texts = sequence.texts
         tags = sequence.tags
 
@@ -70,8 +70,13 @@ class SemanticFlowAgent:
                 n_pairs=n_pairs,
             )
 
-        r, p = pearsonr(topic_shifts, emotion_shifts)
-        # Handle zero-variance case (scipy returns NaN)
+        # scipy.stats.pearsonr raises ConstantInputWarning when one array is
+        # constant (e.g. all-neutral emotions in synthetic test data).  We
+        # catch and ignore it here because the NaN result is handled below.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=Warning, message=r".*constant.*")
+            r, p = pearsonr(topic_shifts, emotion_shifts)
+        # Handle zero-variance case (scipy returns NaN).
         if np.isnan(r):
             r, p = 0.0, 1.0
 
