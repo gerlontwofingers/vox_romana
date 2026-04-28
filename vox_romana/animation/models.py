@@ -67,6 +67,7 @@ AnimationHint = Literal[
     "parallax",            # subtle depth-shift on multi-layer composite
     "static",              # no motion — still frame
     "text_pulse",          # text overlay pulses / fades in rhythm
+    "talking_head_sync",   # SadTalker lip-synced portrait video for this scene
 ]
 
 # ── Valid scene transition names ────────────────────────────────────────────
@@ -137,6 +138,12 @@ class SceneSpec:
         generated_image_path:
             Filesystem path to the SD-generated image for this scene.
             Filled by ImageGenerator. None until then.
+
+        face_animation_path:
+            Filesystem path to the SadTalker-rendered talking-head video
+            clip for this scene (mp4). Filled by FaceAnimator when the
+            scene's ``animation_hint`` is ``"talking_head_sync"``. None
+            for non-talking-head scenes or before face animation has run.
     """
 
     scene_id: str
@@ -157,6 +164,9 @@ class SceneSpec:
 
     # Filled by ImageGenerator
     generated_image_path: str | None = None
+
+    # Filled by FaceAnimator (only when animation_hint == "talking_head_sync")
+    face_animation_path: str | None = None
 
     @property
     def duration_sec(self) -> float | None:

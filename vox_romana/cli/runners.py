@@ -28,6 +28,50 @@ def log(msg: str, *, quiet: bool = False) -> None:
         print(f"  {msg}", flush=True)
 
 
+def _build_series_context(catalog, series_id: str) -> str:
+    """Format a series record + recent episodes into a SERIES CONTEXT block.
+
+    The returned string is prepended to the brief inside each bootstrap's
+    ``from_brief()`` so every Architect / Profile Builder / Director sees
+    the recurring writers'-bible before reading the user's specific prompt.
+
+    Returns an empty string if the series has no bible AND no prior
+    episodes (the caller can still proceed — context just adds nothing).
+    """
+    series = catalog.get_series(series_id)
+    if series is None:
+        raise ValueError(f"Unknown series: {series_id}")
+
+    recent = catalog.get_recent_episode_summaries(series_id, n=5)
+
+    parts: list[str] = []
+    parts.append("SERIES CONTEXT")
+    parts.append("==============")
+    parts.append(f"Series: {series.title}")
+    if series.show_type:
+        parts.append(f"Show type: {series.show_type}")
+    if series.tone:
+        parts.append(f"Tone: {series.tone}")
+    if series.bible:
+        parts.append("")
+        parts.append("Writers' bible:")
+        parts.append(series.bible)
+    if recent:
+        parts.append("")
+        parts.append("Recent episodes (most recent first):")
+        for ep in recent:
+            ep_no = ep["episode_number"]
+            label = f"  • Episode {ep_no}: " if ep_no else "  • "
+            parts.append(f"{label}{ep['title']}")
+    if series.audience_profile is not None:
+        parts.append("")
+        parts.append("AUDIENCE")
+        parts.append("========")
+        parts.append(series.audience_profile.to_prompt_text())
+    parts.append("──────────────")
+    return "\n".join(parts)
+
+
 def _enable_research(bootstrap_kwargs: dict, args) -> None:
     """Wire University + Memory + Google into ``bootstrap_kwargs``.
 
@@ -308,6 +352,8 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides=overrides,
         auto_research=False,
     )
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
     if args.fact_check != "off":
         log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
     if args.content_mode != "auto":
@@ -425,6 +471,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         overrides=overrides,
         auto_research=False,
     )
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
     if args.fact_check != "off":
         log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
     if args.content_mode != "auto":
@@ -549,6 +597,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     )
     if target_words is not None:
         bootstrap_kwargs["target_words"] = target_words
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
     if args.fact_check != "off":
         log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
     if args.content_mode != "auto":
@@ -671,6 +721,8 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     )
     if target_words is not None:
         bootstrap_kwargs["target_words"] = target_words
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
     if args.fact_check != "off":
         log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
 
@@ -770,6 +822,25 @@ def run_generate(args: argparse.Namespace) -> Path:
         sys.exit(1)
 
     args.output.mkdir(parents=True, exist_ok=True)
+
+    # ── Resolve --series → SERIES CONTEXT block + voice-locking key ──
+    # When --series is given, we (1) load the series record from the
+    # catalog and format a SERIES CONTEXT block that bootstraps prepend
+    # to the brief, and (2) stamp the same id onto args.series_id so the
+    # downstream voice registry locks character voices across episodes.
+    args.series_context = None
+    series_arg = getattr(args, "series", None)
+    if series_arg:
+        from vox_romana.core.catalog import Catalog
+        with Catalog() as _cat:
+            try:
+                args.series_context = _build_series_context(_cat, series_arg)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        # Reuse the same id for voice locking. Existing code already reads
+        # args.series_id via getattr() in each runner.
+        args.series_id = series_arg
 
     # ── Create a shared client ─────────────────────────────────────
     # One client for the whole run so bootstrap + conductor + editor
@@ -1162,7 +1233,7 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_render(argv: list[str] | None = None) -> None:
+def run_render(argv: list[str] | None = None) -> "RenderResult":
     """Run the render pipeline: JSON → TTS → audio file.
 
     Extracted from render_show.main() so it can be called from both
@@ -1173,7 +1244,7 @@ def run_render(argv: list[str] | None = None) -> None:
         argv: CLI arguments. Defaults to sys.argv[1:] if None.
     """
     from vox_romana.tts.engine import VoiceConfig
-    from vox_romana.tts.renderer import TTSRenderer
+    from vox_romana.tts.renderer import RenderResult, TTSRenderer
 
     args = _render_parse_args(argv)
 
@@ -1319,3 +1390,5 @@ def run_render(argv: list[str] | None = None) -> None:
 
     if not args.quiet:
         print()
+
+    return result

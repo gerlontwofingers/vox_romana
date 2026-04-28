@@ -526,13 +526,13 @@ class TestPublishArgParsing:
         ])
         assert args.publish_output == tmp_path
 
-    def test_no_polish_flag(self, tmp_json):
+    def test_polish_flag(self, tmp_json):
         args = parse_args([
             "--mode", "publish",
             "--script-input", str(tmp_json),
-            "--no-polish",
+            "--polish",
         ])
-        assert args.no_polish is True
+        assert args.polish is True
 
     def test_publish_addon_flag_generate(self, tmp_prompt):
         args = parse_args([str(tmp_prompt), "--mode", "generate", "--publish"])
@@ -578,6 +578,167 @@ class TestPublishValidation:
                 "--publish",
             ])
         assert exc_info.value.code == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIDEO MODE — face animation flag parsing (B4 additions)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFaceAnimationArgParsing:
+    """parse_args() behaviour for the B4 face-animation CLI flags."""
+
+    def test_face_animation_default_none(self, tmp_prompt):
+        """Neither flag given → face_animation is None (auto-detect)."""
+        args = parse_args([str(tmp_prompt), "--mode", "video"])
+        assert args.face_animation is None
+
+    def test_face_animation_explicit_true(self, tmp_prompt):
+        """--face-animation → face_animation is True."""
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--face-animation"])
+        assert args.face_animation is True
+
+    def test_no_face_animation_explicit_false(self, tmp_prompt):
+        """--no-face-animation → face_animation is False."""
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--no-face-animation"])
+        assert args.face_animation is False
+
+    def test_face_animation_model_default_sadtalker(self, tmp_prompt):
+        """--face-animation-model defaults to 'sadtalker'."""
+        args = parse_args([str(tmp_prompt), "--mode", "video"])
+        assert args.face_animation_model == "sadtalker"
+
+    def test_face_animation_model_live_portrait(self, tmp_prompt):
+        """--face-animation-model live_portrait parses correctly."""
+        args = parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--face-animation-model", "live_portrait",
+        ])
+        assert args.face_animation_model == "live_portrait"
+
+    def test_video_platform_default_youtube(self, tmp_prompt):
+        """--video-platform defaults to 'youtube'."""
+        args = parse_args([str(tmp_prompt), "--mode", "video"])
+        assert args.video_platform == "youtube"
+
+    def test_video_platform_tiktok(self, tmp_prompt):
+        """--video-platform tiktok parses correctly."""
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--video-platform", "tiktok"])
+        assert args.video_platform == "tiktok"
+
+    def test_video_platform_both(self, tmp_prompt):
+        """--video-platform both parses correctly."""
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--video-platform", "both"])
+        assert args.video_platform == "both"
+
+    def test_video_platform_fast(self, tmp_prompt):
+        """--video-platform fast parses correctly."""
+        args = parse_args([str(tmp_prompt), "--mode", "video", "--video-platform", "fast"])
+        assert args.video_platform == "fast"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIDEO MODE — _mode_video pipeline wiring
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestModeVideoPipelineWiring:
+    """_mode_video correctly threads RenderResult.event_durations to run_animation."""
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_event_durations_threaded_to_animation(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
+    ):
+        """event_durations from RenderResult reaches run_animation as a kwarg."""
+        from pathlib import Path
+        from vox_romana.tts.renderer import RenderResult
+
+        fake_json = tmp_path / "show.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+
+        fake_durations = {0: 2.5, 1: 3.1, 2: 1.8}
+        mock_render.return_value = RenderResult(
+            output_path=fake_json.with_suffix(".mp3"),
+            event_durations=fake_durations,
+        )
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        import run as run_module
+        run_module._mode_video(parse_args([str(tmp_prompt), "--mode", "video", "--quiet"]))
+
+        _, kwargs = mock_anim.call_args
+        assert kwargs.get("event_durations") == fake_durations
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_event_durations_none_when_render_returns_none(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
+    ):
+        """When run_render returns None, event_durations=None is passed."""
+        from pathlib import Path
+
+        fake_json = tmp_path / "show.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        import run as run_module
+        run_module._mode_video(parse_args([str(tmp_prompt), "--mode", "video", "--quiet"]))
+
+        _, kwargs = mock_anim.call_args
+        assert kwargs.get("event_durations") is None
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_face_animation_args_forwarded_to_run_animation(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
+    ):
+        """args (including face_animation flags) are the first positional arg to run_animation."""
+        from pathlib import Path
+
+        fake_json = tmp_path / "show.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        import run as run_module
+        run_module._mode_video(parse_args([
+            str(tmp_prompt), "--mode", "video",
+            "--face-animation", "--face-animation-model", "sadtalker",
+            "--quiet",
+        ]))
+
+        positional_args, _ = mock_anim.call_args
+        forwarded_args = positional_args[0]
+        assert forwarded_args.face_animation is True
+        assert forwarded_args.face_animation_model == "sadtalker"
+
+    @patch("vox_romana.cli.animation_runner.run_animation")
+    @patch("vox_romana.cli.runners.run_render")
+    @patch("vox_romana.cli.runners.run_generate")
+    def test_three_phases_called_in_order(
+        self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
+    ):
+        """generate → render → animate are each called exactly once."""
+        from pathlib import Path
+
+        fake_json = tmp_path / "show.json"
+        fake_json.write_text("{}")
+        mock_gen.return_value = fake_json
+        mock_render.return_value = None
+        mock_anim.return_value = Path("/fake/video.mp4")
+
+        import run as run_module
+        run_module._mode_video(parse_args([str(tmp_prompt), "--mode", "video", "--quiet"]))
+
+        mock_gen.assert_called_once()
+        mock_render.assert_called_once()
+        mock_anim.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

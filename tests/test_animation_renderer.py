@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from vox_romana.animation.backends.base import BaseAnimationBackend
+from vox_romana.animation.face_animator import FaceAnimator
 from vox_romana.animation.image_gen import ImageGenerator
 from vox_romana.animation.models import AnimationPlan, SceneSpec
 from vox_romana.animation.renderer import AnimationRenderer
@@ -296,6 +297,85 @@ class TestReturnValue:
         result = renderer.render(plan, output_dir=tmp_path)
 
         assert result == expected
+
+
+# ── Face animation ─────────────────────────────────────────────────────────
+
+class TestFaceAnimation:
+    def test_render_with_face_animation_calls_animator(self, tmp_path: Path):
+        """When face_animator injected and plan.style='talking_heads', animate_for_plan is called."""
+        mock_face_animator = MagicMock(spec=FaceAnimator)
+        audio = tmp_path / "show.wav"
+        audio.touch()
+
+        plan = _make_plan()
+        plan.style = "talking_heads"
+
+        backend_instance = _make_mock_backend()
+        renderer = AnimationRenderer(
+            image_generator=MagicMock(spec=ImageGenerator),
+            face_animator=mock_face_animator,
+            backends={"moviepy": _make_mock_backend_class(backend_instance)},
+        )
+
+        renderer.render(plan, output_dir=tmp_path, audio_path=audio, skip_image_gen=True)
+
+        mock_face_animator.animate_for_plan.assert_called_once_with(
+            plan, audio, tmp_path / "faces"
+        )
+
+    def test_render_skip_face_animation_flag(self, tmp_path: Path):
+        """skip_face_animation=True → animate_for_plan NOT called."""
+        mock_face_animator = MagicMock(spec=FaceAnimator)
+        audio = tmp_path / "show.wav"
+        audio.touch()
+
+        plan = _make_plan()
+        plan.style = "talking_heads"
+
+        backend_instance = _make_mock_backend()
+        renderer = AnimationRenderer(
+            image_generator=MagicMock(spec=ImageGenerator),
+            face_animator=mock_face_animator,
+            backends={"moviepy": _make_mock_backend_class(backend_instance)},
+        )
+
+        renderer.render(
+            plan, output_dir=tmp_path, audio_path=audio,
+            skip_image_gen=True, skip_face_animation=True,
+        )
+
+        mock_face_animator.animate_for_plan.assert_not_called()
+
+    def test_render_face_animation_skipped_for_wrong_style(self, tmp_path: Path):
+        """Face animator is NOT called when plan.style != 'talking_heads'."""
+        mock_face_animator = MagicMock(spec=FaceAnimator)
+        audio = tmp_path / "show.wav"
+        audio.touch()
+
+        plan = _make_plan()  # style defaults to "cinematic"
+
+        backend_instance = _make_mock_backend()
+        renderer = AnimationRenderer(
+            image_generator=MagicMock(spec=ImageGenerator),
+            face_animator=mock_face_animator,
+            backends={"moviepy": _make_mock_backend_class(backend_instance)},
+        )
+
+        renderer.render(plan, output_dir=tmp_path, audio_path=audio, skip_image_gen=True)
+
+        mock_face_animator.animate_for_plan.assert_not_called()
+
+    def test_face_animator_not_stored_when_none(self):
+        """When no face_animator is passed, _face_animator is None."""
+        renderer = AnimationRenderer(backends={"moviepy": MagicMock()})
+        assert renderer._face_animator is None
+
+    def test_injected_face_animator_stored(self):
+        """Injected face_animator is accessible as _face_animator."""
+        fa = MagicMock(spec=FaceAnimator)
+        renderer = AnimationRenderer(face_animator=fa, backends={"moviepy": MagicMock()})
+        assert renderer._face_animator is fa
 
 
 # ── Error propagation ──────────────────────────────────────────────────────

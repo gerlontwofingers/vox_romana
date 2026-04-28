@@ -114,6 +114,7 @@ class DebateBootstrap(BaseShowBootstrap):
         auto_research: bool = False,
         search_provider: BaseSearchProvider | None = None,
         memory: Any | None = None,
+        series_context: str | None = None,
     ) -> DebateConfig:
         """Run the full bootstrap chain: brief → fully populated DebateConfig.
 
@@ -150,6 +151,13 @@ class DebateBootstrap(BaseShowBootstrap):
                         auto_research=True but no search_provider is given.
         """
         overrides = overrides or {}
+
+        # If a series bible/context block was supplied, prepend it to the
+        # brief so every downstream agent (Architect, Profile Builder,
+        # Director) sees the recurring tone, world facts, and prior-episode
+        # canon before they read the user's specific prompt.
+        if series_context:
+            brief = f"{series_context}\n\n{brief}"
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 0: AUTO-RESEARCH (optional)

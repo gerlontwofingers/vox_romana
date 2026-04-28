@@ -414,7 +414,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video"],
+        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video", "series"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -426,6 +426,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "document (TXT/PDF). "
             "'music' = generate a standalone audio clip from a text prompt "
             "(inline via --music-prompt or from a prompt file). "
+            "'series' = manage series records (create/list/inspect). "
             "See the USAGE block above for full examples."
         ),
     )
@@ -543,6 +544,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Session ID of a completed University deep-research run. "
             "Grounds the show in Scholar notes (highest-priority search tier). "
             "E.g. --university-session a1b2c3d4e5f6"
+        ),
+    )
+
+    gen_group.add_argument(
+        "--series",
+        type=str,
+        default=None,
+        dest="series",
+        metavar="SERIES_ID",
+        help=(
+            "Series ID. Generation prepends the series writers'-bible and "
+            "recent-episode summaries to the brief, AND locks character "
+            "voices across episodes. Create one with: "
+            "`python run.py --mode series create \"My Show\"`."
         ),
     )
 
@@ -921,6 +936,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "dev/diagnostic speed run. Only used with --mode video."
         ),
     )
+    anim_group.add_argument(
+        "--face-animation",
+        dest="face_animation",
+        action="store_true",
+        default=None,
+        help=(
+            "Force-enable talking-head face animation (SadTalker). "
+            "Generated portraits are lip-synced to per-scene audio and "
+            "composited as a lower-third overlay. Requires the SadTalker "
+            "package to be installed. When neither --face-animation nor "
+            "--no-face-animation is given, the runner auto-detects from "
+            "the visual brief (keywords: 'anchor', 'news', 'talking head', "
+            "'podcast') and the AnimationDirector's style choice "
+            "('talking_heads'). Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--no-face-animation",
+        dest="face_animation",
+        action="store_false",
+        help=(
+            "Force-disable talking-head face animation even when the "
+            "visual brief or director would have triggered it. Useful "
+            "for fast preview renders. Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--face-animation-model",
+        dest="face_animation_model",
+        type=str,
+        default="sadtalker",
+        choices=["sadtalker", "live_portrait"],
+        metavar="{sadtalker,live_portrait}",
+        help=(
+            "Backend used to render talking-head clips (default: "
+            "sadtalker). 'live_portrait' is a stub for a future "
+            "LivePortrait integration. Only used with --mode video."
+        ),
+    )
     # ── Publish flags (--mode publish or --publish add-on) ───────────
     pub_group = parser.add_argument_group(
         "publishing (--mode publish  /  --publish add-on)"
@@ -963,15 +1017,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     pub_group.add_argument(
-        "--no-polish",
-        dest="no_polish",
+        "--polish",
+        dest="polish",
         action="store_true",
         default=False,
         help=(
-            "Skip the optional LLM polish pass when publishing.  "
+            "Enable the optional LLM polish pass when publishing.  "
             "The polish agent rewrites spoken-style phrasing into written "
-            "prose.  Disabled by default (polisher not yet implemented); "
-            "this flag is a no-op today but is reserved for Shot 3."
+            "prose.  Off by default (not yet implemented)."
         ),
     )
 
@@ -1298,7 +1351,7 @@ def _mode_generate(args: argparse.Namespace) -> Path:
     return run_generate(args)
 
 
-def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
+def _mode_render(json_path: str | Path, args: argparse.Namespace):
     """Run render mode: JSON → audio.
 
     Delegates to ``vox_romana.cli.runners.run_render`` directly,
@@ -1307,11 +1360,14 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
     Args:
         json_path: Path to the show JSON to render.
         args:      Parsed namespace from parse_args().
+
+    Returns:
+        RenderResult with stats including per-event audio durations.
     """
     from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
-    run_render(argv)
+    return run_render(argv)
 
 
 def _mode_video(args: argparse.Namespace) -> None:
@@ -1369,7 +1425,7 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    _mode_render(json_path, args)
+    render_result = _mode_render(json_path, args)
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
 
@@ -1383,7 +1439,12 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    video_path = run_animation(args, json_path, audio_path)
+    video_path = run_animation(
+        args,
+        json_path,
+        audio_path,
+        event_durations=render_result.event_durations if render_result is not None else None,
+    )
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
 
@@ -1840,6 +1901,21 @@ def _extract_university_argv(argv: list[str]) -> list[str] | None:
     return None
 
 
+def _extract_series_argv(argv: list[str]) -> list[str] | None:
+    """If ``--mode series`` is in ``argv``, return the remainder for the
+    Series CLI; otherwise return None.
+
+    Series mode uses a subcommand grammar (create/list/inspect) that does
+    not fit run.py's flat namespace.
+    """
+    for i, tok in enumerate(argv):
+        if tok in ("--mode", "-m") and i + 1 < len(argv) and argv[i + 1] == "series":
+            return list(argv[i + 2:])
+        if tok in ("--mode=series", "-m=series"):
+            return list(argv[i + 1:])
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the vox_romana master pipeline.
 
@@ -1857,6 +1933,13 @@ def main(argv: list[str] | None = None) -> None:
     if uni_argv is not None:
         from vox_romana.university.cli import main as university_main
         university_main(uni_argv)
+        return
+
+    # Series mode also has its own subcommand grammar (create/list/inspect).
+    series_argv = _extract_series_argv(raw_argv)
+    if series_argv is not None:
+        from vox_romana.cli.series import main as series_main
+        series_main(series_argv)
         return
 
     args = parse_args(argv)

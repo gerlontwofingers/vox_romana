@@ -85,6 +85,11 @@ class TestSceneSpec:
         s1.event_global_orders.append(99)
         assert s2.event_global_orders == []
 
+    def test_scene_spec_face_animation_path_default_none(self):
+        """face_animation_path defaults to None on a fresh SceneSpec."""
+        scene = SceneSpec(scene_id="x")
+        assert scene.face_animation_path is None
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # HardwareProfile

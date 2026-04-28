@@ -176,6 +176,7 @@ class NewsBootstrap(BaseShowBootstrap):
         search_provider: BaseSearchProvider | None = None,
         memory: Any | None = None,
         target_words: int | None = None,
+        series_context: str | None = None,
     ) -> NewsConfig:
         """Run the full bootstrap chain: brief → fully populated NewsConfig.
 
@@ -196,6 +197,9 @@ class NewsBootstrap(BaseShowBootstrap):
             A fully populated NewsConfig.
         """
         overrides = overrides or {}
+
+        if series_context:
+            brief = f"{series_context}\n\n{brief}"
 
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:

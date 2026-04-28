@@ -58,6 +58,7 @@ from typing import Any
 
 
 # Default DB path — resolved via VOX_ROMANA_DATA_DIR or ~/.vox_romana/config.yaml.
+from vox_romana.core.audience import AudienceProfile
 from vox_romana.core.paths import CATALOG_DB_PATH as DEFAULT_DB_PATH
 
 # Schema version — bump this when adding migrations.
@@ -67,6 +68,26 @@ SCHEMA_VERSION = 1
 # ─────────────────────────────────────────────────────────────────────────────
 # Result dataclasses
 # ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SeriesRecord:
+    """A series — the studio identity that ties episodes together.
+
+    A series carries the writers' bible (tone, recurring rules, world
+    facts, character canon) plus an optional audience profile. When a
+    show is generated with ``--series ID``, this record's ``bible`` and
+    ``audience_profile_json`` are formatted into a SERIES CONTEXT block
+    that is prepended to the brief before the Architect runs.
+    """
+
+    series_id: str
+    title: str
+    show_type: str | None
+    tone: str | None
+    bible: str
+    created_at: str
+    audience_profile: AudienceProfile | None = None
+
 
 @dataclass
 class RunRecord:
@@ -193,6 +214,22 @@ class Catalog:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_wpm_type ON wpm_stats(content_type);
+
+                -- Series: the writers'-bible record that ties episodes
+                -- together. ``bible`` is the free-form recurring context
+                -- (tone, world rules, character canon) prepended to every
+                -- brief generated under this series. ``audience_profile_json``
+                -- is reserved for a future AudienceProfile feature; included
+                -- now so we never have to ALTER TABLE.
+                CREATE TABLE IF NOT EXISTS series (
+                    series_id            TEXT PRIMARY KEY,
+                    title                TEXT NOT NULL,
+                    show_type            TEXT,
+                    tone                 TEXT,
+                    bible                TEXT NOT NULL DEFAULT '',
+                    audience_profile_json TEXT,
+                    created_at           TEXT NOT NULL
+                );
 
                 -- Voice registry: lock a character name to a specific voice_id
                 -- within a series/show so the same character always sounds the same.
@@ -510,6 +547,108 @@ class Catalog:
         ).fetchone()
         current = row[0] if row and row[0] is not None else 0
         return current + 1
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SERIES (writers' bible)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def create_series(
+        self,
+        *,
+        title: str,
+        show_type: str | None = None,
+        tone: str | None = None,
+        bible: str = "",
+        audience_profile: AudienceProfile | None = None,
+    ) -> str:
+        """Create a new series and return its generated UUID."""
+        series_id = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        ap_json = audience_profile.to_json() if audience_profile else None
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO series
+                   (series_id, title, show_type, tone, bible,
+                    audience_profile_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (series_id, title, show_type, tone, bible, ap_json, now),
+            )
+        return series_id
+
+    def set_audience_profile(
+        self, series_id: str, profile: AudienceProfile
+    ) -> None:
+        """Persist (or replace) the audience profile on an existing series."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE series SET audience_profile_json = ? WHERE series_id = ?",
+                (profile.to_json(), series_id),
+            )
+
+    def get_series(self, series_id: str) -> SeriesRecord | None:
+        """Get a single series by ID, or None if not found."""
+        row = self._conn.execute(
+            "SELECT * FROM series WHERE series_id = ?",
+            (series_id,),
+        ).fetchone()
+        return self._row_to_series(row) if row else None
+
+    def list_series(self) -> list[SeriesRecord]:
+        """Return all series, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM series ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._row_to_series(row) for row in rows]
+
+    def update_series_bible(self, series_id: str, bible: str) -> None:
+        """Replace the bible text for an existing series."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE series SET bible = ? WHERE series_id = ?",
+                (bible, series_id),
+            )
+
+    def get_recent_episode_summaries(
+        self, series_id: str, *, n: int = 5
+    ) -> list[dict[str, Any]]:
+        """Return the last N episodes in a series as compact summaries.
+
+        Used by the series-context builder so the Architect knows what
+        has already been said. Each dict has: ``run_id``, ``title``,
+        ``episode_number``, ``brief``, ``created_at``.
+        """
+        rows = self._conn.execute(
+            """SELECT run_id, title, episode_number, brief, created_at
+               FROM runs
+               WHERE series_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (series_id, n),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "title": row["title"],
+                "episode_number": row["episode_number"],
+                "brief": row["brief"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def _row_to_series(self, row: sqlite3.Row) -> SeriesRecord:
+        """Convert a database row to a SeriesRecord."""
+        ap_json = row["audience_profile_json"]
+        audience_profile = AudienceProfile.from_json(ap_json) if ap_json else None
+        return SeriesRecord(
+            series_id=row["series_id"],
+            title=row["title"],
+            show_type=row["show_type"],
+            tone=row["tone"],
+            bible=row["bible"],
+            created_at=row["created_at"],
+            audience_profile=audience_profile,
+        )
 
     # ═══════════════════════════════════════════════════════════════════
     # WPM STATS
