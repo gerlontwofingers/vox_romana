@@ -124,6 +124,34 @@ class StudyRecord:
     created_at: str
 
 
+@dataclass
+class AuditionRecord:
+    """A raw audition session — a batch of generated candidate assets."""
+
+    id: int
+    session_id: str
+    series_id: str | None
+    audition_type: str          # "voice" | "music" | "visual"
+    created_at: str
+    brief: str
+    results_json: str           # JSON list of {label, path, score}
+    chosen: str | None          # label of the chosen asset, if any
+
+
+@dataclass
+class AssetRecord:
+    """An approved, greenlit asset in a series asset pool."""
+
+    id: int
+    series_id: str
+    asset_type: str             # "voice" | "music" | "visual"
+    character_name: str | None  # e.g. "Dr. Chen" for voice assets
+    asset_id: str               # voice ID, music slug, etc.
+    source_path: str            # path to the audition clip / reference file
+    approved_at: str
+    notes: str
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Catalog
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +281,44 @@ class Catalog:
                     usage_count INTEGER NOT NULL DEFAULT 0,
                     last_used   TEXT NOT NULL
                 );
+
+                -- Audition sessions: raw batches of candidate assets generated
+                -- by --mode audition (voice/music/visual).  Each session has a
+                -- stable session_id; results_json stores the ranked candidates.
+                CREATE TABLE IF NOT EXISTS auditions (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id    TEXT NOT NULL UNIQUE,
+                    series_id     TEXT,
+                    audition_type TEXT NOT NULL,
+                    created_at    TEXT NOT NULL,
+                    brief         TEXT NOT NULL DEFAULT '',
+                    results_json  TEXT NOT NULL DEFAULT '[]',
+                    chosen        TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_auditions_session
+                    ON auditions(session_id);
+                CREATE INDEX IF NOT EXISTS idx_auditions_series
+                    ON auditions(series_id);
+
+                -- Series asset pool: the greenlit set of approved voices,
+                -- music styles, and visual styles for a specific series.
+                -- Assets are approved from audition sessions or added manually.
+                CREATE TABLE IF NOT EXISTS series_assets (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id      TEXT NOT NULL,
+                    asset_type     TEXT NOT NULL,
+                    character_name TEXT,
+                    asset_id       TEXT NOT NULL,
+                    source_path    TEXT NOT NULL DEFAULT '',
+                    approved_at    TEXT NOT NULL,
+                    notes          TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_assets_series
+                    ON series_assets(series_id);
+                CREATE INDEX IF NOT EXISTS idx_assets_type
+                    ON series_assets(asset_type);
             """)
 
             # FTS5 virtual table for full-text search across runs.
@@ -648,6 +714,213 @@ class Catalog:
             bible=row["bible"],
             created_at=row["created_at"],
             audience_profile=audience_profile,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # AUDITIONS + SERIES ASSET POOL
+    # ═══════════════════════════════════════════════════════════════════
+
+    def log_audition(
+        self,
+        *,
+        session_id: str,
+        series_id: str | None = None,
+        audition_type: str,
+        brief: str = "",
+        results: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Log a new audition session.
+
+        Args:
+            session_id:     Stable identifier for this audition batch
+                            (e.g. a UUID hex).
+            series_id:      Optional series this audition belongs to.
+            audition_type:  "voice", "music", or "visual".
+            brief:          The prompt / description used for the session.
+            results:        Ranked list of candidate dicts
+                            (each has at minimum: ``label``, ``path``).
+
+        Returns:
+            The ``id`` (auto-increment PK) of the inserted row.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO auditions
+                   (session_id, series_id, audition_type, created_at,
+                    brief, results_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    series_id,
+                    audition_type,
+                    now,
+                    brief,
+                    json.dumps(results or [], default=str),
+                ),
+            )
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def get_audition(self, session_id: str) -> AuditionRecord | None:
+        """Retrieve a single audition session by its session_id."""
+        row = self._conn.execute(
+            "SELECT * FROM auditions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return AuditionRecord(
+            id=row["id"],
+            session_id=row["session_id"],
+            series_id=row["series_id"],
+            audition_type=row["audition_type"],
+            created_at=row["created_at"],
+            brief=row["brief"],
+            results_json=row["results_json"],
+            chosen=row["chosen"],
+        )
+
+    def approve_asset(
+        self,
+        *,
+        series_id: str,
+        asset_type: str,
+        asset_id: str,
+        character_name: str | None = None,
+        source_path: str = "",
+        notes: str = "",
+    ) -> int:
+        """Add one asset to the series pool.
+
+        Args:
+            series_id:      Series this asset belongs to.
+            asset_type:     "voice", "music", or "visual".
+            asset_id:       The canonical identifier (voice ID, music slug, …).
+            character_name: For voice assets — the character this voice plays.
+            source_path:    Filesystem path to the reference clip or file.
+            notes:          Optional free-form notes (e.g. "preferred warm style").
+
+        Returns:
+            The ``id`` (auto-increment PK) of the inserted row.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO series_assets
+                   (series_id, asset_type, character_name, asset_id,
+                    source_path, approved_at, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (series_id, asset_type, character_name, asset_id,
+                 source_path, now, notes),
+            )
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def approve_all_from_audition(
+        self,
+        session_id: str,
+        *,
+        series_id: str,
+    ) -> list[int]:
+        """Approve every candidate in an audition session into the pool.
+
+        Reads the ``results_json`` from the audition row and calls
+        :meth:`approve_asset` for each entry.  Each result dict must have
+        at minimum an ``asset_id`` key; ``character_name``, ``source_path``,
+        and ``notes`` are used when present.
+
+        Args:
+            session_id: The audition session to approve from.
+            series_id:  Series to add the assets to (may differ from the
+                        audition's own ``series_id`` if it was ungrouped).
+
+        Returns:
+            List of auto-increment PKs for the approved asset rows.
+
+        Raises:
+            ValueError: If the session_id is not found.
+        """
+        rec = self.get_audition(session_id)
+        if rec is None:
+            raise ValueError(f"Audition session not found: {session_id}")
+
+        results: list[dict] = json.loads(rec.results_json)
+        ids: list[int] = []
+        for item in results:
+            asset_id = item.get("asset_id") or item.get("label") or ""
+            if not asset_id:
+                continue
+            pk = self.approve_asset(
+                series_id=series_id,
+                asset_type=rec.audition_type,
+                asset_id=asset_id,
+                character_name=item.get("character_name"),
+                source_path=item.get("path") or item.get("source_path") or "",
+                notes=item.get("notes") or "",
+            )
+            ids.append(pk)
+
+        # Mark the audition session as fully chosen.
+        with self._conn:
+            self._conn.execute(
+                "UPDATE auditions SET chosen = 'all' WHERE session_id = ?",
+                (session_id,),
+            )
+        return ids
+
+    def list_assets(
+        self,
+        series_id: str,
+        *,
+        asset_type: str | None = None,
+    ) -> list[AssetRecord]:
+        """Return the approved asset pool for a series.
+
+        Args:
+            series_id:  Series to query.
+            asset_type: Optional filter ("voice", "music", "visual").
+
+        Returns:
+            List of :class:`AssetRecord`, oldest-approved first.
+        """
+        if asset_type:
+            rows = self._conn.execute(
+                """SELECT * FROM series_assets
+                   WHERE series_id = ? AND asset_type = ?
+                   ORDER BY approved_at""",
+                (series_id, asset_type),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT * FROM series_assets
+                   WHERE series_id = ?
+                   ORDER BY approved_at""",
+                (series_id,),
+            ).fetchall()
+        return [self._row_to_asset(row) for row in rows]
+
+    def remove_asset(self, asset_pk: int) -> None:
+        """Remove an asset from the pool by its integer PK.
+
+        Args:
+            asset_pk: The ``id`` column value of the row to delete.
+        """
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM series_assets WHERE id = ?",
+                (asset_pk,),
+            )
+
+    def _row_to_asset(self, row: sqlite3.Row) -> AssetRecord:
+        """Convert a database row to an AssetRecord."""
+        return AssetRecord(
+            id=row["id"],
+            series_id=row["series_id"],
+            asset_type=row["asset_type"],
+            character_name=row["character_name"],
+            asset_id=row["asset_id"],
+            source_path=row["source_path"],
+            approved_at=row["approved_at"],
+            notes=row["notes"],
         )
 
     # ═══════════════════════════════════════════════════════════════════

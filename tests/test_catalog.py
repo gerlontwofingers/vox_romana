@@ -10,13 +10,14 @@ Tests cover:
     7. Episode tracking (next_episode_number)
     8. count()
     9. Context manager
+   10. Auditions + series asset pool (A1)
 """
 
 import json
 
 import pytest
 
-from vox_romana.core.catalog import Catalog, RunRecord, StudyRecord
+from vox_romana.core.catalog import Catalog, RunRecord, StudyRecord, AuditionRecord, AssetRecord
 
 
 @pytest.fixture
@@ -401,3 +402,158 @@ class TestContextManager:
         with Catalog(db_path=":memory:") as cat:
             run_id = cat.log_run(content_type="debate", title="Test")
             assert cat.get_run(run_id) is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AUDITIONS + SERIES ASSET POOL  (A1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAuditions:
+    """Tests for audition session logging."""
+
+    def test_log_audition_returns_pk(self, catalog):
+        pk = catalog.log_audition(
+            session_id="sess001",
+            audition_type="voice",
+        )
+        assert isinstance(pk, int) and pk > 0
+
+    def test_get_audition_round_trip(self, catalog):
+        results = [{"label": "af_heart", "path": "/tmp/af_heart.wav", "score": 0.9}]
+        catalog.log_audition(
+            session_id="sess002",
+            series_id="series_abc",
+            audition_type="voice",
+            brief="Warm female anchor",
+            results=results,
+        )
+        rec = catalog.get_audition("sess002")
+        assert rec is not None
+        assert rec.session_id == "sess002"
+        assert rec.series_id == "series_abc"
+        assert rec.audition_type == "voice"
+        assert rec.brief == "Warm female anchor"
+        assert json.loads(rec.results_json)[0]["label"] == "af_heart"
+        assert rec.chosen is None
+
+    def test_get_audition_not_found(self, catalog):
+        assert catalog.get_audition("nonexistent") is None
+
+    def test_audition_tables_exist(self, catalog):
+        rows = catalog._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        names = {row["name"] for row in rows}
+        assert "auditions" in names
+        assert "series_assets" in names
+
+    def test_duplicate_session_id_raises(self, catalog):
+        catalog.log_audition(session_id="dup001", audition_type="music")
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError):
+            catalog.log_audition(session_id="dup001", audition_type="music")
+
+
+class TestSeriesAssets:
+    """Tests for the series asset pool."""
+
+    def _make_series(self, catalog) -> str:
+        return catalog.create_series(title="Test Series")
+
+    def test_approve_asset_returns_pk(self, catalog):
+        sid = self._make_series(catalog)
+        pk = catalog.approve_asset(
+            series_id=sid,
+            asset_type="voice",
+            asset_id="af_heart",
+            character_name="Anchor A",
+        )
+        assert isinstance(pk, int) and pk > 0
+
+    def test_list_assets_empty(self, catalog):
+        sid = self._make_series(catalog)
+        assert catalog.list_assets(sid) == []
+
+    def test_list_assets_round_trip(self, catalog):
+        sid = self._make_series(catalog)
+        catalog.approve_asset(series_id=sid, asset_type="voice",
+                               asset_id="af_heart", character_name="Alice")
+        catalog.approve_asset(series_id=sid, asset_type="music",
+                               asset_id="lo_fi_jazz")
+        assets = catalog.list_assets(sid)
+        assert len(assets) == 2
+        types = {a.asset_type for a in assets}
+        assert types == {"voice", "music"}
+
+    def test_list_assets_filter_by_type(self, catalog):
+        sid = self._make_series(catalog)
+        catalog.approve_asset(series_id=sid, asset_type="voice", asset_id="v1")
+        catalog.approve_asset(series_id=sid, asset_type="music", asset_id="m1")
+        voices = catalog.list_assets(sid, asset_type="voice")
+        assert len(voices) == 1
+        assert voices[0].asset_id == "v1"
+
+    def test_remove_asset(self, catalog):
+        sid = self._make_series(catalog)
+        pk = catalog.approve_asset(series_id=sid, asset_type="visual",
+                                    asset_id="dark_studio")
+        assert len(catalog.list_assets(sid)) == 1
+        catalog.remove_asset(pk)
+        assert catalog.list_assets(sid) == []
+
+    def test_approve_all_from_audition(self, catalog):
+        sid = self._make_series(catalog)
+        results = [
+            {"asset_id": "af_heart", "character_name": "Alice", "path": "/a.wav"},
+            {"asset_id": "am_adam", "character_name": "Bob",   "path": "/b.wav"},
+        ]
+        catalog.log_audition(
+            session_id="sess_bulk",
+            series_id=sid,
+            audition_type="voice",
+            results=results,
+        )
+        pks = catalog.approve_all_from_audition("sess_bulk", series_id=sid)
+        assert len(pks) == 2
+        assets = catalog.list_assets(sid)
+        assert len(assets) == 2
+        asset_ids = {a.asset_id for a in assets}
+        assert asset_ids == {"af_heart", "am_adam"}
+
+    def test_approve_all_marks_chosen(self, catalog):
+        sid = self._make_series(catalog)
+        catalog.log_audition(
+            session_id="sess_chosen",
+            series_id=sid,
+            audition_type="music",
+            results=[{"asset_id": "lo_fi", "path": "/lo.wav"}],
+        )
+        catalog.approve_all_from_audition("sess_chosen", series_id=sid)
+        rec = catalog.get_audition("sess_chosen")
+        assert rec.chosen == "all"
+
+    def test_approve_all_missing_session_raises(self, catalog):
+        with pytest.raises(ValueError, match="not found"):
+            catalog.approve_all_from_audition("ghost_session", series_id="any")
+
+    def test_asset_record_fields(self, catalog):
+        sid = self._make_series(catalog)
+        pk = catalog.approve_asset(
+            series_id=sid,
+            asset_type="voice",
+            asset_id="af_sky",
+            character_name="Narrator",
+            source_path="/clips/narrator.wav",
+            notes="soft delivery",
+        )
+        assets = catalog.list_assets(sid)
+        assert len(assets) == 1
+        a = assets[0]
+        assert a.id == pk
+        assert a.series_id == sid
+        assert a.asset_type == "voice"
+        assert a.character_name == "Narrator"
+        assert a.asset_id == "af_sky"
+        assert a.source_path == "/clips/narrator.wav"
+        assert a.notes == "soft delivery"

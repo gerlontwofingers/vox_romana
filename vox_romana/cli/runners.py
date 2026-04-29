@@ -292,6 +292,70 @@ def _resolve_duration(args: argparse.Namespace, brief: str) -> dict:
     return overrides
 
 
+# ── Shared runner helpers ────────────────────────────────────────────────
+
+
+def _read_reference_material(args: argparse.Namespace) -> str | None:
+    """Read reference material text, or return None if not provided."""
+    if args.reference_material is None:
+        return None
+    if not args.reference_material.exists():
+        print(
+            f"Error: reference material not found: {args.reference_material}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return args.reference_material.read_text().strip()
+
+
+def _build_bootstrap_kwargs(
+    args: argparse.Namespace,
+    overrides: dict,
+    *,
+    reference_text: str | None,
+    target_words: int | None = None,
+) -> dict:
+    """Assemble ``bootstrap_kwargs`` common to all show runners.
+
+    Builds the base dict, appends optional series context and target_words,
+    logs fact-check and content-mode settings, and wires up research
+    providers if ``args.research`` is set.
+    """
+    bootstrap_kwargs: dict = dict(
+        reference_material=reference_text,
+        fact_check=args.fact_check,
+        overrides=overrides,
+        auto_research=False,
+    )
+    if target_words is not None:
+        bootstrap_kwargs["target_words"] = target_words
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    if args.content_mode != "auto":
+        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
+    if args.research:
+        _enable_research(bootstrap_kwargs, args)
+    return bootstrap_kwargs
+
+
+def _build_output_path(args: argparse.Namespace, content_type: str) -> Path:
+    """Return the output JSON ``Path`` for a generated show.
+
+    Uses ``args.name`` as the filename stem when provided; otherwise
+    auto-generates ``{content_type}_{prompt_stem}[_{tag}]_{timestamp}.json``.
+    """
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{content_type}_{stem}{tag_part}_{timestamp}.json"
+    return args.output / filename
+
+
 # ── Show runners ──────────────────────────────────────────────────────────
 
 
@@ -336,31 +400,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text = args.reference_material.read_text().strip()
+    reference_text = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        reference_material=reference_text,
-        fact_check=args.fact_check,
-        overrides=overrides,
-        auto_research=False,
-    )
-    if getattr(args, "series_context", None):
-        bootstrap_kwargs["series_context"] = args.series_context
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
+    bootstrap_kwargs = _build_bootstrap_kwargs(args, overrides, reference_text=reference_text)
 
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -404,14 +449,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
     serializer = DebateSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"debate_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "debate")
 
     serializer.save_merged(merged, output_path)
     return output_path
@@ -455,31 +493,12 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log("Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_news: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_news = args.reference_material.read_text().strip()
+    reference_text_news = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        reference_material=reference_text_news,
-        fact_check=args.fact_check,
-        overrides=overrides,
-        auto_research=False,
-    )
-    if getattr(args, "series_context", None):
-        bootstrap_kwargs["series_context"] = args.series_context
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
+    bootstrap_kwargs = _build_bootstrap_kwargs(args, overrides, reference_text=reference_text_news)
 
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -524,14 +543,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
     serializer = NewsSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"news_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "news")
 
     serializer.save(merged, output_path)
     return output_path
@@ -579,33 +591,14 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_podcast: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_podcast = args.reference_material.read_text().strip()
+    reference_text_podcast = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        overrides=overrides,
-        auto_research=False,
-        fact_check=args.fact_check,
-        reference_material=reference_text_podcast,
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_podcast, target_words=target_words
     )
-    if target_words is not None:
-        bootstrap_kwargs["target_words"] = target_words
-    if getattr(args, "series_context", None):
-        bootstrap_kwargs["series_context"] = args.series_context
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = PodcastBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -651,14 +644,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
     serializer = PodcastSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "podcast")
 
     serializer.save(merged, output_path)
     return output_path
@@ -706,28 +692,11 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     log("Bootstrap (planning chapters, profiling narrator, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_audiobook: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_audiobook = args.reference_material.read_text().strip()
+    reference_text_audiobook = _read_reference_material(args)
 
-    bootstrap_kwargs = dict(
-        overrides=overrides,
-        auto_research=False,
-        fact_check=args.fact_check,
-        reference_material=reference_text_audiobook,
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_audiobook, target_words=target_words
     )
-    if target_words is not None:
-        bootstrap_kwargs["target_words"] = target_words
-    if getattr(args, "series_context", None):
-        bootstrap_kwargs["series_context"] = args.series_context
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = AudiobookBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -773,14 +742,7 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     merged = result.to_merged_audiobook()
     serializer = AudiobookSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"audiobook_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "audiobook")
 
     serializer.save(merged, output_path)
     return output_path
