@@ -427,7 +427,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         num_segments=config.target_turns or 0,
         quiet=args.quiet,
     )
-    conductor = DebateConductor(config, client=client, **checkpoint_kwargs)
+    conductor = DebateConductor(
+        config,
+        client=client,
+        lens_rack=getattr(args, "lens_rack", None),
+        **checkpoint_kwargs,
+    )
     result = conductor.run()
 
     t3 = time.time()
