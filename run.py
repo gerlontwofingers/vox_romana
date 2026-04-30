@@ -414,7 +414,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video"],
+        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -426,6 +426,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "document (TXT/PDF). "
             "'music' = generate a standalone audio clip from a text prompt "
             "(inline via --music-prompt or from a prompt file). "
+            "'series' = manage series records (create/list/inspect). "
+            "'package' = generate SRT captions + YouTube show notes from "
+            "an existing show JSON (--script-input). "
             "See the USAGE block above for full examples."
         ),
     )
@@ -543,6 +546,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Session ID of a completed University deep-research run. "
             "Grounds the show in Scholar notes (highest-priority search tier). "
             "E.g. --university-session a1b2c3d4e5f6"
+        ),
+    )
+
+    gen_group.add_argument(
+        "--series",
+        type=str,
+        default=None,
+        dest="series",
+        metavar="SERIES_ID",
+        help=(
+            "Series ID. Generation prepends the series writers'-bible and "
+            "recent-episode summaries to the brief, AND locks character "
+            "voices across episodes. Create one with: "
+            "`python run.py --mode series create \"My Show\"`."
         ),
     )
 
@@ -921,6 +938,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "dev/diagnostic speed run. Only used with --mode video."
         ),
     )
+    anim_group.add_argument(
+        "--face-animation",
+        dest="face_animation",
+        action="store_true",
+        default=None,
+        help=(
+            "Force-enable talking-head face animation (SadTalker). "
+            "Generated portraits are lip-synced to per-scene audio and "
+            "composited as a lower-third overlay. Requires the SadTalker "
+            "package to be installed. When neither --face-animation nor "
+            "--no-face-animation is given, the runner auto-detects from "
+            "the visual brief (keywords: 'anchor', 'news', 'talking head', "
+            "'podcast') and the AnimationDirector's style choice "
+            "('talking_heads'). Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--no-face-animation",
+        dest="face_animation",
+        action="store_false",
+        help=(
+            "Force-disable talking-head face animation even when the "
+            "visual brief or director would have triggered it. Useful "
+            "for fast preview renders. Only used with --mode video."
+        ),
+    )
+    anim_group.add_argument(
+        "--face-animation-model",
+        dest="face_animation_model",
+        type=str,
+        default="sadtalker",
+        choices=["sadtalker", "live_portrait"],
+        metavar="{sadtalker,live_portrait}",
+        help=(
+            "Backend used to render talking-head clips (default: "
+            "sadtalker). 'live_portrait' is a stub for a future "
+            "LivePortrait integration. Only used with --mode video."
+        ),
+    )
     # ── Publish flags (--mode publish or --publish add-on) ───────────
     pub_group = parser.add_argument_group(
         "publishing (--mode publish  /  --publish add-on)"
@@ -963,15 +1019,127 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     pub_group.add_argument(
-        "--no-polish",
-        dest="no_polish",
+        "--polish",
+        dest="polish",
         action="store_true",
         default=False,
         help=(
-            "Skip the optional LLM polish pass when publishing.  "
+            "Enable the optional LLM polish pass when publishing.  "
             "The polish agent rewrites spoken-style phrasing into written "
-            "prose.  Disabled by default (polisher not yet implemented); "
-            "this flag is a no-op today but is reserved for Shot 3."
+            "prose.  Off by default (not yet implemented)."
+        ),
+    )
+
+    # ── Audition flags (--mode audition) ─────────────────────────────
+    # Audition mode generates candidate assets (voices / music / visuals)
+    # and optionally approves them into a series asset pool so future
+    # episodes of that series reuse them automatically.
+    audition_group = parser.add_argument_group(
+        "audition (--mode audition)"
+    )
+    audition_group.add_argument(
+        "--audition-type",
+        dest="audition_type",
+        type=str,
+        default=None,
+        choices=["voice", "music", "visual"],
+        help=(
+            "Kind of asset to audition.  Required for --mode audition.  "
+            "'voice' tries N TTS voices; 'music' generates N MusicGen "
+            "clips from --music-brief; 'visual' is reserved (stub)."
+        ),
+    )
+    audition_group.add_argument(
+        "--speaker",
+        dest="speaker",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Character name for voice auditions.  Used as a label so "
+            "you can tell which clips belong to which character."
+        ),
+    )
+    audition_group.add_argument(
+        "--music-brief",
+        dest="music_brief",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Prompt for music auditions, e.g. \"upbeat jazz podcast "
+            "intro, piano and bass\".  Required for --audition-type music."
+        ),
+    )
+    audition_group.add_argument(
+        "--audition-count",
+        dest="audition_count",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "How many candidates to generate.  Defaults: 4 voices, "
+            "3 music takes."
+        ),
+    )
+    audition_group.add_argument(
+        "--approve-all",
+        dest="approve_all",
+        action="store_true",
+        default=False,
+        help=(
+            "After generating the slate, approve every candidate into "
+            "the series pool with no prompts.  Requires --series."
+        ),
+    )
+    audition_group.add_argument(
+        "--no-approve",
+        dest="no_approve",
+        action="store_true",
+        default=False,
+        help=(
+            "Log the audition session but skip approval entirely.  "
+            "Use this to review clips before approving via "
+            "'--mode series approve --audition-id …'."
+        ),
+    )
+
+    # ── YouTube packaging flags (--mode package / --package add-on) ──────
+    pkg_group = parser.add_argument_group(
+        "YouTube packaging (--mode package  /  --package add-on)"
+    )
+    pkg_group.add_argument(
+        "--package",
+        dest="package",
+        action="store_true",
+        default=False,
+        help=(
+            "After rendering, also generate SRT captions and YouTube show "
+            "notes.  Works as an add-on with --mode full and --mode video.  "
+            "Equivalent to running --mode package on the output JSON.  "
+            "Show notes require DEEPSEEK_API_KEY; captions are always free."
+        ),
+    )
+    pkg_group.add_argument(
+        "--package-output",
+        dest="package_output",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory for packaged output files (.srt, _show_notes.txt).  "
+            "Defaults to the same directory as the show JSON."
+        ),
+    )
+    pkg_group.add_argument(
+        "--no-package-notes",
+        dest="no_package_notes",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the LLM show-notes generation step; produce SRT captions "
+            "only.  Useful when DEEPSEEK_API_KEY is unavailable or you just "
+            "need the subtitle file."
         ),
     )
 
@@ -1212,6 +1380,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── LLM lens rack ────────────────────────────────────────────────
+    llm_group = parser.add_argument_group("LLM lens rack")
+    llm_group.add_argument(
+        "--llm-backend",
+        dest="llm_backend",
+        type=str,
+        default="auto",
+        choices=["cloud", "local", "auto"],
+        help=(
+            "Default LLM backend.  'cloud' forces cloud-deepseek; "
+            "'local' forces local-r1-distill (requires Ollama); "
+            "'auto' (default) honours the llm: block in vox_romana.yaml."
+        ),
+    )
+    llm_group.add_argument(
+        "--llm-lens",
+        dest="llm_lens",
+        action="append",
+        default=None,
+        metavar="ROLE=LENS",
+        help=(
+            "Per-role lens override, repeatable.  E.g. "
+            "--llm-lens translator=local-qwen-polyglot "
+            "--llm-lens 'character:Salvatore=local-llama-dim'.  "
+            "Roles include: director, conductor, editor, fact_checker, "
+            "translator, character:<Name>, default."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1298,7 +1495,7 @@ def _mode_generate(args: argparse.Namespace) -> Path:
     return run_generate(args)
 
 
-def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
+def _mode_render(json_path: str | Path, args: argparse.Namespace):
     """Run render mode: JSON → audio.
 
     Delegates to ``vox_romana.cli.runners.run_render`` directly,
@@ -1307,11 +1504,14 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace) -> None:
     Args:
         json_path: Path to the show JSON to render.
         args:      Parsed namespace from parse_args().
+
+    Returns:
+        RenderResult with stats including per-event audio durations.
     """
     from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
-    run_render(argv)
+    return run_render(argv)
 
 
 def _mode_video(args: argparse.Namespace) -> None:
@@ -1369,7 +1569,7 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    _mode_render(json_path, args)
+    render_result = _mode_render(json_path, args)
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
 
@@ -1383,9 +1583,26 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    video_path = run_animation(args, json_path, audio_path)
+    video_path = run_animation(
+        args,
+        json_path,
+        audio_path,
+        event_durations=render_result.event_durations if render_result is not None else None,
+    )
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
+
+    # ── Optional: YouTube packaging (--package add-on) ──────────────
+    if getattr(args, "package", False):
+        if not args.quiet:
+            print(f"\n{'─' * 60}")
+            print("  Packaging for YouTube…")
+            print(f"{'─' * 60}")
+        _mode_package(
+            json_path,
+            args,
+            event_durations=render_result.event_durations if render_result is not None else None,
+        )
 
     if not args.quiet:
         total_elapsed = time.time() - pipeline_start
@@ -1596,6 +1813,68 @@ def _mode_emotion_flow(args: argparse.Namespace) -> None:
     """Delegate to vox_romana.cli.emotion_flow.run_emotion_flow()."""
     from vox_romana.cli.emotion_flow import run_emotion_flow
     run_emotion_flow(args)
+
+
+def _mode_audition(args: argparse.Namespace) -> Path | None:
+    """Delegate to vox_romana.cli.audition_runner.run_audition().
+
+    Audition mode generates candidate assets (voices / music / visuals)
+    and optionally approves them into a series asset pool.  Lives in a
+    separate module so heavy TTS/MusicGen imports stay deferred.
+    """
+    from vox_romana.cli.audition_runner import run_audition
+    return run_audition(args)
+
+
+def _mode_package(
+    json_path: str | Path,
+    args: argparse.Namespace,
+    event_durations: dict | None = None,
+) -> None:
+    """Generate SRT captions and YouTube show notes for a rendered episode.
+
+    Reads the show JSON at ``json_path``, calls ``package_episode()`` from
+    ``vox_romana.package``, and prints the paths of files written.
+
+    Args:
+        json_path:       Path to the show JSON.
+        args:            Parsed namespace.  Reads ``args.package_output``,
+                         ``args.no_package_notes``, ``args.quiet``.
+        event_durations: Per-event audio durations from a ``RenderResult``.
+                         Pass ``None`` to use fallback timing (~3 s/event).
+    """
+    from vox_romana.package import package_episode
+
+    generate_notes = not getattr(args, "no_package_notes", False)
+    client = None
+    if generate_notes:
+        try:
+            from vox_romana.core.client import DeepSeekClient
+            client = DeepSeekClient()
+        except ValueError:
+            print(
+                "  Warning: DEEPSEEK_API_KEY not set — show notes skipped. "
+                "Set the key or pass --no-package-notes to suppress this warning.",
+                file=sys.stderr,
+            )
+            generate_notes = False
+
+    dest_dir = getattr(args, "package_output", None)
+
+    result = package_episode(
+        json_path=Path(json_path),
+        event_durations=event_durations,
+        dest_dir=dest_dir,
+        generate_notes=generate_notes,
+        client=client,
+    )
+
+    if not args.quiet:
+        print()
+        if result.srt_path:
+            print(f"  Captions  → {result.srt_path}")
+        if result.notes_path:
+            print(f"  Notes     → {result.notes_path}")
 
 
 def _mode_publish(
@@ -1840,6 +2119,21 @@ def _extract_university_argv(argv: list[str]) -> list[str] | None:
     return None
 
 
+def _extract_series_argv(argv: list[str]) -> list[str] | None:
+    """If ``--mode series`` is in ``argv``, return the remainder for the
+    Series CLI; otherwise return None.
+
+    Series mode uses a subcommand grammar (create/list/inspect) that does
+    not fit run.py's flat namespace.
+    """
+    for i, tok in enumerate(argv):
+        if tok in ("--mode", "-m") and i + 1 < len(argv) and argv[i + 1] == "series":
+            return list(argv[i + 2:])
+        if tok in ("--mode=series", "-m=series"):
+            return list(argv[i + 1:])
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the vox_romana master pipeline.
 
@@ -1857,6 +2151,13 @@ def main(argv: list[str] | None = None) -> None:
     if uni_argv is not None:
         from vox_romana.university.cli import main as university_main
         university_main(uni_argv)
+        return
+
+    # Series mode also has its own subcommand grammar (create/list/inspect).
+    series_argv = _extract_series_argv(raw_argv)
+    if series_argv is not None:
+        from vox_romana.cli.series import main as series_main
+        series_main(series_argv)
         return
 
     args = parse_args(argv)
@@ -2190,8 +2491,30 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "ingest":
         _mode_ingest(args)
 
+    elif args.mode == "package":
+        # Standalone packaging — read existing JSON → SRT + show notes.
+        if args.script_input is None:
+            print(
+                "Error: --script-input is required for 'package' mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not args.script_input.exists():
+            print(
+                f"Error: File not found: {args.script_input}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _mode_package(args.script_input, args, event_durations=None)
+        if not args.quiet:
+            print(f"\n{'\u2550' * 60}")
+            print("  Packaging complete!")
+            print(f"{'\u2550' * 60}\n")
+
     elif args.mode == "video":
         _mode_video(args)
+    elif args.mode == "audition":
+        _mode_audition(args)
     elif args.mode == "full":
         # Full pipeline — generate then render (+ optional publish),
         # fanning across every requested output language.
@@ -2209,6 +2532,16 @@ def main(argv: list[str] | None = None) -> None:
             do_render=True,
             do_publish=args.publish,
         )
+
+        # ── Optional: YouTube packaging (--package add-on) ───────────
+        if getattr(args, "package", False):
+            if not args.quiet:
+                print(f"\n{'─' * 60}")
+                print("  Packaging for YouTube…")
+                print(f"{'─' * 60}")
+            # event_durations not available here (absorbed by _run_language_matrix);
+            # captions will use fallback timing (~3 s per event).
+            _mode_package(json_path, args, event_durations=None)
 
         if not args.quiet:
             print(f"\n{'═' * 60}")

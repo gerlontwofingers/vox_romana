@@ -15,10 +15,14 @@ prompt → classify → bootstrap → conduct → edit → JSON → translate �
 ```
 vox_romana/
 ├── core/                   # Generic LLM infrastructure
-│   ├── client.py           #   DeepSeek API client (OpenAI SDK wrapper)
+│   ├── client.py           #   LLMClient Protocol + DeepSeekClient (OpenAI SDK wrapper)
+│   ├── lens.py             #   LLMLens / LLMLensRack — per-role / per-character LLM routing
+│   ├── conductor.py        #   BaseConductor — shared multi-agent session management
 │   ├── agent.py            #   Conversational agent with message history
 │   ├── languages.py        #   Language registry, BCP-47 codes, normalize_lang_arg()
 │   └── config.py           #   ContentConfig dataclass (language field)
+├── local/                  # Local inference adapters
+│   └── ollama.py           #   OllamaClient — Ollama REST API wrapper with health checks
 ├── shows/                  # Content-type implementations
 │   ├── debates/            #   Debate generation pipeline
 │   ├── news/               #   News show pipeline
@@ -38,15 +42,23 @@ vox_romana/
 │   ├── formatter.py        #   Formatters for debate/news/podcast/audiobook + i18n labels
 │   ├── renderer.py         #   publish_document() with _{lang} suffix logic
 │   └── models.py           #   FormattedDocument, PublishResult (both carry language field)
-└── memory/                 # Local knowledge store
-    └── ingest.py           #   DocumentIngester (PDF, DOCX, HTML, CSV, …)
+├── memory/                 # Local knowledge store
+│   └── ingest.py           #   DocumentIngester (PDF, DOCX, HTML, CSV, …)
+└── mcp/                    # MCP server — exposes pipeline to AI tools (Cursor, VS Code)
+    ├── __init__.py
+    ├── __main__.py         #   python -m vox_romana.mcp entry point
+    └── server.py           #   12 FastMCP tools (6 read + 6 write/action)
 
 run.py                      # Master CLI — coordinates all of the above
-run_show.py                 # Generate script only (no audio render)
-render_show.py              # Render audio from an existing script JSON
+scripts/
+├── lens_character_probe.py # Audition all lenses for a given character + prompt
+└── lens_parity.py          # Check local lenses produce valid JSON for structured roles
 templates/
 └── publish/
     └── _base.html.jinja2   # HTML template (uses {{ doc.language }} for <html lang>)
+docs/
+├── local_lens_rack.md      # Lens rack usage guide (Ollama setup, casting, CLI flags)
+└── local_stack.md          # Local stack + MCP server reference
 ```
 
 `run.py` is the recommended entry point — it chains script generation, TTS
@@ -64,6 +76,13 @@ between the two stages.
 | `video` | Full pipeline + Stable Diffusion animation → MP4 |
 | `publish` | Format an existing JSON into TXT and/or PDF |
 | `ingest` | Feed documents into the local knowledge base for `--research` |
+| `music` | Generate a standalone audio clip from a text prompt (MusicGen) |
+| `analysis` | Rhetorical analysis of a debate JSON or text pair (LDA, similarity, stance) |
+| `emotion-flow` | Emotion-flow analysis on a transcript corpus |
+| `audition` | Generate candidate voice / music / visual assets for a series |
+| `package` | Generate SRT captions + YouTube show notes from an existing JSON |
+| `series` | Create / list / inspect series records |
+| `university` | Run a deep-research University session |
 
 ## Installation
 
@@ -154,7 +173,6 @@ python run.py --mode publish --script-input output/text/debates/my_brief.json
 ```
 
 > **Note on examples:** Throughout this README you'll see paths like
-> `prompts/ubi_debate.txt` — those are illustrative. The repo ships no
 > sample prompts; create your own plain-text briefs and point the CLI at
 > them. Output paths follow the pattern
 > `output/text/{show_type}/{prompt_stem}_{tag}_{timestamp}.json`.
@@ -361,6 +379,127 @@ for the brief. Research uses a three-tier fallback:
 The router auto-enables `--research` for briefs that look factual (news,
 topical debates). Pass `--no-research` to force it off, or `--no-memory`
 to skip the local knowledge base and force web-only lookups.
+
+---
+
+## Local LLM / Lens Rack
+
+vox_romana can route **any generation role** to a local model running under
+[Ollama](https://ollama.com) — no cloud key needed, no network traffic.
+This is called the **lens rack**: a set of named **lenses** (LLM + metadata)
+wired to roles.  Roles include `default`, `director`, `conductor`, `editor`,
+`translator`, and `character:<Name>` for per-character routing.
+
+### Lens catalog
+
+| Lens name | Backend | Model | Cost tier | Personality hint |
+|-----------|---------|-------|-----------|------------------|
+| `cloud-deepseek` | DeepSeek Cloud | `deepseek-chat` | paid | Smart, even, neutral. Default workhorse. |
+| `local-r1-distill` | Ollama | `deepseek-r1:7b` | free | Strong reasoning for a 7B; reflective and verbose. |
+| `local-qwen-polyglot` | Ollama | `qwen2.5:7b` | free | Best multilingual coverage of the locals. Translator candidate. |
+| `local-llama-dim` | Ollama | `llama3.2:3b` | free | Small, brittle, code-switching. The Salvatore lens. |
+
+### Setup
+
+```bash
+brew install ollama
+brew services start ollama
+
+ollama pull deepseek-r1:7b          # 4.7 GB — reasoning lens
+ollama pull qwen2.5:7b              # 4.7 GB — polyglot lens
+ollama pull llama3.2:3b             # 2.0 GB — Salvatore lens
+```
+
+### Casting a character to a local lens
+
+**Via CLI:**
+```bash
+# Run Salvatore's turns through the tiny local model:
+python run.py prompts/abbey.txt \
+    --llm-lens "character:Salvatore=local-llama-dim" \
+    --llm-lens "translator=local-qwen-polyglot"
+```
+
+**Via YAML config (`vox_romana.yaml`):**
+```yaml
+llm:
+  default: cloud-deepseek
+  roles:
+    translator: local-qwen-polyglot
+    "character:Salvatore": local-llama-dim
+```
+
+**Backend shortcut:**
+```bash
+# Route the whole run to local-r1-distill (overrides YAML default):
+python run.py prompts/ubi_debate.txt --llm-backend local
+```
+
+### Audition and parity tools
+
+```bash
+# Hear every lens deliver the same monologue:
+python scripts/lens_character_probe.py \
+    --character "Salvatore: polyglot lay brother, mangles Latin and Italian" \
+    --prompt "Describe what you saw last night." \
+    --out reports/salvatore.md
+
+# Check which local lenses produce valid JSON for structured roles:
+python scripts/lens_parity.py --out reports/parity.md
+```
+
+See [docs/local_lens_rack.md](docs/local_lens_rack.md) for the full guide.
+
+---
+
+## MCP server
+
+vox_romana ships a [Model Context Protocol](https://modelcontextprotocol.io)
+server that exposes the full pipeline to AI coding assistants (Cursor,
+VS Code + GitHub Copilot, Claude Desktop).
+
+### Start the server
+
+```bash
+# stdio mode (recommended — register as an MCP server in your IDE):
+python -m vox_romana.mcp
+```
+
+### Available tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `vox_search_memory` | read | Semantic search over the knowledge base |
+| `vox_list_episodes` | read | List recent show runs from the catalog |
+| `vox_get_episode` | read | Fetch a full episode JSON by run_id |
+| `vox_search_corpus` | read | Search the generated transcript corpus |
+| `vox_list_voices` | read | List installed TTS voices |
+| `vox_list_lenses` | read | List registered LLM lenses with metadata |
+| `vox_ingest_document` | write | Ingest a file or text string into the knowledge base |
+| `vox_kick_off_generate` | action | Start a generate job in a background thread, returns job_id |
+| `vox_get_job_status` | read | Poll a background job (pending / running / done / error) |
+| `vox_render_existing` | action | Render audio for an existing show JSON |
+| `vox_publish_existing` | action | Publish an existing show JSON to TXT/PDF |
+| `vox_probe_character` | action | Have every lens deliver a character sample, returns markdown |
+
+### IDE setup example (VS Code / Copilot)
+
+Add to `.vscode/mcp.json`:
+```json
+{
+  "servers": {
+    "vox_romana": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "vox_romana.mcp"]
+    }
+  }
+}
+```
+
+See [docs/local_stack.md](docs/local_stack.md) for the full setup guide, job registry design, and security notes.
+
+---
 
 ## Testing
 

@@ -274,6 +274,7 @@ class PodcastBootstrap(BaseShowBootstrap):
         search_provider: BaseSearchProvider | None = None,
         memory: Any | None = None,
         target_words: int | None = None,
+        series_context: str | None = None,
     ) -> PodcastConfig:
         """Run the full bootstrap chain: brief → fully populated PodcastConfig.
 
@@ -294,6 +295,9 @@ class PodcastBootstrap(BaseShowBootstrap):
             A fully populated PodcastConfig ready for PodcastConductor.
         """
         overrides = overrides or {}
+
+        if series_context:
+            brief = f"{series_context}\n\n{brief}"
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 0: AUTO-RESEARCH (optional)

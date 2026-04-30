@@ -93,11 +93,13 @@ EXAMPLE:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
+import wave
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -241,6 +243,14 @@ class RenderResult:
     skipped: int = 0
     duration_ms: int = 0
     voice_map: dict[str, str] = None  # type: ignore[assignment]
+    event_durations: dict[int, float] = field(default_factory=dict)
+    """Per-event audio duration in seconds, keyed by event index.
+
+    Populated only for spoken events that were successfully synthesised.
+    Downstream callers (animation timeline sync) use this to align
+    scene boundaries to real audio boundaries instead of relying on
+    the 3-second fallback.
+    """
 
     def __post_init__(self):
         if self.voice_map is None:
@@ -452,6 +462,7 @@ class TTSRenderer:
         mixer = AudioMixer()
         rendered = 0
         skipped = 0
+        event_durations: dict[int, float] = {}
 
         for i, event in enumerate(events):
             # Only render events that have spoken text.
@@ -567,6 +578,13 @@ class TTSRenderer:
                 )
                 rendered += 1
 
+                # Record per-event duration for animation timeline sync.
+                try:
+                    with wave.open(io.BytesIO(result.audio)) as _wf:
+                        event_durations[i] = _wf.getnframes() / _wf.getframerate()
+                except Exception:
+                    pass  # Duration unavailable; fallback applies downstream.
+
                 # Bump the voice's global usage counter only after a
                 # successful synthesis.  This way, voices that fail to
                 # render (missing model, engine error, etc.) don't get
@@ -604,6 +622,7 @@ class TTSRenderer:
             skipped=skipped,
             duration_ms=duration_ms,
             voice_map=voice_map,
+            event_durations=event_durations,
         )
 
     def render_file(

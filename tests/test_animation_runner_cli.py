@@ -23,7 +23,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vox_romana.cli.animation_runner import run_animation
+from vox_romana.cli.animation_runner import (
+    _should_enable_face_animation,
+    run_animation,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -613,3 +616,59 @@ class TestHardwareProfileForwarding:
 
         director_kwargs = MockDirector.return_value.run.call_args[1]
         assert director_kwargs.get("hardware_profile") is sentinel_profile
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _should_enable_face_animation — precedence rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestShouldEnableFaceAnimation:
+    """Unit-test the pure helper — no mocking needed."""
+
+    def test_explicit_true_overrides_all(self):
+        """--face-animation → True regardless of brief or style."""
+        assert _should_enable_face_animation(
+            user_choice=True,
+            visual_brief=None,
+            plan_style=None,
+        ) is True
+
+    def test_explicit_false_overrides_keywords_and_style(self):
+        """--no-face-animation → False even when brief and style would trigger."""
+        assert _should_enable_face_animation(
+            user_choice=False,
+            visual_brief="anchor news broadcast talking head",
+            plan_style="talking_heads",
+        ) is False
+
+    def test_talking_heads_style_enables_when_no_user_choice(self):
+        """plan.style == 'talking_heads' → True when user gave no explicit flag."""
+        assert _should_enable_face_animation(
+            user_choice=None,
+            visual_brief=None,
+            plan_style="talking_heads",
+        ) is True
+
+    def test_keyword_in_brief_enables_when_no_user_choice(self):
+        """Keyword match in visual_brief → True (any of the 9 trigger words)."""
+        assert _should_enable_face_animation(
+            user_choice=None,
+            visual_brief="live from the anchor desk, breaking news",
+            plan_style="documentary",
+        ) is True
+
+    def test_no_match_returns_false(self):
+        """No flag, no style match, no keyword → False."""
+        assert _should_enable_face_animation(
+            user_choice=None,
+            visual_brief="dramatic cinematic mountain landscape",
+            plan_style="cinematic",
+        ) is False
+
+    def test_no_brief_no_style_returns_false(self):
+        """All inputs None → False."""
+        assert _should_enable_face_animation(
+            user_choice=None,
+            visual_brief=None,
+            plan_style=None,
+        ) is False

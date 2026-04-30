@@ -113,7 +113,7 @@ _VALID_BACKENDS: set[str] = {"moviepy", "manim", "ffmpeg"}
 _VALID_HINTS: set[str] = {
     "ken_burns_zoom_in", "ken_burns_zoom_out",
     "ken_burns_pan_left", "ken_burns_pan_right",
-    "parallax", "static", "text_pulse",
+    "parallax", "static", "text_pulse", "talking_head_sync",
 }
 
 _VALID_TRANSITIONS: set[str] = {"cut", "fade", "crossfade", "wipe"}
@@ -171,7 +171,7 @@ text outside the JSON block. No markdown, no commentary, just raw JSON.
       "speaker_label": "string or null — name card text (e.g. 'Dr. Vance — Economist')",
       "transition_in": "string — one of: cut, fade, crossfade, wipe",
       "transition_out": "string — one of: cut, fade, crossfade, wipe",
-      "animation_hint": "string — one of: ken_burns_zoom_in, ken_burns_zoom_out, ken_burns_pan_left, ken_burns_pan_right, parallax, static, text_pulse"
+      "animation_hint": "string — one of: ken_burns_zoom_in, ken_burns_zoom_out, ken_burns_pan_left, ken_burns_pan_right, parallax, static, text_pulse, talking_head_sync"
     }
   ]
 }
@@ -220,6 +220,29 @@ DIRECTING RULES:
 - ANIMATION_HINT: most scenes should be "static" or a Ken Burns variant
   (the slow zoom adds life to still images). Use "text_pulse" only when
   text_overlay is the focus. "parallax" is reserved for cinematic style.
+  Use "talking_head_sync" ONLY when style == "talking_heads" AND the scene
+  covers a single speaker's utterance — it tells the renderer to lip-sync
+  the portrait to that scene's audio. Never use "talking_head_sync" for
+  intro/outro/B-roll scenes or for any other style.
+
+- TALKING_HEADS STYLE — when you choose this style:
+    * IMAGE_PROMPT for utterance scenes must describe a head-and-shoulders
+      portrait of the speaker, front-facing, neutral background, even
+      lighting, eye-level camera, mouth visible (the lip-sync model needs
+      a clear mouth region). 15-30 words is plenty.
+      Example: "head and shoulders portrait of a 50-year-old male news
+      anchor, dark suit, neutral grey backdrop, soft three-point
+      lighting, front-facing, neutral expression, eye-level camera, 50mm"
+    * Set ANIMATION_HINT to "talking_head_sync" for every spoken-event
+      scene. Use "static" or a Ken Burns variant for intro/outro/bumper
+      scenes that have no speaker.
+    * Keep SPEAKER_LABEL consistent for the same speaker ("Name — Role")
+      and reuse the SAME image_prompt subject description across that
+      speaker's scenes so the portrait stays recognizably the same
+      person across cuts.
+    * Group consecutive lines from the same speaker into ONE scene when
+      possible — it lowers the number of SadTalker invocations and
+      yields smoother delivery.
 
 - FPS: 24 for cinematic/documentary/illustrated. 30 for kinetic/podcast.
 

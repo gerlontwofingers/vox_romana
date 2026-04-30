@@ -267,10 +267,64 @@ class MoviePyBackend(BaseAnimationBackend):
             if overlay_clip is not None:
                 layers.append(overlay_clip)
 
+        # ── Face-animation overlay (SadTalker mp4 from FaceAnimator) ──
+        # When the scene has a talking-head clip we composite it on top
+        # of the background as a centred lower-third. The clip is loaded
+        # lazily so backends without face animation still work.
+        face_path = getattr(scene, "face_animation_path", None)
+        if face_path and Path(face_path).exists():
+            face_clip = self._load_face_clip(
+                face_path,
+                duration=duration,
+                width=width,
+                height=height,
+                mpy=mpy,
+            )
+            if face_clip is not None:
+                layers.append(face_clip)
+
         if len(layers) == 1:
             return layers[0]
 
         return mpy.CompositeVideoClip(layers, size=(width, height))  # type: ignore[attr-defined]
+
+    # ── Face-animation overlay loading ────────────────────────────────────
+
+    def _load_face_clip(
+        self,
+        face_path: str,
+        *,
+        duration: float,
+        width: int,
+        height: int,
+        mpy: object,
+    ) -> object | None:
+        """Load a SadTalker mp4 as a positioned overlay clip.
+
+        The clip is centred horizontally and anchored to the lower third
+        of the frame. Failures to load are logged and return ``None`` so
+        compositing falls back to the still background gracefully.
+        """
+        try:
+            face_clip = mpy.VideoFileClip(str(face_path))  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.warning(
+                "MoviePyBackend: failed to load face clip %s: %s",
+                face_path, exc,
+            )
+            return None
+
+        # Crop or extend to scene duration so concatenation timing is preserved.
+        if face_clip.duration > duration:
+            face_clip = face_clip.subclip(0, duration)
+
+        # Position: centred horizontally, anchored ~10% above the bottom.
+        try:
+            face_clip = face_clip.set_position(("center", "bottom"))
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        return face_clip
 
     def _load_background(
         self,

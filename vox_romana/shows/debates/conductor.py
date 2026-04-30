@@ -92,6 +92,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
@@ -109,6 +110,9 @@ from .prompts import (
     PARTICIPANT_SYSTEM_PROMPT,
     SHOW_HOST_SYSTEM_PROMPT,
 )
+
+if TYPE_CHECKING:
+    from ...core.lens import LLMLensRack
 
 logger = logging.getLogger(__name__)
 
@@ -291,19 +295,28 @@ class DebateConductor(BaseConductor):
         *,
         client: DeepSeekClient | None = None,
         api_key: str | None = None,
+        lens_rack: "LLMLensRack | None" = None,
         **base_kwargs,
     ) -> None:
         """Initialize the conductor.
 
         Args:
-            config:  A fully populated DebateConfig (from bootstrap or manual).
-            client:  An existing DeepSeekClient to use (for testing: inject a mock).
-            api_key: API key for DeepSeekClient. Only used if client is None.
+            config:    A fully populated DebateConfig (from bootstrap or manual).
+            client:    An existing DeepSeekClient to use (for testing: inject a mock).
+            api_key:   API key for DeepSeekClient. Only used if client is None.
+            lens_rack: Optional LLMLensRack for per-character LLM routing. When
+                       a route ``character:<Name>`` exists in the rack, that
+                       character's AgentSession uses the routed lens's client
+                       instead of the shared default client. This lets you run
+                       Salvatore on ``local-llama-dim`` while the moderator still
+                       uses cloud-deepseek.
             **base_kwargs: Forwarded to BaseConductor (checkpoint_renderer,
                            budget_tracker, notes_dir, recent_window).
         """
         resolved_client = client or DeepSeekClient(api_key=api_key)
         super().__init__(config, client=resolved_client, **base_kwargs)
+
+        self._lens_rack: "LLMLensRack | None" = lens_rack
 
         # These get populated by _build_agents():
         self._participant_prompts: dict[str, str] = {}
@@ -318,6 +331,7 @@ class DebateConductor(BaseConductor):
         self._director_note: str = ""
         self._llm_calls: int = 0
         self._debate_id: str = ""
+        self._has_spoken: set[str] = set()  # tracks first-appearance warm opens
 
     @classmethod
     def from_brief(
@@ -383,10 +397,35 @@ class DebateConductor(BaseConductor):
         # Each participant and moderator gets their own session with
         # sliding-window compression. This replaces the manual
         # _compress_context() approach — sessions auto-compress.
+        #
+        # Per-character lens routing: when a LLMLensRack is attached and
+        # has a route for ``character:<Name>`` (or a catch-all
+        # ``character`` route), that character's session uses the routed
+        # lens's client instead of the shared default. This lets you run
+        # a lightweight local model for minor characters while the main
+        # participants use a cloud model.
         self._agent_sessions = {}
         for name, prompt in self._participant_prompts.items():
+            char_client: DeepSeekClient | None = None
+            if self._lens_rack is not None:
+                char_lens = self._lens_rack.select(
+                    role="character", character=name,
+                )
+                # Only override if the rack actually resolved a
+                # character-specific route (not just the rack default).
+                char_key = f"character:{name}".lower()
+                catch_all = "character"
+                routes = self._lens_rack.routes()
+                if char_key in routes or catch_all in routes:
+                    char_client = char_lens.client  # type: ignore[assignment]
+                    logger.debug(
+                        "DebateConductor: %s → lens %s (%s)",
+                        name, char_lens.name, char_lens.model,
+                    )
             self._agent_sessions[name] = self._create_session(
-                prompt, recent_window=DEFAULT_RECENT_WINDOW,
+                prompt,
+                client=char_client,
+                recent_window=DEFAULT_RECENT_WINDOW,
             )
         if self._moderator_prompt and config.moderator:
             self._agent_sessions[config.moderator.name] = self._create_session(
@@ -399,6 +438,7 @@ class DebateConductor(BaseConductor):
         self._director_note = ""
         self._llm_calls = 0
         self._debate_id = str(uuid.uuid4())[:8]
+        self._has_spoken = set()  # reset warm-open tracking for each run
 
         # ── Build FactChecker if fact-checking is enabled ────────────
         if config.fact_check != "off":
@@ -662,6 +702,9 @@ class DebateConductor(BaseConductor):
                 "text": text,
                 "turn": turn_number,
             })
+
+            # ── Mark first-appearance (warm-open) tracking ───────────
+            self._has_spoken.add(speaker_name)
 
             # ── Adaptive duration tracking ───────────────────────────
             self._record_words(text)
@@ -1247,7 +1290,10 @@ class DebateConductor(BaseConductor):
     ) -> str:
         """Build the user message for a speaking turn.
 
-        Assembles: director note + budget status + recent turns + turn instruction.
+        Assembles: director note + budget status + position phase +
+        warm-open nudge (first appearance only) + recent turns +
+        turn instruction.
+
         The per-agent AgentSession handles long-range memory via its own
         sliding-window compression, so we no longer include the shared
         summary here.
@@ -1274,6 +1320,51 @@ class DebateConductor(BaseConductor):
         if turn_target > 0:
             parts.append(
                 self._length_contract_block(turn_target, tolerance_pct=15.0)
+            )
+
+        # ── Position-aware debate phase ──────────────────────────────
+        # Tells each speaker where they are in the arc so they can
+        # calibrate their strategy: lay foundations early, fight hard in
+        # the middle, distil late. Moderators and wrap-up turns skip this.
+        config = self.config
+        if not wrapping_up and speaker_role != "moderator":
+            t_total = (remaining_turns + turn_number - 1) or 1
+            progress = turn_number / t_total
+            if progress <= 0.25:
+                phase_hint = (
+                    "DEBATE PHASE — OPENING: You're early in the debate. "
+                    "Lay out your core position clearly. "
+                    "Don't waste your best arguments yet — establish the ground."
+                )
+            elif progress <= 0.65:
+                phase_hint = (
+                    "DEBATE PHASE — DEVELOPMENT: You're in the heart of the debate. "
+                    "Challenge your opponent's logic, probe their weakest points, "
+                    "counter with evidence and examples. "
+                    "Advance, don't repeat."
+                )
+            else:
+                phase_hint = (
+                    "DEBATE PHASE — LATE: The debate is nearing its end. "
+                    "Narrow to your single strongest argument. "
+                    "Make a concrete, memorable claim your opponent can't easily dismiss. "
+                    "Stop introducing new topics — sharpen what's already been said."
+                )
+            parts.append(phase_hint)
+
+        # ── Warm-open: first-appearance nudge ────────────────────────
+        # On a speaker's very first turn, prompt them to weave their name
+        # in naturally so audio listeners can anchor voice to character.
+        # This is invisible to the LLM as system-level meta — it reads
+        # as a brief instruction in the user message.
+        if speaker_role == "participant" and speaker_name not in self._has_spoken:
+            parts.append(
+                f"FIRST APPEARANCE: This is your first time speaking. "
+                f"Weave your name naturally into your opening words so the "
+                f"listener can anchor your voice to your character. "
+                f"E.g. 'As someone who {{}}, I believe...' where you mention "
+                f"who you are briefly — don't do a formal introduction, just "
+                f"one natural self-reference."
             )
 
         # ── Recent verbatim turns ────────────────────────────────────
@@ -1309,14 +1400,28 @@ class DebateConductor(BaseConductor):
             elif speaker_role == "moderator":
                 parts.append(
                     "INSTRUCTION: It's your turn to moderate. You may ask a "
-                    "follow-up, redirect the conversation, or invite the next speaker."
+                    "follow-up, redirect the conversation, or invite the next speaker. "
+                    "When you call on someone, say their name."
                 )
             else:
+                # Build a speaker-specific attribution nudge using the last
+                # speaker's name so the LLM knows exactly who to address.
+                last_speaker = (
+                    self._transcript[-1]["speaker"]
+                    if self._transcript
+                    else None
+                )
+                attribution = (
+                    f" Address {last_speaker} by name in your response."
+                    if last_speaker and last_speaker != speaker_name
+                    else ""
+                )
                 parts.append(
                     f"INSTRUCTION: It's your turn, {speaker_name}. "
-                    "Respond to what was just said. Remember: do NOT restate "
-                    "arguments you've already made — advance to a new angle, "
-                    "example, or question. Vary your sentence opener."
+                    f"Respond to what was just said.{attribution} "
+                    "Remember: do NOT restate arguments you've already made — "
+                    "advance to a new angle, example, or question. "
+                    "Vary your sentence opener."
                 )
 
         return "\n".join(parts)

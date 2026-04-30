@@ -32,10 +32,56 @@ import sys
 from pathlib import Path
 
 
+# Visual-brief keywords that auto-enable face animation when the user
+# hasn't given an explicit --face-animation / --no-face-animation flag.
+_FACE_ANIMATION_KEYWORDS = (
+    "anchor", "anchorman", "anchorwoman",
+    "news", "broadcast",
+    "talking head", "talking-head",
+    "podcast", "interview",
+)
+
+
+def _should_enable_face_animation(
+    *,
+    user_choice: bool | None,
+    visual_brief: str | None,
+    plan_style: str | None,
+) -> bool:
+    """Decide whether to run the talking-head animation pass.
+
+    Precedence (highest first):
+      1. Explicit ``--face-animation`` / ``--no-face-animation``.
+      2. ``plan.style == "talking_heads"`` (the director chose it).
+      3. Keyword match in ``visual_brief``.
+      4. Off by default.
+
+    Args:
+        user_choice: True/False from the CLI flag, or None when neither
+            ``--face-animation`` nor ``--no-face-animation`` was given.
+        visual_brief: Optional visual brief string.
+        plan_style: ``AnimationPlan.style`` chosen by the director.
+
+    Returns:
+        True when the runner should construct a FaceAnimator and pass it
+        to the AnimationRenderer.
+    """
+    if user_choice is not None:
+        return user_choice
+    if plan_style == "talking_heads":
+        return True
+    if visual_brief:
+        lowered = visual_brief.lower()
+        if any(kw in lowered for kw in _FACE_ANIMATION_KEYWORDS):
+            return True
+    return False
+
+
 def run_animation(
     args: argparse.Namespace,
     json_path: Path,
     audio_path: Path,
+    event_durations: dict | None = None,
 ) -> Path | None:
     """Render a video for a freshly generated show.
 
@@ -46,15 +92,20 @@ def run_animation(
     :class:`AnimationRenderer`.
 
     Args:
-        args:       Parsed namespace from run.py's parse_args().  Must
-                    expose ``prompt`` (Path to the brief), ``visual_brief``
-                    (str | None), ``video_output`` (Path | None), and
-                    ``quiet`` (bool).
-        json_path:  Path to the show JSON produced by ``--mode generate``.
-                    Only the top-level ``"events"`` list is consumed.
-        audio_path: Path to the rendered audio file produced by
-                    ``--mode render``.  Passed to the video backend so
-                    the final mux has a soundtrack.
+        args:             Parsed namespace from run.py's parse_args().  Must
+                          expose ``prompt`` (Path to the brief), ``visual_brief``
+                          (str | None), ``video_output`` (Path | None), and
+                          ``quiet`` (bool).
+        json_path:        Path to the show JSON produced by ``--mode generate``.
+                          Only the top-level ``"events"`` list is consumed.
+        audio_path:       Path to the rendered audio file produced by
+                          ``--mode render``.  Passed to the video backend so
+                          the final mux has a soundtrack.
+        event_durations:  Per-event audio duration in seconds, keyed by event
+                          index.  Supplied by :func:`run_render` via the
+                          ``RenderResult.event_durations`` field.  When
+                          ``None``, each scene falls back to the renderer's
+                          built-in default duration (3 s).
 
     Returns:
         Path to the rendered video file, or ``None`` if animation was
@@ -165,6 +216,27 @@ def run_animation(
     if not quiet:
         print(f"  Plan: {len(plan.scenes)} scenes, style={plan.style}")
 
+    # ── Stage 3.5: Face animator (talking-head pipeline) ───────────
+    # Decide whether to construct a FaceAnimator now so it can be
+    # injected into every AnimationRenderer below. The same instance is
+    # reused across passes (e.g. --video-platform both) so the SadTalker
+    # backend is loaded at most once per run.
+    user_choice = getattr(args, "face_animation", None)
+    enable_face = _should_enable_face_animation(
+        user_choice=user_choice,
+        visual_brief=visual_brief,
+        plan_style=plan.style,
+    )
+    face_animator = None
+    if enable_face:
+        from vox_romana.animation.face_animator import FaceAnimator  # noqa: PLC0415
+        face_model = getattr(args, "face_animation_model", "sadtalker")
+        if not quiet:
+            print(f"  Face animation: enabled (model={face_model})")
+        face_animator = FaceAnimator(model=face_model)
+    elif not quiet and user_choice is False:
+        print("  Face animation: disabled (--no-face-animation)")
+
     # ── Stage 4: render ─────────────────────────────────────────────
     # Resolve output directory and optional explicit filename.
     # --video-output accepts either a directory OR a full file path
@@ -216,14 +288,15 @@ def run_animation(
         plan.image_model = _FAST_MODEL
 
         renderer = AnimationRenderer(
-            image_generator=ImageGenerator(steps=4)
+            image_generator=ImageGenerator(steps=4),
+            face_animator=face_animator,
         )
         fname = explicit_filename or "video_fast.mp4"
         video_path = renderer.render(
             plan,
             output_dir,
             audio_path=audio_path,
-            event_durations=None,
+            event_durations=event_durations,
             output_filename=fname,
         )
 
@@ -236,14 +309,14 @@ def run_animation(
         yt_fname = f"{name_stem}_youtube.mp4" if name_stem else "video_youtube.mp4"
         tt_fname = f"{name_stem}_tiktok.mp4"  if name_stem else "video_tiktok.mp4"
 
-        renderer = AnimationRenderer()
+        renderer = AnimationRenderer(face_animator=face_animator)
 
         # Pass 1: generate frames + composite to 1920×1080
         renderer.render(
             plan,
             output_dir,
             audio_path=audio_path,
-            event_durations=None,
+            event_durations=event_durations,
             output_resolution=(1920, 1080),
             output_filename=yt_fname,
         )
@@ -252,7 +325,7 @@ def run_animation(
             plan,
             output_dir,
             audio_path=audio_path,
-            event_durations=None,
+            event_durations=event_durations,
             skip_image_gen=True,
             output_resolution=(1080, 1920),
             output_filename=tt_fname,
@@ -269,12 +342,12 @@ def run_animation(
         plan.resolution = _RESOLUTIONS[platform]
         fname = explicit_filename or f"video_{platform}.mp4"
 
-        renderer = AnimationRenderer()
+        renderer = AnimationRenderer(face_animator=face_animator)
         video_path = renderer.render(
             plan,
             output_dir,
             audio_path=audio_path,
-            event_durations=None,
+            event_durations=event_durations,
             output_filename=fname,
         )
 

@@ -49,6 +49,7 @@ from .backends.base import BaseAnimationBackend
 from .backends.ffmpeg_backend import FFmpegBackend
 from .backends.manim_backend import ManifoldBackend
 from .backends.moviepy_backend import MoviePyBackend
+from .face_animator import FaceAnimator
 from .image_gen import ImageGenerator
 from .models import AnimationPlan
 from .sync import TimelineSync
@@ -72,6 +73,10 @@ class AnimationRenderer:
         _image_generator:
             ImageGenerator instance used for SD frame generation.
             Inject a mock in tests.
+        _face_animator:
+            Optional FaceAnimator used for talking-head scenes. When
+            None, face animation is skipped even if the plan style is
+            ``"talking_heads"``. Inject a mock in tests.
         _backends:
             Registry mapping backend name → backend class.
             Populated from ``_BACKEND_REGISTRY`` by default.
@@ -81,6 +86,7 @@ class AnimationRenderer:
         self,
         image_generator: ImageGenerator | None = None,
         *,
+        face_animator: FaceAnimator | None = None,
         backends: dict[str, type[BaseAnimationBackend]] | None = None,
     ) -> None:
         """Initialize with optional injected dependencies.
@@ -90,11 +96,17 @@ class AnimationRenderer:
                 ImageGenerator to use for SD frame generation. If None,
                 creates a default one (auto-selects device). Inject a
                 mock in tests to avoid loading diffusers.
+            face_animator:
+                Optional FaceAnimator used to render talking-head clips
+                for scenes with ``animation_hint == "talking_head_sync"``.
+                When None (default), face animation is skipped — callers
+                opt in by passing a configured ``FaceAnimator`` instance.
             backends:
                 Backend registry override. If None, uses the module-level
                 ``_BACKEND_REGISTRY``. Inject mock backends in tests.
         """
         self._image_generator = image_generator or ImageGenerator()
+        self._face_animator = face_animator
         self._backends = backends or _BACKEND_REGISTRY
 
     # ── Main entry point ──────────────────────────────────────────────────
@@ -108,6 +120,7 @@ class AnimationRenderer:
         event_durations: dict[int, float] | None = None,
         skip_image_gen: bool = False,
         skip_timeline_sync: bool = False,
+        skip_face_animation: bool = False,
         output_resolution: tuple[int, int] | None = None,
         output_filename: str | None = None,
     ) -> Path:
@@ -138,7 +151,12 @@ class AnimationRenderer:
 
             skip_timeline_sync:
                 If True, skip TimelineSync (use whatever start/end times
-                are already set, or let the backend use fallback durations).
+                are already set, or let the backend use fal
+
+            skip_face_animation:
+                If True, skip the talking-head face-animation pass even
+                when a ``face_animator`` was injected. Useful for fast
+                preview renders. Default: False.lback durations).
                 Useful when timestamps were set externally.
 
             output_resolution:
@@ -183,6 +201,25 @@ class AnimationRenderer:
                 "AnimationRenderer: no event_durations supplied — "
                 "skipping timeline sync (scenes will use fallback durations)"
             )
+
+        # ── Stage 2.5: Face animation (talking-head scenes) ───────────
+        # Only runs when a FaceAnimator was injected, the plan is in
+        # talking-heads style, and the caller didn't opt out via
+        # skip_face_animation. Audio is required so SadTalker has
+        # something to lip-sync against.
+        if (
+            not skip_face_animation
+            and self._face_animator is not None
+            and getattr(plan, "style", None) == "talking_heads"
+            and audio_path is not None
+            and audio_path.exists()
+        ):
+            faces_dir = output_dir / "faces"
+            logger.info(
+                "AnimationRenderer: animating talking-head scenes → %s",
+                faces_dir,
+            )
+            self._face_animator.animate_for_plan(plan, audio_path, faces_dir)
 
         # ── Stage 3: Video rendering ──────────────────────────────────
         backend = self._get_backend(plan.render_backend)

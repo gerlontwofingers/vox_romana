@@ -28,6 +28,50 @@ def log(msg: str, *, quiet: bool = False) -> None:
         print(f"  {msg}", flush=True)
 
 
+def _build_series_context(catalog, series_id: str) -> str:
+    """Format a series record + recent episodes into a SERIES CONTEXT block.
+
+    The returned string is prepended to the brief inside each bootstrap's
+    ``from_brief()`` so every Architect / Profile Builder / Director sees
+    the recurring writers'-bible before reading the user's specific prompt.
+
+    Returns an empty string if the series has no bible AND no prior
+    episodes (the caller can still proceed — context just adds nothing).
+    """
+    series = catalog.get_series(series_id)
+    if series is None:
+        raise ValueError(f"Unknown series: {series_id}")
+
+    recent = catalog.get_recent_episode_summaries(series_id, n=5)
+
+    parts: list[str] = []
+    parts.append("SERIES CONTEXT")
+    parts.append("==============")
+    parts.append(f"Series: {series.title}")
+    if series.show_type:
+        parts.append(f"Show type: {series.show_type}")
+    if series.tone:
+        parts.append(f"Tone: {series.tone}")
+    if series.bible:
+        parts.append("")
+        parts.append("Writers' bible:")
+        parts.append(series.bible)
+    if recent:
+        parts.append("")
+        parts.append("Recent episodes (most recent first):")
+        for ep in recent:
+            ep_no = ep["episode_number"]
+            label = f"  • Episode {ep_no}: " if ep_no else "  • "
+            parts.append(f"{label}{ep['title']}")
+    if series.audience_profile is not None:
+        parts.append("")
+        parts.append("AUDIENCE")
+        parts.append("========")
+        parts.append(series.audience_profile.to_prompt_text())
+    parts.append("──────────────")
+    return "\n".join(parts)
+
+
 def _enable_research(bootstrap_kwargs: dict, args) -> None:
     """Wire University + Memory + Google into ``bootstrap_kwargs``.
 
@@ -248,6 +292,70 @@ def _resolve_duration(args: argparse.Namespace, brief: str) -> dict:
     return overrides
 
 
+# ── Shared runner helpers ────────────────────────────────────────────────
+
+
+def _read_reference_material(args: argparse.Namespace) -> str | None:
+    """Read reference material text, or return None if not provided."""
+    if args.reference_material is None:
+        return None
+    if not args.reference_material.exists():
+        print(
+            f"Error: reference material not found: {args.reference_material}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return args.reference_material.read_text().strip()
+
+
+def _build_bootstrap_kwargs(
+    args: argparse.Namespace,
+    overrides: dict,
+    *,
+    reference_text: str | None,
+    target_words: int | None = None,
+) -> dict:
+    """Assemble ``bootstrap_kwargs`` common to all show runners.
+
+    Builds the base dict, appends optional series context and target_words,
+    logs fact-check and content-mode settings, and wires up research
+    providers if ``args.research`` is set.
+    """
+    bootstrap_kwargs: dict = dict(
+        reference_material=reference_text,
+        fact_check=args.fact_check,
+        overrides=overrides,
+        auto_research=False,
+    )
+    if target_words is not None:
+        bootstrap_kwargs["target_words"] = target_words
+    if getattr(args, "series_context", None):
+        bootstrap_kwargs["series_context"] = args.series_context
+    if args.fact_check != "off":
+        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
+    if args.content_mode != "auto":
+        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
+    if args.research:
+        _enable_research(bootstrap_kwargs, args)
+    return bootstrap_kwargs
+
+
+def _build_output_path(args: argparse.Namespace, content_type: str) -> Path:
+    """Return the output JSON ``Path`` for a generated show.
+
+    Uses ``args.name`` as the filename stem when provided; otherwise
+    auto-generates ``{content_type}_{prompt_stem}[_{tag}]_{timestamp}.json``.
+    """
+    if getattr(args, "name", None):
+        filename = f"{args.name}.json"
+    else:
+        stem = args.prompt.stem
+        tag_part = f"_{args.tag}" if args.tag else ""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{content_type}_{stem}{tag_part}_{timestamp}.json"
+    return args.output / filename
+
+
 # ── Show runners ──────────────────────────────────────────────────────────
 
 
@@ -292,29 +400,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text = args.reference_material.read_text().strip()
+    reference_text = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        reference_material=reference_text,
-        fact_check=args.fact_check,
-        overrides=overrides,
-        auto_research=False,
-    )
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
+    bootstrap_kwargs = _build_bootstrap_kwargs(args, overrides, reference_text=reference_text)
 
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -336,7 +427,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         num_segments=config.target_turns or 0,
         quiet=args.quiet,
     )
-    conductor = DebateConductor(config, client=client, **checkpoint_kwargs)
+    conductor = DebateConductor(
+        config,
+        client=client,
+        lens_rack=getattr(args, "lens_rack", None),
+        **checkpoint_kwargs,
+    )
     result = conductor.run()
 
     t3 = time.time()
@@ -358,14 +454,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
     serializer = DebateSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"debate_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "debate")
 
     serializer.save_merged(merged, output_path)
     return output_path
@@ -409,29 +498,12 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log("Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_news: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_news = args.reference_material.read_text().strip()
+    reference_text_news = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        reference_material=reference_text_news,
-        fact_check=args.fact_check,
-        overrides=overrides,
-        auto_research=False,
-    )
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
+    bootstrap_kwargs = _build_bootstrap_kwargs(args, overrides, reference_text=reference_text_news)
 
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -476,14 +548,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
     serializer = NewsSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"news_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "news")
 
     serializer.save(merged, output_path)
     return output_path
@@ -531,31 +596,14 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_podcast: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_podcast = args.reference_material.read_text().strip()
+    reference_text_podcast = _read_reference_material(args)
 
     if args.content_mode != "auto":
         overrides["content_mode"] = args.content_mode
 
-    bootstrap_kwargs = dict(
-        overrides=overrides,
-        auto_research=False,
-        fact_check=args.fact_check,
-        reference_material=reference_text_podcast,
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_podcast, target_words=target_words
     )
-    if target_words is not None:
-        bootstrap_kwargs["target_words"] = target_words
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-    if args.content_mode != "auto":
-        log(f"  Content mode: {args.content_mode}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = PodcastBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -601,14 +649,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
     serializer = PodcastSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"podcast_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "podcast")
 
     serializer.save(merged, output_path)
     return output_path
@@ -656,26 +697,11 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     log("Bootstrap (planning chapters, profiling narrator, directing)...", quiet=args.quiet)
     t0 = time.time()
 
-    reference_text_audiobook: str | None = None
-    if args.reference_material is not None:
-        if not args.reference_material.exists():
-            print(f"Error: reference material not found: {args.reference_material}", file=sys.stderr)
-            sys.exit(1)
-        reference_text_audiobook = args.reference_material.read_text().strip()
+    reference_text_audiobook = _read_reference_material(args)
 
-    bootstrap_kwargs = dict(
-        overrides=overrides,
-        auto_research=False,
-        fact_check=args.fact_check,
-        reference_material=reference_text_audiobook,
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_audiobook, target_words=target_words
     )
-    if target_words is not None:
-        bootstrap_kwargs["target_words"] = target_words
-    if args.fact_check != "off":
-        log(f"  Fact-check: {args.fact_check}", quiet=args.quiet)
-
-    if args.research:
-        _enable_research(bootstrap_kwargs, args)
 
     bootstrap = AudiobookBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
@@ -721,14 +747,7 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     merged = result.to_merged_audiobook()
     serializer = AudiobookSerializer()
 
-    if getattr(args, "name", None):
-        filename = f"{args.name}.json"
-    else:
-        stem = args.prompt.stem
-        tag_part = f"_{args.tag}" if args.tag else ""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"audiobook_{stem}{tag_part}_{timestamp}.json"
-    output_path = args.output / filename
+    output_path = _build_output_path(args, "audiobook")
 
     serializer.save(merged, output_path)
     return output_path
@@ -771,10 +790,52 @@ def run_generate(args: argparse.Namespace) -> Path:
 
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # ── Resolve --series → SERIES CONTEXT block + voice-locking key ──
+    # When --series is given, we (1) load the series record from the
+    # catalog and format a SERIES CONTEXT block that bootstraps prepend
+    # to the brief, and (2) stamp the same id onto args.series_id so the
+    # downstream voice registry locks character voices across episodes.
+    args.series_context = None
+    series_arg = getattr(args, "series", None)
+    if series_arg:
+        from vox_romana.core.catalog import Catalog
+        with Catalog() as _cat:
+            try:
+                args.series_context = _build_series_context(_cat, series_arg)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        # Reuse the same id for voice locking. Existing code already reads
+        # args.series_id via getattr() in each runner.
+        args.series_id = series_arg
+
     # ── Create a shared client ─────────────────────────────────────
     # One client for the whole run so bootstrap + conductor + editor
     # all share the same connection pool.
     client = DeepSeekClient()
+
+    # ── Build the LLM lens rack ────────────────────────────────────
+    # Chunk 1 of the burn-down plan.  The rack lets users pick a
+    # different LLM per role / per character.  We construct it once
+    # here and stash it on args so downstream code (Chunk 5) can call
+    # ``args.lens_rack.select(role=..., character=...)`` without
+    # plumbing a new parameter through every function.  The default
+    # rack picks cloud-deepseek for everything, so existing behaviour
+    # is unchanged when no --llm-* flags are passed.
+    from vox_romana.core.lens import LLMLensRack
+    from vox_romana.core.llm_config import load_llm_config, parse_lens_overrides
+
+    try:
+        lens_overrides = parse_lens_overrides(getattr(args, "llm_lens", None))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    args.lens_rack = LLMLensRack.from_config(
+        load_llm_config(),
+        backend_override=getattr(args, "llm_backend", None),
+        lens_overrides=lens_overrides,
+    )
 
     # ── Pre-flight: validate brief for factual accuracy ──────────────
     if args.fact_check != "off":
@@ -1162,7 +1223,7 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_render(argv: list[str] | None = None) -> None:
+def run_render(argv: list[str] | None = None) -> "RenderResult":
     """Run the render pipeline: JSON → TTS → audio file.
 
     Extracted from render_show.main() so it can be called from both
@@ -1173,7 +1234,7 @@ def run_render(argv: list[str] | None = None) -> None:
         argv: CLI arguments. Defaults to sys.argv[1:] if None.
     """
     from vox_romana.tts.engine import VoiceConfig
-    from vox_romana.tts.renderer import TTSRenderer
+    from vox_romana.tts.renderer import RenderResult, TTSRenderer
 
     args = _render_parse_args(argv)
 
@@ -1319,3 +1380,5 @@ def run_render(argv: list[str] | None = None) -> None:
 
     if not args.quiet:
         print()
+
+    return result

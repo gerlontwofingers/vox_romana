@@ -174,6 +174,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
         search_provider: BaseSearchProvider | None = None,
         target_words: int | None = None,
         memory=None,
+        series_context: str | None = None,
     ) -> AudiobookConfig:
         """Run the full bootstrap chain: brief → fully populated AudiobookConfig.
 
@@ -190,6 +191,9 @@ class AudiobookBootstrap(BaseShowBootstrap):
             A fully populated AudiobookConfig.
         """
         overrides = overrides or {}
+
+        if series_context:
+            brief = f"{series_context}\n\n{brief}"
 
         # ── Stage 0: Auto-research (optional) ────────────────────────
         if auto_research and not reference_material:
