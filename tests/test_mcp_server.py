@@ -88,13 +88,23 @@ def test_serialise_stringifies_paths() -> None:
 def test_build_server_registers_six_tools(server) -> None:
     tools = asyncio.run(server.list_tools())
     names = {t.name for t in tools}
-    assert names == {
+    # Chunk 3 read-only tools
+    assert names >= {
         "vox_search_memory",
         "vox_list_episodes",
         "vox_get_episode",
         "vox_search_corpus",
         "vox_list_voices",
         "vox_list_lenses",
+    }
+    # Chunk 4 write/action tools also present
+    assert names >= {
+        "vox_ingest_document",
+        "vox_kick_off_generate",
+        "vox_get_job_status",
+        "vox_render_existing",
+        "vox_publish_existing",
+        "vox_probe_character",
     }
 
 
