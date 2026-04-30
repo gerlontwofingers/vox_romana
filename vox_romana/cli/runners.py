@@ -809,6 +809,29 @@ def run_generate(args: argparse.Namespace) -> Path:
     # all share the same connection pool.
     client = DeepSeekClient()
 
+    # ── Build the LLM lens rack ────────────────────────────────────
+    # Chunk 1 of the burn-down plan.  The rack lets users pick a
+    # different LLM per role / per character.  We construct it once
+    # here and stash it on args so downstream code (Chunk 5) can call
+    # ``args.lens_rack.select(role=..., character=...)`` without
+    # plumbing a new parameter through every function.  The default
+    # rack picks cloud-deepseek for everything, so existing behaviour
+    # is unchanged when no --llm-* flags are passed.
+    from vox_romana.core.lens import LLMLensRack
+    from vox_romana.core.llm_config import load_llm_config, parse_lens_overrides
+
+    try:
+        lens_overrides = parse_lens_overrides(getattr(args, "llm_lens", None))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    args.lens_rack = LLMLensRack.from_config(
+        load_llm_config(),
+        backend_override=getattr(args, "llm_backend", None),
+        lens_overrides=lens_overrides,
+    )
+
     # ── Pre-flight: validate brief for factual accuracy ──────────────
     if args.fact_check != "off":
         _preflight_checker = FactChecker.build_default(client)

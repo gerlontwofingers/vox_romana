@@ -1380,6 +1380,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    # ── LLM lens rack ────────────────────────────────────────────────
+    llm_group = parser.add_argument_group("LLM lens rack")
+    llm_group.add_argument(
+        "--llm-backend",
+        dest="llm_backend",
+        type=str,
+        default="auto",
+        choices=["cloud", "local", "auto"],
+        help=(
+            "Default LLM backend.  'cloud' forces cloud-deepseek; "
+            "'local' forces local-r1-distill (requires Ollama); "
+            "'auto' (default) honours the llm: block in vox_romana.yaml."
+        ),
+    )
+    llm_group.add_argument(
+        "--llm-lens",
+        dest="llm_lens",
+        action="append",
+        default=None,
+        metavar="ROLE=LENS",
+        help=(
+            "Per-role lens override, repeatable.  E.g. "
+            "--llm-lens translator=local-qwen-polyglot "
+            "--llm-lens 'character:Salvatore=local-llama-dim'.  "
+            "Roles include: director, conductor, editor, fact_checker, "
+            "translator, character:<Name>, default."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 

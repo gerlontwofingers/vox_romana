@@ -28,3 +28,33 @@ data_dir: ~/.vox_romana
 #                   Defaults to <data_dir>/piper-voices if not set.
 #                   Override here if your models live on a different volume.
 # piper_voices_dir: /Volumes/BigDisk/piper-voices
+
+# ── LLM Lens Rack ──────────────────────────────────────────────────────
+# Pick which LLM ("lens") drives each role.  Local lenses are creative
+# instruments, not fallbacks — a small / brittle model is often the right
+# voice for a flawed character (cf. Salvatore the polyglot lay brother in
+# *The Name of the Rose* who mangles every language he attempts).
+#
+# Built-in lenses:
+#   cloud-deepseek        — sober generalist (paid, default)
+#   local-r1-distill      — sober reasoner; closest to the cloud lens
+#   local-qwen-polyglot   — strong multilingual; codeswitches well
+#   local-llama-dim       — small / brittle / sometimes naive
+#                           (the "Salvatore lens")
+#
+# Local lenses require Ollama:  brew install ollama  &&  ollama pull <model>
+# CLI overrides:  --llm-backend {cloud,local,auto}
+#                 --llm-lens role=lens_name   (repeatable)
+#
+# llm:
+#   default: cloud-deepseek
+#   roles:
+#     translator: local-qwen-polyglot
+#     "character:Salvatore": local-llama-dim
+#   # Optional: declare extra Ollama models as named lenses.
+#   # lenses:
+#   #   - name: local-mistral-small
+#   #     backend: local
+#   #     model: mistral-small:latest
+#   #     personality_hint: "Terse French-leaning generalist."
+#   #     language_strengths: [en, fr]

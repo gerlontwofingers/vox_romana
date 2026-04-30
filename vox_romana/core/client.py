@@ -28,8 +28,34 @@ ENVIRONMENT:
 """
 
 import os
+from typing import Protocol, runtime_checkable
 
 from openai import OpenAI
+
+
+@runtime_checkable
+class LLMClient(Protocol):
+    """Structural protocol for any LLM backend used by vox_romana.
+
+    The pipeline only ever needs two things from an LLM client:
+
+    1. ``model`` — a string identifier (used for logging / catalog rows).
+    2. ``chat(messages, **kwargs) -> str`` — sends a chat-completion
+       request and returns the assistant's reply as plain text.
+
+    Any class that satisfies this shape (whether it inherits from
+    :class:`DeepSeekClient` or is a brand new local backend) can be
+    dropped into the rack and used by bootstraps, conductors, editors,
+    fact-checkers and translators.
+
+    The Protocol is :func:`runtime_checkable` so tests can do
+    ``assert isinstance(obj, LLMClient)`` against duck-typed mocks.
+    """
+
+    model: str
+
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        ...
 
 
 class DeepSeekClient:
@@ -93,3 +119,12 @@ class DeepSeekClient:
             **kwargs,
         )
         return response.choices[0].message.content
+
+
+# ── Aliases ────────────────────────────────────────────────────────────────
+# ``DeepSeekCloudClient`` is the explicit name used by the lens-rack code
+# (Chunk 1 of the burn-down plan).  ``DeepSeekClient`` remains the canonical
+# name for back-compatibility — it is patched directly in dozens of tests
+# (see e.g. tests/test_run_languages.py).  The two names refer to the
+# same class.
+DeepSeekCloudClient = DeepSeekClient
