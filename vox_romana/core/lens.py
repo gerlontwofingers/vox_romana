@@ -167,38 +167,38 @@ def _builtin_lens_specs() -> list[LLMLens]:
         LLMLens(
             name=LOCAL_R1_DISTILL,
             backend="local",
-            model="deepseek-r1-distill-qwen-7b",
+            model="deepseek-r1:7b",
             personality_hint=(
                 "Sober reasoner; structured-JSON friendly. Closest local "
                 "match to the cloud DeepSeek family."
             ),
             cost_tier="free",
             language_strengths=("en", "zh"),
-            factory=_make_ollama_factory("deepseek-r1-distill-qwen-7b"),
+            factory=_make_ollama_factory("deepseek-r1:7b"),
         ),
         LLMLens(
             name=LOCAL_QWEN_POLYGLOT,
             backend="local",
-            model="qwen2.5:7b-instruct",
+            model="qwen2.5:7b",
             personality_hint=(
                 "Strong multilingual; codeswitches well. Good for "
                 "characters who slide between languages."
             ),
             cost_tier="free",
             language_strengths=("en", "zh", "es", "fr", "de", "ja", "ru", "ar"),
-            factory=_make_ollama_factory("qwen2.5:7b-instruct"),
+            factory=_make_ollama_factory("qwen2.5:7b"),
         ),
         LLMLens(
             name=LOCAL_LLAMA_DIM,
             backend="local",
-            model="llama3.2:3b-instruct",
+            model="llama3.2:3b",
             personality_hint=(
                 "Small, brittle, sometimes naive. Use for innocents, "
                 "drunks, code-switching monks — the Salvatore lens."
             ),
             cost_tier="free",
             language_strengths=("en",),
-            factory=_make_ollama_factory("llama3.2:3b-instruct"),
+            factory=_make_ollama_factory("llama3.2:3b"),
         ),
     ]
 
