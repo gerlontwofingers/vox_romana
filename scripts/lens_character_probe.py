@@ -93,7 +93,7 @@ def _format_markdown(
 
 def _select_lenses(rack, only: Iterable[str] | None) -> list[LLMLens]:
     if not only:
-        return [rack._lenses[n] for n in rack.list_lenses()]
+        return list(rack._lenses.values())
     missing = [n for n in only if n not in rack._lenses]
     if missing:
         raise SystemExit(f"unknown lens(es): {', '.join(missing)}")

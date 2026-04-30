@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         prompts = json.loads(args.prompts.read_text(encoding="utf-8"))
 
     rack = build_default_rack()
-    names = list(rack.list_lenses())
+    names = list(rack._lenses.keys())
     if args.lens:
         unknown = [n for n in args.lens if n not in names]
         if unknown:

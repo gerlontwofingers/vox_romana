@@ -1,0 +1,15 @@
+{
+    "// description": "Wire the vox_romana MCP server into VS Code Copilot Chat.",
+    "// install": "pip install mcp>=1.0",
+    "// usage": "Copy this file to .vscode/mcp.json and restart VS Code.",
+    "servers": {
+        "vox_romana": {
+            "type": "stdio",
+            "command": "python",
+            "args": ["-m", "vox_romana.mcp"],
+            "cwd": "${workspaceFolder}",
+            "// env": "Add DEEPSEEK_API_KEY here if your shell does not export it.",
+            "env": {}
+        }
+    }
+}
