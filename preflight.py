@@ -192,6 +192,77 @@ def check_video_python_deps() -> list[Result]:
     ]
 
 
+def check_ollama_models() -> list[Result]:
+    """Check whether the Ollama models used by the University module are pulled.
+
+    Returns an empty list when Ollama is not installed so that the overall
+    preflight still passes for users who don't use the University feature.
+
+    Required for University:
+        deepseek-r1:14b — synthesis / finalize / colloquium (synthesis_model)
+        deepseek-r1:7b  — per-article note extraction (reading_model)
+
+    Optional (lens rack):
+        qwen2.5:7b  — polyglot / translator lens
+        llama3.2:3b — Salvatore / dim lens
+    """
+    if shutil.which("ollama") is None:
+        return []
+
+    try:
+        out = subprocess.check_output(
+            ["ollama", "list"], stderr=subprocess.STDOUT, text=True, timeout=10
+        )
+    except Exception as exc:
+        return [Result(
+            "ollama models",
+            False,
+            f"could not run 'ollama list': {exc}",
+            required=False,
+        )]
+
+    # Parse pulled model names from the list output (first column, after the header).
+    pulled: set[str] = set()
+    for line in out.splitlines()[1:]:
+        cols = line.split()
+        if cols:
+            pulled.add(cols[0].lower())
+
+    def _model(model: str, label: str, *, required: bool) -> Result:
+        key = model.lower()
+        present = key in pulled
+        if present:
+            return Result(label, True, f"{model} — pulled", required=required)
+        return Result(
+            label, False,
+            f"{model} not found — run: ollama pull {model}",
+            required=required,
+        )
+
+    return [
+        _model(
+            "deepseek-r1:14b",
+            "ollama: deepseek-r1:14b (university synthesis)",
+            required=False,
+        ),
+        _model(
+            "deepseek-r1:7b",
+            "ollama: deepseek-r1:7b  (university reading)",
+            required=False,
+        ),
+        _model(
+            "qwen2.5:7b",
+            "ollama: qwen2.5:7b (polyglot lens)",
+            required=False,
+        ),
+        _model(
+            "llama3.2:3b",
+            "ollama: llama3.2:3b (Salvatore lens)",
+            required=False,
+        ),
+    ]
+
+
 # ── Run all checks ────────────────────────────────────────────────────────────
 
 def _run_all() -> list[Result]:
@@ -204,6 +275,9 @@ def _run_all() -> list[Result]:
         check_tool("espeak-ng", required=True,  args=["--version"]),
         check_tool("git-lfs",   required=True,  args=["version"]),
         check_tool("ollama",    required=False, args=["--version"]),
+
+        # ── Ollama model availability (University + Lens Rack) ────────
+        *check_ollama_models(),
 
         # ── Core pip packages ─────────────────────────────────────────
         check_import("openai",           required=True),

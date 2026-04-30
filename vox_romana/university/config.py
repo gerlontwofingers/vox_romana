@@ -35,11 +35,17 @@ class UniversityConfig:
     .. code-block:: yaml
 
         university:
-          model: deepseek-r1:14b
+          reading_model: deepseek-r1:7b
+          synthesis_model: deepseek-r1:14b
           notes_per_synthesis: 5
 
     Attributes:
-        model: Ollama model tag (e.g. ``deepseek-r1:7b``).
+        reading_model: Ollama model tag used for per-article note extraction.
+            A fast, lightweight model (e.g. ``deepseek-r1:7b``) keeps
+            per-article latency low.
+        synthesis_model: Ollama model tag used for synthesis, queue
+            prioritisation, and final write-up.  A larger, higher-quality
+            model (e.g. ``deepseek-r1:14b``) improves coherence here.
         base_url: Ollama API base URL.
         temperature: Sampling temperature for all Scholar LLM calls.
         timeout_secs: Per-request timeout in seconds. Long articles may
@@ -60,7 +66,8 @@ class UniversityConfig:
         language: Wikipedia language code used by WikipediaSource.
     """
 
-    model: str = "deepseek-r1:7b"
+    reading_model: str = "deepseek-r1:7b"
+    synthesis_model: str = "deepseek-r1:14b"
     base_url: str = "http://localhost:11434/v1"
     temperature: float = 0.6
     timeout_secs: int = 300
@@ -71,6 +78,11 @@ class UniversityConfig:
     wikipedia_cache_ttl_days: float = 30.0
     priority_interval: int = 20
     language: str = "en"
+    openalex_enabled: bool = True
+    colloquium_enabled: bool = True
+    colloquium_interval: int = 25
+    colloquium_max_leads_per_peer: int = 3
+    colloquium_snippet_chars: int = 1500
 
     def validate(self) -> list[str]:
         """Return a list of problems with this config. Empty list = all good.
@@ -80,8 +92,15 @@ class UniversityConfig:
         """
         problems: list[str] = []
 
-        if not self.model.strip():
-            problems.append("model is empty — set university.model in vox_romana.yaml.")
+        if not self.reading_model.strip():
+            problems.append(
+                "reading_model is empty — set university.reading_model in vox_romana.yaml."
+            )
+
+        if not self.synthesis_model.strip():
+            problems.append(
+                "synthesis_model is empty — set university.synthesis_model in vox_romana.yaml."
+            )
 
         if not self.base_url.strip():
             problems.append(

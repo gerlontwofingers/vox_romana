@@ -414,3 +414,87 @@ class TestSearchProviderIntegration:
         provider = UniversitySearchProvider(s.session_id)
         results = provider.search("anything", num_results=5)
         assert results[0].title == "High relevance"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Auto-ingest
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestAutoIngest:
+    """_catalog_log should call DocumentIngester().ingest() on notes.jsonl."""
+
+    def test_auto_ingest_called_after_catalog_log(
+        self, isolated_university_root, monkeypatch
+    ):
+        from unittest.mock import MagicMock, patch
+
+        cat = Catalog(db_path=":memory:")
+        client = _FakeClient([_note_resp(), "synthesis"])
+        src = _FakeSource([FAKE_ARTICLE])
+        uni = University(client, [src], _minimal_config(), catalog=cat)
+
+        mock_ingester = MagicMock()
+        mock_ingester_cls = MagicMock(return_value=mock_ingester)
+
+        with patch("vox_romana.memory.ingest.DocumentIngester", mock_ingester_cls):
+            uni.study(
+                "Scaling laws",
+                budget_hours=1.0,
+                save_dir=isolated_university_root,
+                seed_article_ids=["fake:Research Article"],
+            )
+
+        mock_ingester_cls.assert_called_once()
+        mock_ingester.ingest.assert_called_once()
+        call_kwargs = mock_ingester.ingest.call_args
+        assert call_kwargs.kwargs.get("tag") == "university"
+
+    def test_auto_ingest_skipped_when_no_catalog(
+        self, isolated_university_root, monkeypatch
+    ):
+        """Without a catalog, _catalog_log returns early — no ingest call."""
+        from unittest.mock import MagicMock, patch
+
+        client = _FakeClient([_note_resp(), "synthesis"])
+        src = _FakeSource([FAKE_ARTICLE])
+        uni = University(client, [src], _minimal_config())  # no catalog
+
+        mock_ingester_cls = MagicMock()
+
+        with patch("vox_romana.memory.ingest.DocumentIngester", mock_ingester_cls):
+            uni.study(
+                "Topic",
+                budget_hours=1.0,
+                save_dir=isolated_university_root,
+                seed_article_ids=["fake:Research Article"],
+            )
+
+        mock_ingester_cls.assert_not_called()
+
+    def test_auto_ingest_failure_is_non_fatal(
+        self, isolated_university_root
+    ):
+        """If DocumentIngester raises, study() still returns a valid session."""
+        from unittest.mock import MagicMock, patch
+
+        cat = Catalog(db_path=":memory:")
+        client = _FakeClient([_note_resp(), "synthesis"])
+        src = _FakeSource([FAKE_ARTICLE])
+        uni = University(client, [src], _minimal_config(), catalog=cat)
+
+        exploding_ingester = MagicMock()
+        exploding_ingester.ingest.side_effect = RuntimeError("disk full")
+        mock_ingester_cls = MagicMock(return_value=exploding_ingester)
+
+        with patch("vox_romana.memory.ingest.DocumentIngester", mock_ingester_cls):
+            session = uni.study(
+                "Resilience test",
+                budget_hours=1.0,
+                save_dir=isolated_university_root,
+                seed_article_ids=["fake:Research Article"],
+            )
+
+        # Study succeeded despite ingest failure
+        assert session.status == "complete"
+        assert session.catalog_study_id is not None

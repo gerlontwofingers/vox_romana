@@ -35,6 +35,7 @@ import json
 import logging
 import re
 import time
+import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -525,3 +526,219 @@ class LocalSource(KnowledgeSource):
                     fetched_at=_now_iso(),
                 )
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenAlexSource — free academic literature (200 M+ works, no API key)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class OpenAlexSource(KnowledgeSource):
+    """Free academic-literature source backed by the OpenAlex REST API.
+
+    OpenAlex (https://openalex.org) indexes 200 M+ scholarly works:
+    journal articles, conference papers, books, and datasets.  The API
+    is free, requires no authentication, and supports a "polite pool"
+    (higher rate limit) when a ``mailto`` address is supplied.
+
+    Abstracts are stored by OpenAlex as an *inverted index*
+    ``{word: [position, …], …}``.  This source reconstructs plain text
+    from that structure so the Scholar can read abstracts the same way
+    it reads Wikipedia articles.
+
+    Args:
+        language:            BCP-47 language filter (``"en"`` by default).
+                             Passed as ``filter=language.id:{language}`` to
+                             the API.  Pass ``None`` to skip the filter.
+        mailto:              Contact email for the OpenAlex polite pool.
+                             Reduces 429 risk.  Kept private; never logged.
+        request_pause_secs:  Seconds to sleep between live requests (default
+                             0.1 — well under the 10 req/s anonymous cap).
+        max_links:           Maximum related-works links to keep per record.
+    """
+
+    name = "openalex"
+
+    _BASE_URL = "https://api.openalex.org"
+    _DEFAULT_MAILTO = "anon@vox_romana.local"
+
+    def __init__(
+        self,
+        *,
+        language: str | None = "en",
+        mailto: str | None = None,
+        request_pause_secs: float = 0.1,
+        max_links: int = 20,
+    ) -> None:
+        self._language = language
+        self._mailto = mailto or self._DEFAULT_MAILTO
+        self._pause = max(0.0, float(request_pause_secs))
+        self._max_links = max_links
+
+    # ── internal helpers ────────────────────────────────────────────────
+
+    def _get(self, url: str) -> dict | None:
+        """GET ``url`` and return the parsed JSON, or ``None`` on failure."""
+        import urllib.error
+        import urllib.request
+
+        if self._pause:
+            time.sleep(self._pause)
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": f"vox_romana/0.x (mailto:{self._mailto})"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read()
+            return json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                logger.debug("OpenAlex 404 for %s", url)
+            else:
+                logger.warning("OpenAlex HTTP %d for %s", exc.code, url)
+            return None
+        except Exception as exc:
+            logger.warning("OpenAlex request failed for %s: %s", url, exc)
+            return None
+
+    @staticmethod
+    def _reconstruct_abstract(inverted_index: dict | None) -> str:
+        """Reconstruct plain text from an OpenAlex inverted-index abstract.
+
+        OpenAlex stores abstracts as ``{word: [position_0, position_1, …], …}``.
+        This method sorts all (position, word) pairs and joins them.
+        Returns an empty string when the index is absent or malformed.
+        """
+        if not inverted_index or not isinstance(inverted_index, dict):
+            return ""
+        try:
+            pairs: list[tuple[int, str]] = []
+            for word, positions in inverted_index.items():
+                if isinstance(positions, list):
+                    for pos in positions:
+                        pairs.append((int(pos), str(word)))
+            if not pairs:
+                return ""
+            pairs.sort()
+            return " ".join(w for _, w in pairs)
+        except Exception:
+            return ""
+
+    def _work_to_article(self, work: dict) -> Article:
+        """Convert one OpenAlex work dict to an :class:`Article`."""
+        work_id: str = work.get("id", "")
+        title: str = (work.get("title") or "").strip() or work_id
+        doi: str = work.get("doi") or ""
+        url: str = doi if doi else work_id
+
+        abstract = self._reconstruct_abstract(
+            work.get("abstract_inverted_index")
+        )
+        # Publication year + venue for context
+        year = work.get("publication_year") or ""
+        venue_name = ""
+        try:
+            venue_name = work.get("primary_location", {}).get(
+                "source", {}
+            ).get("display_name", "") or ""
+        except (AttributeError, TypeError):
+            pass
+
+        header = f"{title}"
+        if year:
+            header += f" ({year})"
+        if venue_name:
+            header += f". {venue_name}."
+        text = f"{header}\n\n{abstract}" if abstract else header
+        snippet = (abstract or title)[:400]
+
+        # Related works as links (OpenAlex IDs)
+        related: list[str] = []
+        try:
+            for rw in work.get("related_works", [])[: self._max_links]:
+                if isinstance(rw, str):
+                    related.append(rw)
+        except (TypeError, AttributeError):
+            pass
+
+        # Concepts as categories
+        cats: tuple[str, ...] = ()
+        try:
+            cats = tuple(
+                c.get("display_name", "")
+                for c in work.get("concepts", [])[:10]
+                if c.get("display_name")
+            )
+        except (TypeError, AttributeError):
+            pass
+
+        return Article(
+            title=title,
+            url=url,
+            text=text,
+            snippet=snippet,
+            links=tuple(related),
+            categories=cats,
+            source_name=self.name,
+            score=0.0,
+            fetched_at=_now_iso(),
+        )
+
+    # ── KnowledgeSource interface ───────────────────────────────────────
+
+    def search(self, query: str, n: int = 10) -> list[Article]:
+        """Search OpenAlex for works matching ``query``.
+
+        Uses the ``/works?search=`` endpoint with an optional language filter.
+        Returns up to ``n`` articles (fewer on network or parse failure).
+        """
+        if not (query or "").strip():
+            return []
+
+        params = [
+            f"search={urllib.parse.quote(query.strip())}",
+            f"per-page={min(n, 25)}",
+            "select=id,title,doi,abstract_inverted_index,publication_year,"
+            "primary_location,related_works,concepts",
+        ]
+        if self._language:
+            params.append(f"filter=language:{self._language}")
+
+        url = f"{self._BASE_URL}/works?{'&'.join(params)}"
+        payload = self._get(url)
+        if not payload:
+            return []
+
+        results = payload.get("results") or []
+        articles: list[Article] = []
+        for work in results[:n]:
+            try:
+                articles.append(self._work_to_article(work))
+            except Exception as exc:
+                logger.warning("OpenAlexSource: failed to parse work: %s", exc)
+        return articles
+
+    def fetch(self, identifier: str) -> Article | None:
+        """Fetch one OpenAlex work by its OpenAlex ID or DOI URL.
+
+        ``identifier`` should be a full OpenAlex ID like
+        ``https://openalex.org/W1234567890`` or the bare ``W1234567890``
+        form.  Returns ``None`` if not found or on any failure.
+        """
+        ident = (identifier or "").strip()
+        if not ident:
+            return None
+
+        # Normalise to bare ID (strip URL prefix)
+        if ident.startswith("https://openalex.org/"):
+            ident = ident[len("https://openalex.org/"):]
+
+        url = f"{self._BASE_URL}/works/{urllib.parse.quote(ident)}"
+        work = self._get(url)
+        if not work or not isinstance(work, dict):
+            return None
+        try:
+            return self._work_to_article(work)
+        except Exception as exc:
+            logger.warning("OpenAlexSource.fetch: failed to parse %r: %s", ident, exc)
+            return None

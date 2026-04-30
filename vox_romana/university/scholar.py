@@ -138,7 +138,8 @@ class Scholar:
     passed at construction time.
 
     Attributes:
-        client:  LLM client (DeepSeekClient or OllamaClient).
+        reading_client:   LLM client for per-article note extraction (fast model).
+        synthesis_client: LLM client for synthesis, prioritisation, finalize (quality model).
         sources: Ordered list of KnowledgeSource. First match wins on fetch.
         config:  UniversityConfig (defaults from ``vox_romana.yaml``).
 
@@ -152,10 +153,12 @@ class Scholar:
         client: DeepSeekClient,
         sources: list[KnowledgeSource],
         config: UniversityConfig | None = None,
+        synthesis_client: DeepSeekClient | None = None,
     ):
         if not sources:
             raise ValueError("Scholar needs at least one KnowledgeSource.")
-        self.client = client
+        self.reading_client = client
+        self.synthesis_client = synthesis_client or client
         self.sources = list(sources)
         self.config = config or UniversityConfig.from_project_yaml()
 
@@ -174,6 +177,7 @@ class Scholar:
         budget_hours: float | None = None,
         save_dir: Path | None = None,
         seed_article_ids: list[str] | None = None,
+        max_articles: int | None = None,
     ) -> ScholarSession:
         """Run a fresh deep-research study on ``topic``.
 
@@ -187,6 +191,10 @@ class Scholar:
                               ``"source:identifier"``). When omitted, the
                               Scholar generates initial queries via
                               :meth:`_plan_initial_queries`.
+            max_articles:     Optional cap on articles processed in this
+                              call. ``None`` = no cap (default). Used by
+                              :meth:`University.seminar` to interleave
+                              several Scholars in fixed-size rounds.
 
         Returns:
             The fully-populated :class:`ScholarSession`. Status will be
@@ -216,7 +224,7 @@ class Scholar:
             session.articles_queued.extend(self._search_to_qids(queries))
 
         session.save(self._save_dir)
-        return self._run_loop(session)
+        return self._run_loop(session, max_articles=max_articles)
 
     def extend(
         self,
@@ -224,6 +232,7 @@ class Scholar:
         *,
         additional_hours: float | None = None,
         save_dir: Path | None = None,
+        max_articles: int | None = None,
     ) -> ScholarSession:
         """Resume an existing session for more research time.
 
@@ -235,13 +244,16 @@ class Scholar:
             additional_hours: Extra time budget to add. ``None`` =
                               self-estimate again from topic.
             save_dir:         Root directory for persistence.
+            max_articles:     Optional cap on articles processed in this
+                              call.  See :meth:`study` for the use case.
         """
         self._save_dir = save_dir
         session.status = "active"
         if additional_hours is not None:
             session.budget_hours = (session.budget_hours or 0.0) + additional_hours
             session.estimated_hours = additional_hours
-        else:
+        elif session.estimated_hours is None:
+            # Only spend an LLM call on duration when we've never estimated.
             session.estimated_hours = self._determine_duration(session.topic)
 
         if not session.articles_queued:
@@ -249,7 +261,7 @@ class Scholar:
             session.articles_queued.extend(self._search_to_qids(queries))
 
         session.save(self._save_dir)
-        return self._run_loop(session)
+        return self._run_loop(session, max_articles=max_articles)
 
     def ask(self, question: str, *, session: ScholarSession) -> str:
         """One-shot Q&A against a session's synthesis + notes.
@@ -313,8 +325,19 @@ class Scholar:
 
     # ── main loop ───────────────────────────────────────────────────────
 
-    def _run_loop(self, session: ScholarSession) -> ScholarSession:
-        """Core read/synthesise loop with SIGINT handling."""
+    def _run_loop(
+        self,
+        session: ScholarSession,
+        *,
+        max_articles: int | None = None,
+    ) -> ScholarSession:
+        """Core read/synthesise loop with SIGINT handling.
+
+        Args:
+            session:      The session to drive.
+            max_articles: Optional cap on articles processed in this call.
+                          ``None`` = no cap.
+        """
         self._stop.clear()
         self._started_monotonic = time.monotonic()
         prev_handler = signal.getsignal(signal.SIGINT)
@@ -333,7 +356,7 @@ class Scholar:
                 # Not the main thread — caller can still call .interrupt().
                 pass
 
-            self._iterate(session)
+            self._iterate(session, max_articles=max_articles)
         finally:
             if signal_installed:
                 try:
@@ -343,14 +366,24 @@ class Scholar:
 
         return session
 
-    def _iterate(self, session: ScholarSession) -> None:
+    def _iterate(
+        self,
+        session: ScholarSession,
+        *,
+        max_articles: int | None = None,
+    ) -> None:
         """The actual loop body — separated for testability."""
         articles_since_synthesis = 0
         articles_since_priority = 0
+        articles_this_call = 0
         seen_qids: set[str] = {_make_qid(s, t) for s in self._sources_by_name for t in session.articles_read}
         seen_qids.update(session.articles_read)
 
         while session.articles_queued and not self._stop.is_set():
+            if max_articles is not None and articles_this_call >= max_articles:
+                # Bounded slice complete — leave the session ``active`` so the
+                # caller (typically University.seminar) can resume next round.
+                break
             if self._budget_exhausted(session):
                 logger.info("Scholar budget exhausted (%.1fh).", self._elapsed_hours())
                 session.status = "paused"
@@ -390,6 +423,7 @@ class Scholar:
 
             articles_since_synthesis += 1
             articles_since_priority += 1
+            articles_this_call += 1
 
             if articles_since_synthesis >= self.config.notes_per_synthesis:
                 session.synthesis = self._update_synthesis(session)
@@ -405,13 +439,22 @@ class Scholar:
             session.save(self._save_dir)
 
         # Loop exit.
+        cap_hit = (
+            max_articles is not None and articles_this_call >= max_articles
+        )
         if self._stop.is_set():
             session.status = "interrupted"
+        elif cap_hit and session.articles_queued:
+            # Bounded slice ended early on purpose; leave session active so
+            # it can be resumed by the next round of a seminar.
+            session.status = "active"
         elif session.status == "active":
             session.status = "complete"
 
-        # Final synthesis pass — but only if we actually have notes.
-        if session.notes:
+        # Final synthesis pass — but only if we actually have notes AND the
+        # session is truly finished. A bounded slice that paused mid-seminar
+        # should not waste a synthesis pass between rounds.
+        if session.notes and session.status != "active":
             session.synthesis = self._finalize(session)
 
         session.save(self._save_dir)
@@ -489,12 +532,18 @@ class Scholar:
 
     # ── LLM-driven helpers ──────────────────────────────────────────────
 
-    def _chat(self, messages: list[dict[str, str]], **kwargs) -> str:
-        """Wrap client.chat with config-default temperature and a guard."""
+    def _chat(self, messages: list[dict[str, str]], *, synthesis: bool = False, **kwargs) -> str:
+        """Wrap client.chat with config-default temperature and a guard.
+
+        Uses :attr:`synthesis_client` when *synthesis* is ``True`` (synthesis
+        passes, queue prioritisation, finalize, duration estimation) and
+        :attr:`reading_client` otherwise (per-article note extraction).
+        """
         if "temperature" not in kwargs:
             kwargs["temperature"] = self.config.temperature
+        client = self.synthesis_client if synthesis else self.reading_client
         try:
-            return self.client.chat(messages=messages, **kwargs)
+            return client.chat(messages=messages, **kwargs)
         except Exception:
             logger.exception("LLM call failed")
             return ""
@@ -522,6 +571,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=0.3,
+            synthesis=True,
         )
         data = _extract_json(raw)
         if isinstance(data, dict) and "estimated_hours" in data:
@@ -551,6 +601,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=0.5,
+            synthesis=True,
         )
         data = _extract_json(raw)
         if isinstance(data, dict):
@@ -617,6 +668,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=self.config.temperature,
+            synthesis=False,
         )
         data = _extract_json(raw)
         if not isinstance(data, dict):
@@ -677,6 +729,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=self.config.temperature,
+            synthesis=True,
         )
         return _strip_think(raw) or session.synthesis
 
@@ -711,6 +764,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=0.3,
+            synthesis=True,
         )
         data = _extract_json(raw)
         if isinstance(data, dict):
@@ -753,6 +807,7 @@ class Scholar:
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=self.config.temperature,
+            synthesis=True,
         )
         return _strip_think(raw) or session.synthesis
 

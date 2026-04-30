@@ -124,6 +124,90 @@ class ScholarNote:
 _VALID_STATUSES = frozenset({"active", "complete", "paused", "interrupted"})
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Colloquium — peer-to-peer cross-pollination during multi-Scholar seminars
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ColloquiumExchange:
+    """One peer's contribution to a colloquium round.
+
+    A Scholar receives a snippet of a peer's running synthesis along
+    with the peer's topic.  The receiver's LLM is asked to suggest a
+    handful of search queries that, given the peer's discoveries, would
+    enrich its own research.  The exchange records both sides for full
+    auditability of how leads cross-pollinated.
+
+    Attributes:
+        from_topic:        The peer's topic (sender of the snippet).
+        to_topic:          The receiver's topic (this session's topic).
+        snippet:           The synthesis excerpt the peer shared.
+        comment:           One-sentence rationale from the receiver's LLM.
+        suggested_queries: Queries the receiver added to its own queue.
+        timestamp:         ISO 8601 UTC time the exchange was recorded.
+    """
+
+    from_topic: str
+    to_topic: str
+    snippet: str = ""
+    comment: str = ""
+    suggested_queries: tuple[str, ...] = ()
+    timestamp: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["suggested_queries"] = list(self.suggested_queries)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ColloquiumExchange":
+        return cls(
+            from_topic=d.get("from_topic", ""),
+            to_topic=d.get("to_topic", ""),
+            snippet=d.get("snippet", ""),
+            comment=d.get("comment", ""),
+            suggested_queries=tuple(d.get("suggested_queries", ())),
+            timestamp=d.get("timestamp", ""),
+        )
+
+
+@dataclass
+class ColloquiumRound:
+    """One round of cross-Scholar exchanges, from this session's POV.
+
+    Each session keeps its own ordered list of rounds; each round holds
+    the exchanges this Scholar *received* from its peers in that round.
+
+    Attributes:
+        round_n:    1-indexed round number.
+        started_at: ISO 8601 UTC time the round began.
+        exchanges:  Exchanges received from peers (one per peer that
+                    contributed leads in this round).
+    """
+
+    round_n: int = 0
+    started_at: str = field(default_factory=_now_iso)
+    exchanges: list[ColloquiumExchange] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round_n": self.round_n,
+            "started_at": self.started_at,
+            "exchanges": [e.to_dict() for e in self.exchanges],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ColloquiumRound":
+        r = cls(
+            round_n=int(d.get("round_n", 0)),
+            started_at=d.get("started_at", _now_iso()),
+        )
+        r.exchanges = [
+            ColloquiumExchange.from_dict(e) for e in d.get("exchanges", [])
+        ]
+        return r
+
+
 @dataclass
 class ScholarSession:
     """Full state for one Scholar research run.
@@ -150,6 +234,9 @@ class ScholarSession:
         sources_used:     Names of KnowledgeSources that contributed articles.
         catalog_study_id: ID returned by ``catalog.log_study()`` on completion.
                           ``None`` until cataloged.
+        colloquium_rounds: Inter-Scholar exchange history.  Empty for
+                          single-Scholar studies; populated by
+                          :meth:`University.seminar`.
     """
 
     session_id: str = field(default_factory=_new_session_id)
@@ -165,6 +252,7 @@ class ScholarSession:
     status: str = "active"
     sources_used: list[str] = field(default_factory=list)
     catalog_study_id: str | None = None
+    colloquium_rounds: list[ColloquiumRound] = field(default_factory=list)
 
     # ── validation (mirrors ContentConfig.validate) ─────────────────────
 
@@ -214,6 +302,7 @@ class ScholarSession:
             "status": self.status,
             "sources_used": list(self.sources_used),
             "catalog_study_id": self.catalog_study_id,
+            "colloquium_rounds": [r.to_dict() for r in self.colloquium_rounds],
         }
 
     @classmethod
@@ -234,6 +323,9 @@ class ScholarSession:
         session.notes = [ScholarNote.from_dict(n) for n in d.get("notes", [])]
         session.articles_read = list(d.get("articles_read", []))
         session.articles_queued = list(d.get("articles_queued", []))
+        session.colloquium_rounds = [
+            ColloquiumRound.from_dict(r) for r in d.get("colloquium_rounds", [])
+        ]
         return session
 
     # ── persistence ─────────────────────────────────────────────────────

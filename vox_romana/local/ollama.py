@@ -174,6 +174,6 @@ class OllamaClient(DeepSeekClient):
                 cfg = {}
 
         return cls(
-            model=cfg.get("model") or cls.DEFAULT_MODEL,
+            model=cfg.get("reading_model") or cfg.get("model") or cls.DEFAULT_MODEL,
             base_url=cfg.get("base_url") or cls.DEFAULT_BASE_URL,
         )

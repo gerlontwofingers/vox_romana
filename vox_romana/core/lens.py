@@ -126,6 +126,7 @@ class LLMLens:
 
 CLOUD_DEEPSEEK = "cloud-deepseek"
 LOCAL_R1_DISTILL = "local-r1-distill"
+LOCAL_R1_14B = "local-r1-14b"
 LOCAL_QWEN_POLYGLOT = "local-qwen-polyglot"
 LOCAL_LLAMA_DIM = "local-llama-dim"
 
@@ -175,6 +176,19 @@ def _builtin_lens_specs() -> list[LLMLens]:
             cost_tier="free",
             language_strengths=("en", "zh"),
             factory=_make_ollama_factory("deepseek-r1:7b"),
+        ),
+        LLMLens(
+            name=LOCAL_R1_14B,
+            backend="local",
+            model="deepseek-r1:14b",
+            personality_hint=(
+                "Larger sober reasoner; better chain-of-thought than 7B. "
+                "Preferred for synthesis, long-form writing, and complex "
+                "multi-step reasoning."
+            ),
+            cost_tier="free",
+            language_strengths=("en", "zh"),
+            factory=_make_ollama_factory("deepseek-r1:14b"),
         ),
         LLMLens(
             name=LOCAL_QWEN_POLYGLOT,

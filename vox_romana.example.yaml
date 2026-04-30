@@ -101,7 +101,13 @@
 #   python run.py prompt.yaml --research --university-session abc123
 
 university:
-  model: deepseek-r1:7b
+  reading_model: deepseek-r1:7b       # fast model for per-article note extraction
+  synthesis_model: deepseek-r1:14b    # quality model for synthesis passes
+  openalex_enabled: true              # query OpenAlex (200M academic works, free, no key)
+  colloquium_enabled: true            # cross-pollinate Scholars in seminar mode
+  colloquium_interval: 25             # articles per Scholar between colloquium rounds
+  colloquium_max_leads_per_peer: 3    # search hits enqueued per peer-suggested query
+  colloquium_snippet_chars: 1500      # synthesis chars shared with each peer
   base_url: http://localhost:11434/v1
   temperature: 0.6
   timeout_secs: 300          # seconds per LLM call (long articles need more)

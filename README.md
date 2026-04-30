@@ -395,6 +395,7 @@ wired to roles.  Roles include `default`, `director`, `conductor`, `editor`,
 | Lens name | Backend | Model | Cost tier | Personality hint |
 |-----------|---------|-------|-----------|------------------|
 | `cloud-deepseek` | DeepSeek Cloud | `deepseek-chat` | paid | Smart, even, neutral. Default workhorse. |
+| `local-r1-14b` | Ollama | `deepseek-r1:14b` | free | University synthesis model. Higher-quality reasoning than 7B. |
 | `local-r1-distill` | Ollama | `deepseek-r1:7b` | free | Strong reasoning for a 7B; reflective and verbose. |
 | `local-qwen-polyglot` | Ollama | `qwen2.5:7b` | free | Best multilingual coverage of the locals. Translator candidate. |
 | `local-llama-dim` | Ollama | `llama3.2:3b` | free | Small, brittle, code-switching. The Salvatore lens. |
@@ -405,7 +406,8 @@ wired to roles.  Roles include `default`, `director`, `conductor`, `editor`,
 brew install ollama
 brew services start ollama
 
-ollama pull deepseek-r1:7b          # 4.7 GB — reasoning lens
+ollama pull deepseek-r1:14b         # 9.0 GB — university synthesis model
+ollama pull deepseek-r1:7b          # 4.7 GB — reasoning lens / university reading
 ollama pull qwen2.5:7b              # 4.7 GB — polyglot lens
 ollama pull llama3.2:3b             # 2.0 GB — Salvatore lens
 ```
@@ -449,6 +451,91 @@ python scripts/lens_parity.py --out reports/parity.md
 ```
 
 See [docs/local_lens_rack.md](docs/local_lens_rack.md) for the full guide.
+
+---
+
+## University & Colloquium
+
+The `university` mode runs one or more **Scholar** agents that read articles
+from Wikipedia and OpenAlex (200 M academic works, free, no key needed),
+take structured notes, and periodically synthesise findings into a running
+research document — entirely on-device using Ollama.
+
+### Two-speed model architecture
+
+University uses two models to balance cost against quality:
+
+| Role | Config key | Default | What it does |
+|------|------------|---------|---------------|
+| Reading | `reading_model` | `deepseek-r1:7b` | Per-article note extraction (fast, runs on every article) |
+| Synthesis | `synthesis_model` | `deepseek-r1:14b` | Synthesis passes, finalise, colloquium exchanges (quality) |
+
+Set both under `university:` in `vox_romana.yaml`:
+
+```yaml
+university:
+  reading_model: deepseek-r1:7b
+  synthesis_model: deepseek-r1:14b
+```
+
+### Study vs. seminar
+
+| Command | Scholars | Colloquium | Use when |
+|---------|----------|-----------|----------|
+| `study TOPIC` | 1 | — | Deep dive on a single topic |
+| `seminar TOPIC1 TOPIC2 …` | N (one per topic) | ✓ | Parallel research + cross-pollination |
+
+### Colloquium
+
+In `seminar` mode, every `colloquium_interval` articles (default: 25) each
+Scholar shares a snippet of its current synthesis with every peer Scholar.
+The receiving Scholar's synthesis model reads the snippet and proposes follow-up
+queries, which are injected into that Scholar's reading queue.  This lets
+distant topics cross-pollinate — Roman engineering and Greek philosophy might
+both end up reading about the Hellenistic arch.
+
+Each exchange is recorded in the session as a `ColloquiumRound` with the
+full comment and suggested queries, visible via `university export`.
+
+### CLI examples
+
+```bash
+# Deep-dive on a single topic (study):
+python run.py --mode university study "Roman aqueducts"
+
+# Save the session for later:
+python run.py --mode university study "Roman aqueducts" --save-dir output/university/
+
+# Resume / extend an existing session:
+python run.py --mode university extend SESSION_ID --hours 2
+
+# Seminar — two scholars, cross-pollination enabled:
+python run.py --mode university seminar "Roman aqueducts" "Greek philosophy" --hours 4
+
+# Seminar without colloquium (equivalent to two parallel study sessions):
+python run.py --mode university seminar "Topic A" "Topic B" --no-colloquium
+
+# Cross-synthesise the seminar results into one document:
+python run.py --mode university seminar "Roman aqueducts" "Greek philosophy" \
+    --merge --merge-output output/university/merged.md
+
+# Export a finished session:
+python run.py --mode university export SESSION_ID --format markdown
+```
+
+### Key config options (`vox_romana.yaml`)
+
+```yaml
+university:
+  reading_model: deepseek-r1:7b
+  synthesis_model: deepseek-r1:14b
+  openalex_enabled: true          # query OpenAlex academic index
+  colloquium_enabled: true        # enable cross-Scholar exchanges in seminar
+  colloquium_interval: 25         # articles between colloquium rounds
+  colloquium_max_leads_per_peer: 3  # search hits per peer-suggested query
+  notes_per_synthesis: 10         # notes that trigger an incremental synthesis
+  relevance_threshold: 4.0        # drop articles scoring below this (0-10)
+```
 
 ---
 
