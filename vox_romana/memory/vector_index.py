@@ -325,6 +325,7 @@ class ChromaVectorIndex:
         documents_dir: str | Path,
         *,
         force: bool = False,
+        verbose: bool = False,
     ) -> dict[str, int]:
         """Load ingested JSONL chunks into Chroma.
 
@@ -335,6 +336,7 @@ class ChromaVectorIndex:
         Args:
             documents_dir: Directory containing JSONL from ``DocumentIngester``.
             force:         If True, re-migrate all files (ignores marker).
+            verbose:       If True, print an inline progress bar to stdout.
 
         Returns:
             ``{"loaded": N, "files": M, "skipped_files": K}``
@@ -348,10 +350,25 @@ class ChromaVectorIndex:
         files_new = 0
         files_skipped = 0
 
-        for jf in sorted(documents_dir.glob("*.jsonl")):
-            if jf.name in marker and not force:
-                files_skipped += 1
-                continue
+        # Pre-scan to get total chunk count for progress bar.
+        new_files = [
+            jf for jf in sorted(documents_dir.glob("*.jsonl"))
+            if force or jf.name not in marker
+        ]
+        files_skipped = sum(
+            1 for jf in documents_dir.glob("*.jsonl")
+            if not force and jf.name in marker
+        )
+
+        if verbose and new_files:
+            total_chunks = 0
+            for jf in new_files:
+                with open(jf, encoding="utf-8") as _f:
+                    total_chunks += sum(1 for line in _f if line.strip())
+        else:
+            total_chunks = 0
+
+        for jf in new_files:
             files_new += 1
             file_count = 0
             with open(jf, encoding="utf-8") as f:
@@ -366,11 +383,22 @@ class ChromaVectorIndex:
                             self.upsert_document_chunk(chunk)
                             file_count += 1
                             loaded += 1
+                            if verbose and total_chunks > 0:
+                                pct = loaded * 100 // total_chunks
+                                print(
+                                    f"\r  Embedding {loaded}/{total_chunks} chunks ({pct}%)…",
+                                    end="",
+                                    flush=True,
+                                )
                     except Exception as exc:
                         logger.warning(
                             "Skipping malformed chunk in %s: %s", jf, exc
                         )
             marker[jf.name] = file_count
+
+        if verbose and total_chunks > 0:
+            # Clear the progress line.
+            print(f"\r{' ' * 60}\r", end="", flush=True)
 
         if files_new > 0:
             self._save_marker(marker)

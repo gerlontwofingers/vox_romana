@@ -414,7 +414,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package"],
+        choices=["generate", "render", "full", "ingest", "dedupe", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -422,6 +422,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'full' = generate + render (default). "
             "'video' = generate + render + animate (requires animation deps). "
             "'ingest' = feed documents into the knowledge store. "
+            "'dedupe' = scan corpus for near-duplicate documents and report clusters. "
             "'publish' = format an existing show JSON as a human-readable "
             "document (TXT/PDF). "
             "'music' = generate a standalone audio clip from a text prompt "
@@ -510,7 +511,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news", "podcast", "audiobook"],
+        choices=["debate", "news", "podcast", "audiobook", "lecture"],
         dest="show_type",
         help="Force a show type (skip the router).",
     )
@@ -891,6 +892,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         metavar="TAG",
         help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
+    )
+    ingest_group.add_argument(
+        "--no-embed",
+        dest="no_embed",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip Phase 2 (ChromaDB vector embedding) after ingest. "
+            "Useful for large batches where you want to embed separately."
+        ),
+    )
+    # ── Deduplication flags (--mode dedupe) ───────────────────────────
+    dedupe_group = parser.add_argument_group(
+        "deduplication (--mode dedupe)"
+    )
+    dedupe_group.add_argument(
+        "--dedupe-path",
+        dest="dedupe_path",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory of JSONL corpus files to scan for near-duplicates. "
+            "Defaults to the configured documents directory."
+        ),
+    )
+    dedupe_group.add_argument(
+        "--dedupe-threshold",
+        dest="dedupe_threshold",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help=(
+            "Cosine similarity threshold (default: dedup.similarity_threshold "
+            "from vox_romana.yaml, or 0.97)."
+        ),
+    )
+    dedupe_group.add_argument(
+        "--apply",
+        dest="dedupe_apply",
+        action="store_true",
+        default=False,
+        help=(
+            "Remove the lower-chunk-count JSONL in each near-duplicate pair. "
+            "Prompts for confirmation. Without --apply the scan is read-only."
+        ),
     )
     # ── Animation flags (--mode video) ──────────────────────────────
     anim_group = parser.add_argument_group(
@@ -1379,6 +1425,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "final audio path."
         ),
     )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help=(
+            "Show diagnostic detail: per-beat length warnings, "
+            "fact-check retry messages, and budget status. Off by default."
+        ),
+    )
 
     # ── LLM lens rack ────────────────────────────────────────────────
     llm_group = parser.add_argument_group("LLM lens rack")
@@ -1471,6 +1525,8 @@ def _build_render_argv(
         argv += ["--music-duration", str(args.music_duration)]
     if args.quiet:
         argv.append("--quiet")
+    if getattr(args, "verbose", False):
+        argv.append("--verbose")
 
     return argv
 
@@ -1617,6 +1673,124 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(video_path)
 
 
+def _mode_dedupe(args: argparse.Namespace) -> None:
+    """Scan corpus for near-duplicate documents and report (or remove) them.
+
+    Builds a FingerprintStore from all JSONL files in the corpus directory,
+    then calls ``nearest_pairs()`` to find documents with cosine similarity
+    above the threshold.  By default the scan is read-only.  Pass ``--apply``
+    to remove the lower-chunk-count file in each pair (with confirmation).
+    """
+    import sys
+    from vox_romana.memory.fingerprint_store import FingerprintStore
+    from vox_romana.memory.ingest import _dedup_config
+    import vox_romana.memory.ingest as _ingest_mod
+
+    # Resolve corpus directory.
+    corpus_dir = Path(args.dedupe_path) if args.dedupe_path else _ingest_mod.DEFAULT_DOCUMENT_DIR
+    if not corpus_dir.exists():
+        print(f"Error: corpus directory not found: {corpus_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    cfg_threshold, _ = _dedup_config()
+    threshold = args.dedupe_threshold if args.dedupe_threshold is not None else cfg_threshold
+
+    fp_path = corpus_dir / "fingerprints.npz"
+    store = FingerprintStore(store_path=fp_path)
+
+    if not args.quiet:
+        print(f"\n{'─' * 70}")
+        print(f"  Deduplication scan")
+        print(f"  Corpus:    {corpus_dir}")
+        print(f"  Threshold: {threshold}")
+        print(f"{'─' * 70}")
+        print("  Building fingerprints (this may take a moment)…", flush=True)
+
+    n = store.build_parallel(corpus_dir, verbose=not args.quiet)
+    pairs = store.nearest_pairs(threshold=threshold)
+
+    if not args.quiet:
+        print(f"  Fingerprinted {n} documents.")
+        if not pairs:
+            print("  No near-duplicate pairs found.")
+            print(f"{'─' * 70}\n")
+            return
+        print(f"\n  Found {len(pairs)} near-duplicate pair(s):\n")
+        col = 38
+        print(f"  {'Source A':<{col}}  {'Source B':<{col}}  {'Sim':>6}")
+        print(f"  {'-' * col}  {'-' * col}  {'-' * 6}")
+        for src_a, src_b, sim in pairs:
+            a = Path(src_a).name
+            b = Path(src_b).name
+            if len(a) > col:
+                a = "…" + a[-(col - 1):]
+            if len(b) > col:
+                b = "…" + b[-(col - 1):]
+            print(f"  {a:<{col}}  {b:<{col}}  {sim:.4f}")
+        print()
+
+    if not pairs:
+        return
+
+    if not args.dedupe_apply:
+        if not args.quiet:
+            print("  (Read-only scan — pass --apply to remove duplicates.)")
+            print(f"{'─' * 70}\n")
+        return
+
+    # ── --apply: remove lower-chunk-count file per pair ──────────────
+    # Count chunks per JSONL.
+    def _count_chunks(jsonl_path: Path) -> int:
+        try:
+            return sum(1 for _ in jsonl_path.open())
+        except Exception:
+            return 0
+
+    # Build a map: source string → Path of the JSONL that contains it.
+    # The FingerprintStore sources are file paths (absolute or relative).
+    to_remove: set[Path] = set()
+    for src_a, src_b, _sim in pairs:
+        p_a = Path(src_a)
+        p_b = Path(src_b)
+        if not p_a.exists() or not p_b.exists():
+            continue
+        keep = p_a if _count_chunks(p_a) >= _count_chunks(p_b) else p_b
+        victim = p_b if keep == p_a else p_a
+        to_remove.add(victim)
+
+    if not to_remove:
+        print("  Nothing to remove (files not found on disk).")
+        print(f"{'─' * 70}\n")
+        return
+
+    if not args.quiet:
+        print(f"  Will remove {len(to_remove)} file(s):")
+        for p in sorted(to_remove):
+            print(f"    {p.name}")
+        print()
+
+    confirm = input("  Confirm removal? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("  Aborted.")
+        print(f"{'─' * 70}\n")
+        return
+
+    removed = 0
+    for p in sorted(to_remove):
+        try:
+            p.unlink()
+            store.remove(str(p))
+            removed += 1
+            if not args.quiet:
+                print(f"  Removed: {p.name}")
+        except Exception as exc:
+            print(f"  ERROR removing {p.name}: {exc}", file=sys.stderr)
+
+    if not args.quiet:
+        print(f"\n  Done: {removed} file(s) removed.")
+        print(f"{'─' * 70}\n")
+
+
 def _mode_ingest(args: argparse.Namespace) -> None:
     """Run ingest mode: feed documents into the knowledge store.
 
@@ -1700,14 +1874,15 @@ def _mode_ingest(args: argparse.Namespace) -> None:
         print(f"{'─' * 70}\n")
 
     # ── Phase 2: Update vector index after ingest ─────────────────────
-    if not args.dry_run:
+    if not args.dry_run and not args.no_embed:
         try:
             from vox_romana.memory.vector_index import ChromaVectorIndex
             import vox_romana.memory.ingest as _ingest_mod
             if ChromaVectorIndex.is_available():
                 index = ChromaVectorIndex()
                 migration_stats = index.migrate_documents(
-                    _ingest_mod.DEFAULT_DOCUMENT_DIR
+                    _ingest_mod.DEFAULT_DOCUMENT_DIR,
+                    verbose=not args.quiet,
                 )
                 if not args.quiet and migration_stats["files"] > 0:
                     print(
@@ -2180,6 +2355,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    if args.mode == "dedupe" and args.dedupe_threshold is not None:
+        if not (0.0 < args.dedupe_threshold <= 1.0):
+            print(
+                "Error: --dedupe-threshold must be in (0.0, 1.0].",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     if args.mode in ("generate", "full", "video") and args.prompt is None:
         print(
             "Error: prompt file is required for "
@@ -2490,6 +2673,9 @@ def main(argv: list[str] | None = None) -> None:
 
     elif args.mode == "ingest":
         _mode_ingest(args)
+
+    elif args.mode == "dedupe":
+        _mode_dedupe(args)
 
     elif args.mode == "package":
         # Standalone packaging — read existing JSON → SRT + show notes.

@@ -36,40 +36,75 @@ def _load_session(session_id: str):
         sys.exit(1)
 
 
+def _build_catalog_and_recall():
+    """Construct a Catalog + MemoryRecall pair, or (None, None) on failure.
+
+    Failures here (missing DB, missing memory store) must never block
+    a university run — Wikipedia/OpenAlex remain usable on their own.
+    """
+    try:
+        from vox_romana.core.catalog import Catalog
+        from vox_romana.memory.recall import MemoryRecall
+
+        catalog = Catalog()
+        recall = MemoryRecall(catalog=catalog)
+        return catalog, recall
+    except Exception as exc:  # pragma: no cover — defensive
+        print(
+            f"Warning: could not initialize local memory ({exc}). "
+            "Continuing without LocalSource.",
+            file=sys.stderr,
+        )
+        return None, None
+
+
+def _build_sources(cfg, recall):
+    """Assemble the standard source list: Wikipedia + (optional) OpenAlex + Local."""
+    from vox_romana.university.sources import (
+        LocalSource,
+        OpenAlexSource,
+        WikipediaSource,
+    )
+
+    sources = [WikipediaSource()]
+    if cfg.openalex_enabled:
+        sources.append(OpenAlexSource(language=cfg.language))
+    if recall is not None:
+        sources.append(LocalSource(recall))
+    return sources
+
+
 def _build_university():
-    """Build a University with two-speed OllamaClients + WikipediaSource defaults."""
+    """Build a University with two-speed OllamaClients + Wikipedia/OpenAlex/Local sources."""
     from vox_romana.local.ollama import OllamaClient
     from vox_romana.university.config import UniversityConfig
-    from vox_romana.university.sources import OpenAlexSource, WikipediaSource
     from vox_romana.university.university import University
 
     cfg = UniversityConfig.from_project_yaml()
     reading_client = OllamaClient(model=cfg.reading_model, base_url=cfg.base_url)
     synthesis_client = OllamaClient(model=cfg.synthesis_model, base_url=cfg.base_url)
-    sources = [WikipediaSource()]
-    if cfg.openalex_enabled:
-        sources.append(OpenAlexSource(language=cfg.language))
+    catalog, recall = _build_catalog_and_recall()
+    sources = _build_sources(cfg, recall)
     return University(
         client=reading_client,
         synthesis_client=synthesis_client,
         sources=sources,
         config=cfg,
+        catalog=catalog,
     )
 
 
 def _build_scholar():
-    """Build a bare Scholar (no catalog wiring) for ask/chat/extend."""
+    """Build a Scholar with Wikipedia/OpenAlex/Local sources for ask/chat/extend."""
     from vox_romana.local.ollama import OllamaClient
     from vox_romana.university.config import UniversityConfig
     from vox_romana.university.scholar import Scholar
-    from vox_romana.university.sources import OpenAlexSource, WikipediaSource
 
     cfg = UniversityConfig.from_project_yaml()
     reading_client = OllamaClient(model=cfg.reading_model, base_url=cfg.base_url)
     synthesis_client = OllamaClient(model=cfg.synthesis_model, base_url=cfg.base_url)
-    sources = [WikipediaSource()]
-    if cfg.openalex_enabled:
-        sources.append(OpenAlexSource(language=cfg.language))
+    _, recall = _build_catalog_and_recall()
+    sources = _build_sources(cfg, recall)
     return Scholar(
         client=reading_client,
         sources=sources,
@@ -299,11 +334,26 @@ def _cmd_seminar(args: argparse.Namespace) -> None:
           + (f" (every {interval} articles)" if colloquium_enabled and interval else ""))
     print()
 
+    # Watchdog covers the seminar loop.  When --merge is also requested,
+    # add a fixed extra so cross_synthesize() is not killed mid-run.
+    _CROSS_SYNTH_EXTRA_SECS = 180.0  # one 14b cross-synthesis call
+    import time as _time
+    from vox_romana.university.university import University as _Uni
+    if hours:
+        _watchdog_deadline = (
+            _time.monotonic()
+            + hours * 3600.0
+            + (_CROSS_SYNTH_EXTRA_SECS if args.merge else 0.0)
+        )
+        _Uni._start_deadline_watchdog(_watchdog_deadline, grace_secs=90.0)
+
     sessions = uni.seminar(
         topics,
         budget_hours_each=hours,
         colloquium_enabled=colloquium_enabled,
         colloquium_interval=interval,
+        notes_per_synthesis=args.notes_per_synth,
+        colloquium_max_rounds=args.max_collo_rounds,
     )
 
     print(f"\n{'═' * 60}")
@@ -578,6 +628,22 @@ def build_parser() -> argparse.ArgumentParser:
         dest="colloquium_every",
         help="Articles per Scholar between colloquium rounds "
              "(default: university.colloquium_interval from config).",
+    )
+    sp_seminar.add_argument(
+        "--notes-per-synth",
+        type=int,
+        default=None,
+        dest="notes_per_synth",
+        help="Articles each Scholar reads before triggering a synthesis pass "
+             "(default: derived from --hours by SeminarPlan).",
+    )
+    sp_seminar.add_argument(
+        "--max-collo-rounds",
+        type=int,
+        default=None,
+        dest="max_collo_rounds",
+        help="Hard cap on colloquium rounds (default: derived from --hours by "
+             "SeminarPlan; the seed always fires round 1 regardless).",
     )
     sp_seminar.add_argument(
         "--merge",

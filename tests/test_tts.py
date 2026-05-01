@@ -1356,6 +1356,21 @@ class TestStripStageDirections:
         result = strip_stage_directions("Hello.\n(sighs deeply)\nWorld.")
         assert result == "Hello. World."
 
+    def test_square_bracket_stage_direction_stripped(self):
+        """[Bracket] stage directions (audiobook scene actions) are removed."""
+        result = strip_stage_directions("[Dr. Waffleford holds the pizza aloft.] Look at this.")
+        assert result == "Look at this."
+
+    def test_square_bracket_inline_stripped(self):
+        """Inline [bracket] direction mid-sentence is stripped cleanly."""
+        result = strip_stage_directions("And then [pauses dramatically] he spoke.")
+        assert result == "And then he spoke."
+
+    def test_square_bracket_multiline_stripped(self):
+        """[Bracket] direction on its own line (with newline) is stripped."""
+        result = strip_stage_directions("[The audience gasps.]\n\nWell, I never.")
+        assert result == "Well, I never."
+
 
 class TestStripMarkdownEmphasis:
     """Unit tests for the strip_markdown_emphasis() helper."""

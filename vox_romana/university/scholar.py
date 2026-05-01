@@ -178,6 +178,8 @@ class Scholar:
         save_dir: Path | None = None,
         seed_article_ids: list[str] | None = None,
         max_articles: int | None = None,
+        notes_per_synthesis: int | None = None,
+        _deadline_monotonic: float | None = None,
     ) -> ScholarSession:
         """Run a fresh deep-research study on ``topic``.
 
@@ -216,6 +218,15 @@ class Scholar:
         else:
             session.estimated_hours = budget_hours
 
+        # Set the absolute deadline ONCE here. It is never reset by extend()
+        # so the total budget is honoured across seminar rounds.
+        # A caller (e.g. University.seminar) may supply a shared deadline so
+        # that all scholars stop at the same wall-clock moment.
+        if _deadline_monotonic is not None:
+            session.deadline_monotonic = _deadline_monotonic
+        elif budget_hours is not None:
+            session.deadline_monotonic = time.monotonic() + budget_hours * 3600.0
+
         # Seed the queue.
         if seed_article_ids:
             session.articles_queued.extend(seed_article_ids)
@@ -224,7 +235,7 @@ class Scholar:
             session.articles_queued.extend(self._search_to_qids(queries))
 
         session.save(self._save_dir)
-        return self._run_loop(session, max_articles=max_articles)
+        return self._run_loop(session, max_articles=max_articles, notes_per_synthesis=notes_per_synthesis)
 
     def extend(
         self,
@@ -233,6 +244,7 @@ class Scholar:
         additional_hours: float | None = None,
         save_dir: Path | None = None,
         max_articles: int | None = None,
+        notes_per_synthesis: int | None = None,
     ) -> ScholarSession:
         """Resume an existing session for more research time.
 
@@ -261,7 +273,7 @@ class Scholar:
             session.articles_queued.extend(self._search_to_qids(queries))
 
         session.save(self._save_dir)
-        return self._run_loop(session, max_articles=max_articles)
+        return self._run_loop(session, max_articles=max_articles, notes_per_synthesis=notes_per_synthesis)
 
     def ask(self, question: str, *, session: ScholarSession) -> str:
         """One-shot Q&A against a session's synthesis + notes.
@@ -330,6 +342,7 @@ class Scholar:
         session: ScholarSession,
         *,
         max_articles: int | None = None,
+        notes_per_synthesis: int | None = None,
     ) -> ScholarSession:
         """Core read/synthesise loop with SIGINT handling.
 
@@ -356,7 +369,7 @@ class Scholar:
                 # Not the main thread — caller can still call .interrupt().
                 pass
 
-            self._iterate(session, max_articles=max_articles)
+            self._iterate(session, max_articles=max_articles, notes_per_synthesis=notes_per_synthesis)
         finally:
             if signal_installed:
                 try:
@@ -371,6 +384,7 @@ class Scholar:
         session: ScholarSession,
         *,
         max_articles: int | None = None,
+        notes_per_synthesis: int | None = None,
     ) -> None:
         """The actual loop body — separated for testability."""
         articles_since_synthesis = 0
@@ -425,7 +439,8 @@ class Scholar:
             articles_since_priority += 1
             articles_this_call += 1
 
-            if articles_since_synthesis >= self.config.notes_per_synthesis:
+            _nps = notes_per_synthesis if notes_per_synthesis is not None else self.config.notes_per_synthesis
+            if articles_since_synthesis >= _nps:
                 session.synthesis = self._update_synthesis(session)
                 articles_since_synthesis = 0
                 session.save(self._save_dir)
@@ -451,10 +466,27 @@ class Scholar:
         elif session.status == "active":
             session.status = "complete"
 
+        # Mid-slice synthesis flush — when a bounded slice ends with new
+        # notes (whether from cap_hit or from the budget tripping), make
+        # sure the synthesis reflects them.  Without this, a colloquium
+        # round that follows has no material to share between peers, since
+        # ``articles_since_synthesis`` is local and resets every call.
+        if articles_since_synthesis > 0 and session.notes:
+            print(
+                f"[Scholar/SYNTH] {session.session_id[:8]} flushing synthesis "
+                f"({len(session.notes)} notes)…",
+                flush=True,
+            )
+            session.synthesis = self._update_synthesis(session)
+
         # Final synthesis pass — but only if we actually have notes AND the
         # session is truly finished. A bounded slice that paused mid-seminar
         # should not waste a synthesis pass between rounds.
-        if session.notes and session.status != "active":
+        if session.notes and session.status not in ("active", "paused"):
+            print(
+                f"[Scholar/SYNTH] {session.session_id[:8]} finalizing synthesis…",
+                flush=True,
+            )
             session.synthesis = self._finalize(session)
 
         session.save(self._save_dir)
@@ -467,6 +499,10 @@ class Scholar:
         return (time.monotonic() - self._started_monotonic) / 3600.0
 
     def _budget_exhausted(self, session: ScholarSession) -> bool:
+        # Prefer the absolute deadline if set — it survives across seminar
+        # extend() rounds and gives a true wall-clock budget.
+        if session.deadline_monotonic is not None:
+            return time.monotonic() >= session.deadline_monotonic
         if session.budget_hours is None:
             return False
         return self._elapsed_hours() >= session.budget_hours

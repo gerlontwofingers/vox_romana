@@ -52,12 +52,12 @@ text outside the JSON block.
   "tone": "string — overall narrative tone (e.g., 'contemplative', 'urgent', 'warm')",
   "setting": "string — world or setting description",
   "narrator": {{
-    "name": "string — narrator's name (can be a fictional persona)",
+    "name": "string — narrator's name (can be a fictional persona). Pick a memorable, varied name. AVOID overused defaults like 'Sarah Chen', 'Marcus Webb', 'Elena Vasquez', 'Auntie Star', or any 'Chen' surname. Draw from diverse cultural backgrounds.",
     "style": "string — narration style description"
   }},
   "characters": [
     {{
-      "name": "string — character name",
+      "name": "string — character name. Draw from diverse cultural backgrounds; avoid generic placeholder names.",
       "role": "string — role in the story (e.g., 'protagonist', 'antagonist', 'mentor')",
       "voice_gender": "string — 'male', 'female', or null"
     }}
@@ -143,6 +143,16 @@ Tone: {tone}
 
 Respond with ONLY a JSON object:
 {{
+  "voice_gender": "string — 'male' or 'female'. The vocal gender of this \
+narrator for TTS voice assignment. Base this on their name and persona.",
+  "voice_hint": "string — a short TTS casting note describing how this narrator \
+SOUNDS. Accent, age range, warmth, pace. Examples: 'warm baritone, 50s, \
+BBC documentary cadence', 'clear mezzo-soprano, 40s, steady and unhurried', \
+'bright tenor, 30s, intimate bedside-manner delivery'.",
+  "tts_style": "string — a persistent TTS instruction prepended to every \
+utterance by this narrator. Keeps their vocal identity stable across all chapters. \
+Examples: 'Narrate with quiet authority and unhurried gravitas, letting each \
+sentence breathe.', 'Read with warm intimacy, as if telling a story by firelight.'",
   "voice_fingerprint": "string — 2-3 sentences describing their vocal delivery, \
 cadence, verbal habits, and narrative personality. Be specific and distinctive."
 }}
@@ -373,6 +383,12 @@ class AudiobookBootstrap(BaseShowBootstrap):
         try:
             data = json.loads(cleaned)
             narrator.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_gender"):
+                narrator.voice_gender = data["voice_gender"]
+            if data.get("voice_hint"):
+                narrator.voice_hint = data["voice_hint"]
+            if data.get("tts_style"):
+                narrator.tts_style = data["tts_style"]
         except (json.JSONDecodeError, TypeError):
             narrator.voice_fingerprint = "(warm, clear audiobook narration)"
 

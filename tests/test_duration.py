@@ -23,7 +23,7 @@ class TestGetWpm:
     def test_known_types(self):
         assert get_wpm("debate") == 150
         assert get_wpm("news") == 165
-        assert get_wpm("podcast") == 150
+        assert get_wpm("podcast") == 135  # Lowered from 150 to align with PODCAST_DEFAULT_SPEED=0.92
         assert get_wpm("audiobook") == 155
 
     def test_unknown_falls_back(self):
@@ -244,10 +244,12 @@ class TestRebalancedTarget:
         assert cond._rebalanced_target(600, 5) == 600
 
     def test_increases_when_behind(self):
-        # 1000/5000 generated, 4 remaining → fair share = 1000
-        # planned=400 < 1000, so fair share wins
+        # 1000/5000 generated, 4 remaining → naive fair share = 1000.
+        # OVERSHOOT_COMPENSATION (0.92) shrinks that to 920 to counteract
+        # the model's tendency to overshoot soft per-turn targets.
+        # planned=400 < 920, so the (compensated) fair share wins.
         cond = _make_conductor(target_words=5000, words_generated=1000)
-        assert cond._rebalanced_target(400, 4) == 1000
+        assert cond._rebalanced_target(400, 4) == 920
 
     def test_zero_remaining_steps(self):
         cond = _make_conductor(target_words=5000, words_generated=3000)

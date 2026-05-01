@@ -22,6 +22,7 @@ Public API (built incrementally across chunks):
 
 from vox_romana.university.config import UniversityConfig
 from vox_romana.university.scholar import Scholar
+from vox_romana.university.seminar_plan import SeminarPlan
 from vox_romana.university.session import ScholarNote, ScholarSession
 from vox_romana.university.sources import (
     Article,
@@ -39,6 +40,7 @@ __all__ = [
     "Scholar",
     "ScholarNote",
     "ScholarSession",
+    "SeminarPlan",
     "UniversitySearchProvider",
     "University",
     "UniversityConfig",

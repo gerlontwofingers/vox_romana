@@ -119,6 +119,13 @@ logger = logging.getLogger(__name__)
 # have no way to act on them, so they end up spoken literally.
 _STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
 
+# Matches square-bracket stage directions, e.g.:
+#   [Dr. Waffleford holds the pizza aloft.]
+#   [The audience gasps.]
+# Audiobook conductors write these for scene actions. They are NEVER data —
+# strip them unconditionally (unlike parentheticals which may contain acronyms).
+_BRACKET_STAGE_DIR_RE = re.compile(r'\[[^\]]*\]')
+
 
 def _is_stage_direction(content: str) -> bool:
     """Return True if a parenthetical looks like a performance direction.
@@ -169,6 +176,9 @@ def strip_stage_directions(text: str) -> str:
         return m.group(0)  # keep prose parentheticals intact
 
     cleaned = _STAGE_DIR_RE.sub(_replace, text)
+    # Strip square-bracket stage directions unconditionally — these are always
+    # scene actions written by the audiobook conductor, never data.
+    cleaned = _BRACKET_STAGE_DIR_RE.sub('', cleaned)
     # Collapse ALL whitespace runs — including \n from removed inline directions
     cleaned = re.sub(r'\s+', ' ', cleaned)
     # Merge adjacent-ellipsis artifacts left by "... (direction) ...": "... ..." → "..."
@@ -261,6 +271,40 @@ class RenderResult:
 # Other kinds (break, bumper, transition) are non-spoken markers
 # handled by the mixer or ignored.
 SPOKEN_EVENT_KINDS = frozenset({"utterance", "narration", "interrupt"})
+
+# ── Content-type detection ─────────────────────────────────────────────────
+# Infer content_type from the show JSON's top-level keys so render() doesn't
+# need a new parameter and existing callers stay unchanged.
+_CONTENT_TYPE_KEYS: dict[str, str] = {
+    "podcast_id": "podcast",
+    "debate_id": "debate",
+    "audiobook_id": "audiobook",
+    "show_id": "news",
+}
+
+# Lead-in silence (ms) prepended before the first utterance per content type.
+# Prevents cold starts where audio jumps in with zero margin.
+# Skipped when the first event already carries an intro music nonverbal cue
+# (e.g. "intro music", "theme", "sting") to avoid double-stacking with a
+# generated music bumper.
+_LEAD_IN_MS: dict[str, int] = {
+    "podcast": 1500,
+    "news": 800,
+    "debate": 1000,
+    "audiobook": 2000,
+}
+
+# Nonverbal keywords that indicate a music intro is already present in the
+# first event, making the lead-in silence redundant.
+_INTRO_MUSIC_CUES: frozenset[str] = frozenset({
+    "intro music", "theme music", "theme song", "theme", "sting", "bumper",
+})
+
+# Podcast-specific TTS speed multiplier applied on top of the per-event
+# pace-derived speed.  Keeps conversational delivery measured rather than
+# clipped.  Intentionally aligned with WPM_DEFAULTS["podcast"] = 135
+# (see core/duration.py) so word-budget estimation and playback stay in sync.
+PODCAST_DEFAULT_SPEED: float = 0.92
 
 
 class TTSRenderer:
@@ -389,6 +433,12 @@ class TTSRenderer:
         # synthesize() call so the engine can validate / route appropriately.
         language = debate_data.get("language", "en")
 
+        # ── Infer content type from show JSON keys ────────────────────
+        content_type = next(
+            (ct for key, ct in _CONTENT_TYPE_KEYS.items() if key in debate_data),
+            "generic",
+        )
+
         # ── STEP 1: Assign voices to speakers ────────────────────────
         # Build the voice map (auto-assign if not manually provided).
         # We need to know every speaker name that appears in events.
@@ -464,6 +514,24 @@ class TTSRenderer:
         skipped = 0
         event_durations: dict[int, float] = {}
 
+        # ── C1: Cold-start lead-in silence ───────────────────────────
+        # Prepend a brief silence before the first spoken clip so audio
+        # doesn't jump in with zero margin ("cold start" artefact).
+        # Skip if the first event already has an intro music nonverbal cue
+        # so we don't stack silence on top of a generated bumper.
+        lead_in_ms = _LEAD_IN_MS.get(content_type, 0)
+        if lead_in_ms > 0:
+            first_event = next(
+                (e for e in events if e.get("text", "").strip()),
+                None,
+            )
+            first_nonverbals = {
+                n.lower()
+                for n in (first_event.get("nonverbal") or [])
+            } if first_event else set()
+            if not (_INTRO_MUSIC_CUES & first_nonverbals):
+                mixer.add_silence(lead_in_ms)
+
         for i, event in enumerate(events):
             # Only render events that have spoken text.
             # Non-spoken kinds (break, bumper, transition) are markers
@@ -532,6 +600,10 @@ class TTSRenderer:
 
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))
+            # C2: Apply podcast-specific speed baseline so delivery stays
+            # measured.  Aligned with WPM_DEFAULTS["podcast"] = 135.
+            if content_type == "podcast":
+                speed *= PODCAST_DEFAULT_SPEED
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))

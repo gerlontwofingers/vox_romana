@@ -571,18 +571,30 @@ python -m vox_romana.mcp
 
 ### IDE setup example (VS Code / Copilot)
 
-Add to `.vscode/mcp.json`:
+The easiest way is to copy the bundled example and reload VS Code:
+
+```bash
+cp .vscode/mcp.json.example .vscode/mcp.json
+# Then: Cmd+Shift+P → Developer: Reload Window
+```
+
+Or add manually to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
     "vox_romana": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "vox_romana.mcp"]
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "vox_romana.mcp"],
+      "cwd": "${workspaceFolder}"
     }
   }
 }
 ```
+
+> **Important:** use `.venv/bin/python` (not bare `python`) so the MCP
+> server finds the vox_romana packages and the `mcp` SDK.  On Windows
+> use `.venv\Scripts\python.exe`.
 
 See [docs/local_stack.md](docs/local_stack.md) for the full setup guide, job registry design, and security notes.
 

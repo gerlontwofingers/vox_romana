@@ -1036,7 +1036,7 @@ class PodcastConductor(BaseConductor):
         speaker_list = ", ".join(sorted(speakers))
         snippet_text = " | ".join(text_snippets[:3])  # First 3 turns
         return (
-            f"[{segment_config.segment_type}] {segment_config.topic} — "
+            f"{segment_config.topic} — "
             f"speakers: {speaker_list}. {snippet_text}"
         )
 
@@ -1054,7 +1054,7 @@ class PodcastConductor(BaseConductor):
         recent_count = 3
         recent = self._context_log[-recent_count:] if self._context_log else []
         if recent:
-            parts.append("Recent segments:\n" + "\n".join(f"  - {s}" for s in recent))
+            parts.append("The conversation so far:\n" + "\n".join(f"  - {s}" for s in recent))
 
         return "\n\n".join(parts) if parts else ""
 

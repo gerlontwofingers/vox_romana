@@ -100,7 +100,7 @@ text outside the JSON block. No markdown, no commentary, just raw JSON.
     "size_description": "string — e.g., 'packed town hall, standing room only'"
   },
   "show_host": {
-    "name": "string — host's name (a character, e.g., 'Marcus Webb' or 'The Narrator')",
+    "name": "string — host's name (a memorable character name; AVOID overused defaults like 'Marcus Webb', 'Sarah Chen', or 'Elena Vasquez'. Draw from diverse cultural backgrounds. Can also be a stage name like 'The Narrator')",
     "role": "string — 'narrator' (third-person, documentary style) or 'emcee' (first-person, podcast host style)",
     "style": "string — hosting style description, e.g., 'Warm but authoritative, uses vivid scene-setting language'"
   }

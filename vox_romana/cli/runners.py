@@ -19,7 +19,6 @@ from pathlib import Path
 from vox_romana.core.client import DeepSeekClient
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
 from vox_romana.core.fact_checker import FactChecker
-from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.core.router import ShowRouter
 
 
@@ -159,12 +158,15 @@ def _log_length_summary(
     content_type: str,
     length_warnings: list[str] | None = None,
     quiet: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Emit a one-line summary of generated word count vs target.
 
     Always shows actual words + estimated duration. When a target is
     set, also shows the target and the percentage achieved. Length
-    warnings (from the conductor) are surfaced afterwards.
+    warnings (from the conductor) are surfaced afterwards — only when
+    ``verbose`` is True (they are kept silent by default to keep clean
+    runs uncluttered; the conductor still records them).
     """
     from vox_romana.core.duration import get_wpm, words_to_seconds
 
@@ -188,7 +190,7 @@ def _log_length_summary(
             quiet=quiet,
         )
 
-    if length_warnings:
+    if verbose and length_warnings:
         for w in length_warnings[:5]:  # cap noise
             log(f"  \u26a0 {w}", quiet=quiet)
         if len(length_warnings) > 5:
@@ -196,6 +198,14 @@ def _log_length_summary(
                 f"  \u26a0 \u2026 and {len(length_warnings) - 5} more length warning(s)",
                 quiet=quiet,
             )
+    elif length_warnings and not quiet:
+        # One-line nudge so the user knows there were warnings without
+        # spilling them. Re-run with --verbose to see them.
+        log(
+            f"  ({len(length_warnings)} length warning(s) suppressed; "
+            f"re-run with --verbose to see them)",
+            quiet=quiet,
+        )
 
 
 # ── Checkpoint plumbing ─────────────────────────────────
@@ -410,6 +420,24 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
 
+    # ── Clamp target_turns so it fits the word budget ────────────────
+    # The Architect doesn't know the target duration when it picks
+    # target_turns, so for short shows it routinely overshoots.
+    # Reserve some words for the host intro+outro narration, then
+    # divide the remainder by an average per-turn word count.
+    if config.target_words and config.target_turns:
+        AVG_WORDS_PER_TURN = 40
+        HOST_OVERHEAD_WORDS = 280  # intro + outro + closing turns spillover
+        budget_for_turns = max(80, config.target_words - HOST_OVERHEAD_WORDS)
+        max_turns = max(4, budget_for_turns // AVG_WORDS_PER_TURN)
+        if config.target_turns > max_turns:
+            log(
+                f"  Clamping target_turns: {config.target_turns} -> {max_turns} "
+                f"(fits {config.target_words}-word budget)",
+                quiet=args.quiet,
+            )
+            config.target_turns = max_turns
+
     t1 = time.time()
     log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
     log(f"  Title: {config.title}", quiet=args.quiet)
@@ -445,6 +473,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         content_type="debate",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -508,6 +537,23 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
 
+    # ── Trim segment list to fit the word budget ─────────────────────
+    # The Architect doesn't know the target duration when it picks
+    # target_segments, so for short broadcasts it routinely overshoots.
+    # Each segment costs ~150 anchor words + ~30 transition words.
+    if config.target_words and config.segments:
+        AVG_WORDS_PER_SEGMENT = 180
+        HOST_OVERHEAD_WORDS = 120  # intro + outro
+        budget_for_segments = max(120, config.target_words - HOST_OVERHEAD_WORDS)
+        max_segments = max(1, budget_for_segments // AVG_WORDS_PER_SEGMENT)
+        if len(config.segments) > max_segments:
+            log(
+                f"  Trimming segments: {len(config.segments)} -> {max_segments} "
+                f"(fits {config.target_words}-word budget)",
+                quiet=args.quiet,
+            )
+            config.segments = config.segments[:max_segments]
+
     t1 = time.time()
     log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
     log(f"  Title: {config.title}", quiet=args.quiet)
@@ -539,6 +585,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         content_type="news",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -640,6 +687,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         content_type="podcast",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -738,6 +786,7 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         content_type="audiobook",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -753,12 +802,104 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     return output_path
 
 
+def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
+    """Run the lecture pipeline, return the output path.
+
+    Lecture studio floor. The brief has been classified as a lecture by the
+    router — this function handles bootstrap → conductor → serializer.
+
+    Lecture generation is section-by-section: a single professor agent
+    delivers each section in sequence (with type-specific overlay prompts:
+    intro / concept / case_study / exercise / recap / outro).
+    """
+    from vox_romana.shows.lecture.bootstrap import LectureBootstrap
+    from vox_romana.shows.lecture.conductor import LectureConductor
+    from vox_romana.shows.lecture.serializer import LectureSerializer
+
+    # ── Build overrides from CLI flags ─────────────────────────────
+    overrides = _resolve_duration(args, brief)
+    target_words = None
+    if "target_duration_minutes" in overrides:
+        target_words = estimate_total_words(
+            overrides["target_duration_minutes"], "lecture",
+            engine=args.engine,
+        )
+        overrides["target_words"] = target_words
+    if args.tone is not None:
+        overrides["tone"] = args.tone
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
+
+    # ── Bootstrap ──────────────────────────────────────────────────
+    log("Bootstrap (planning sections, profiling professor, directing)...", quiet=args.quiet)
+    t0 = time.time()
+
+    reference_text_lecture = _read_reference_material(args)
+
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_lecture, target_words=target_words
+    )
+
+    bootstrap = LectureBootstrap(client=client)
+    config = bootstrap.from_brief(brief, **bootstrap_kwargs)
+
+    t1 = time.time()
+    log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
+    log(f"  Title:        {config.title}", quiet=args.quiet)
+    log(f"  Subject area: {config.subject_area}", quiet=args.quiet)
+    professor_name = config.professor.name if config.professor else "(no professor)"
+    log(f"  Professor:    {professor_name}", quiet=args.quiet)
+    log(f"  Sections:     {len(config.sections)}", quiet=args.quiet)
+    print()
+
+    # ── Conductor ──────────────────────────────────────────────────
+    log("Conductor (generating the lecture)...", quiet=args.quiet)
+    t2 = time.time()
+
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "lecture",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.sections),
+        quiet=args.quiet,
+    )
+    conductor = LectureConductor(config, client=client, **checkpoint_kwargs)
+    result = conductor.run()
+
+    t3 = time.time()
+    log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
+    log(f"  Generated {len(result.lecture_events)} events across {len(result.lecture_sections)} sections", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.lecture_events),
+        target_words=overrides.get("target_words") or target_words,
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="lecture",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
+    )
+    print()
+
+    # ── Serialize ──────────────────────────────────────────────────
+    log("Saving output...", quiet=args.quiet)
+
+    merged = result.to_merged_lecture()
+    serializer = LectureSerializer()
+
+    output_path = _build_output_path(args, "lecture")
+
+    serializer.save(merged, output_path)
+    return output_path
+
+
 # ── Dispatch table ───────────────────────────────────────────────────────
 _RUNNERS = {
     "debate": _run_debate,
     "news": _run_news,
     "podcast": _run_podcast,
     "audiobook": _run_audiobook,
+    "lecture": _run_lecture,
 }
 
 

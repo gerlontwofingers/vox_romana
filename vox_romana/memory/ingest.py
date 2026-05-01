@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
 from vox_romana.core.paths import DOCUMENT_DIR as DEFAULT_DOCUMENT_DIR
 
 # Chunking defaults.
+_CONTENT_HASH_READ_BYTES = 65_536  # 64 KB sample for content-based dedup hash
 CHUNK_SIZE = 800       # target chars per chunk
 CHUNK_OVERLAP = 100    # overlap between consecutive chunks
 
@@ -86,6 +87,7 @@ class IngestStats:
     format: str = ""
     skipped: bool = False
     skip_reason: str = ""
+    deduped_chunks: int = 0
 
 
 @dataclass
@@ -674,6 +676,25 @@ ALL_KNOWN_EXTENSIONS: frozenset[str] = frozenset(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Content-based dedup hash
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _content_hash(path: Path) -> str:
+    """Stable 12-hex-char hash based on file content, not path.
+
+    Uses the first ``_CONTENT_HASH_READ_BYTES`` (64 KB) of the file plus
+    the total file size.  This is fast even for large files and catches
+    same-file-different-path duplicates that a path-based hash would miss.
+    """
+    h = hashlib.sha256()
+    size = path.stat().st_size
+    with open(path, "rb") as fh:
+        h.update(fh.read(_CONTENT_HASH_READ_BYTES))
+    h.update(str(size).encode())
+    return h.hexdigest()[:12]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Chunking
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -755,6 +776,26 @@ def chunk_text(
 # Ingester
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dedup config helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DEDUP_THRESHOLD_DEFAULT = 0.97
+_DEDUP_MIN_CHARS_DEFAULT = 500
+
+
+def _dedup_config() -> tuple[float, int]:
+    """Return (similarity_threshold, min_chars) from vox_romana.yaml, or defaults."""
+    try:
+        from vox_romana.core.paths import _load_config  # type: ignore[attr-defined]
+        cfg = _load_config().get("dedup") or {}
+        threshold = float(cfg.get("similarity_threshold", _DEDUP_THRESHOLD_DEFAULT))
+        min_chars = int(cfg.get("min_chars", _DEDUP_MIN_CHARS_DEFAULT))
+        return threshold, min_chars
+    except Exception:
+        return _DEDUP_THRESHOLD_DEFAULT, _DEDUP_MIN_CHARS_DEFAULT
+
+
 class DocumentIngester:
     """Ingests user documents into chunked JSONL for corpus building.
 
@@ -762,6 +803,10 @@ class DocumentIngester:
         output_dir: Directory to write chunked JSONL files.
         chunk_size: Target characters per chunk.
         chunk_overlap: Overlap between consecutive chunks.
+        near_dedup_threshold: Cosine similarity above which a document is
+            considered a near-duplicate of an already-ingested document and
+            skipped.  Set to ``>1.0`` to disable.  Defaults to the
+            ``dedup.similarity_threshold`` value in *vox_romana.yaml*.
     """
 
     def __init__(
@@ -770,10 +815,18 @@ class DocumentIngester:
         output_dir: str | Path | None = None,
         chunk_size: int = CHUNK_SIZE,
         chunk_overlap: int = CHUNK_OVERLAP,
+        near_dedup_threshold: float | None = None,
+        fingerprint_store_path: str | Path | None = None,
     ) -> None:
         self._output_dir = Path(output_dir or DEFAULT_DOCUMENT_DIR)
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        cfg_threshold, self._near_dedup_min_chars = _dedup_config()
+        self._near_dedup_threshold = (
+            near_dedup_threshold if near_dedup_threshold is not None else cfg_threshold
+        )
+        self._fp_store_path = Path(fingerprint_store_path) if fingerprint_store_path else None
+        self._fp_store: Any = None  # lazy-loaded FingerprintStore
 
     def ingest(
         self,
@@ -821,7 +874,10 @@ class DocumentIngester:
             )
 
         # Idempotency — skip if already ingested (unless force_reingest).
-        doc_hash = hashlib.sha256(str(path).encode()).hexdigest()[:12]
+        # Hash is based on file *content* (first 64 KB + file size) rather than
+        # path so that the same document ingested from a different location is
+        # correctly identified as a duplicate.
+        doc_hash = _content_hash(path)
         out_path = self._output_dir / f"{doc_hash}.jsonl"
         if out_path.exists() and not force_reingest and not dry_run:
             logger.debug("Already ingested (skipping): %s", path)
@@ -836,6 +892,31 @@ class DocumentIngester:
         if not text.strip():
             logger.warning("Empty document: %s", path)
             return IngestStats(source=str(path), format=suffix)
+
+        # Near-duplicate guard (document-level, using Markov fingerprint).
+        # Skipped when: threshold > 1.0, dry_run, force_reingest, doc is too short, or store unavailable.
+        if (
+            not dry_run
+            and not force_reingest
+            and self._near_dedup_threshold <= 1.0
+            and len(text) >= self._near_dedup_min_chars
+        ):
+            match = self._check_near_dup(text)
+            if match is not None:
+                near_source, sim = match
+                logger.info(
+                    "Near-duplicate of %s (sim=%.4f ≥ %.4f) — skipping: %s",
+                    near_source,
+                    sim,
+                    self._near_dedup_threshold,
+                    path,
+                )
+                return IngestStats(
+                    source=str(path),
+                    format=suffix,
+                    skipped=True,
+                    skip_reason=f"near-duplicate of {near_source} (sim={sim:.4f})",
+                )
 
         title = title or path.stem
         chunks = chunk_text(
@@ -872,9 +953,17 @@ class DocumentIngester:
             stats.skip_reason = "dry run"
             return stats
 
-        self._write_chunks(doc_hash, doc_chunks)
+        deduped = self._write_chunks(doc_hash, doc_chunks)
+        stats.deduped_chunks = deduped
+        stats.chunks -= deduped
+        # Register fingerprint so future near-duplicate docs are caught.
+        self._register_fingerprint(str(path), text)
         logger.info(
-            "Ingested %s: %d chunks, %d chars", path, stats.chunks, stats.chars
+            "Ingested %s: %d chunks, %d chars (%d chunk-level dupes skipped)",
+            path,
+            stats.chunks,
+            stats.chars,
+            deduped,
         )
         return stats
 
@@ -921,9 +1010,76 @@ class DocumentIngester:
 
         return results
 
-    def _write_chunks(self, doc_hash: str, chunks: list[DocumentChunk]) -> None:
+    def _get_fp_store(self):
+        """Lazy-load FingerprintStore, return None if unavailable."""
+        if self._fp_store is None:
+            try:
+                from vox_romana.memory.fingerprint_store import FingerprintStore
+                # Default: store lives alongside the JSONL corpus files so that
+                # each output directory maintains its own dedup index.
+                path = self._fp_store_path or (self._output_dir / "fingerprints.npz")
+                self._fp_store = FingerprintStore(store_path=path)
+            except Exception as exc:
+                logger.debug("FingerprintStore unavailable: %s", exc)
+                self._fp_store = False  # sentinel: don't retry
+        return self._fp_store if self._fp_store is not False else None
+
+    def _check_near_dup(self, text: str) -> tuple[str, float] | None:
+        """Return (source, similarity) if *text* is a near-duplicate, else None."""
+        store = self._get_fp_store()
+        if store is None:
+            return None
+        try:
+            return store.find_nearest(text, threshold=self._near_dedup_threshold)
+        except Exception as exc:
+            logger.debug("FingerprintStore.find_nearest failed: %s", exc)
+            return None
+
+    def _register_fingerprint(self, source: str, text: str) -> None:
+        """Add document fingerprint to store (best-effort, never raises)."""
+        store = self._get_fp_store()
+        if store is None:
+            return
+        try:
+            store.add(source, text)
+        except Exception as exc:
+            logger.debug("FingerprintStore.add failed: %s", exc)
+
+    def _chunk_hashes_path(self) -> Path:
+        return self._output_dir / ".chunk_hashes.json"
+
+    def _load_chunk_hashes(self) -> set[str]:
+        p = self._chunk_hashes_path()
+        if p.exists():
+            try:
+                return set(json.loads(p.read_text()))
+            except Exception:
+                return set()
+        return set()
+
+    def _save_chunk_hashes(self, hashes: set[str]) -> None:
+        self._chunk_hashes_path().write_text(json.dumps(sorted(hashes)))
+
+    def _write_chunks(self, doc_hash: str, chunks: list[DocumentChunk]) -> int:
+        """Write chunks to JSONL, skipping exact duplicates already seen.
+
+        Returns the number of chunks that were deduplicated (skipped).
+        """
         self._output_dir.mkdir(parents=True, exist_ok=True)
+        known = self._load_chunk_hashes()
+        deduped = 0
+        new_hashes: set[str] = set()
         path = self._output_dir / f"{doc_hash}.jsonl"
         with open(path, "w") as f:
             for chunk in chunks:
+                # Normalise before hashing: collapse whitespace, strip.
+                normalised = " ".join(chunk.text.split())
+                ch = hashlib.sha256(normalised.encode()).hexdigest()[:16]
+                if ch in known:
+                    deduped += 1
+                    continue
+                new_hashes.add(ch)
                 f.write(json.dumps(chunk.to_dict(), default=str) + "\n")
+        if new_hashes:
+            self._save_chunk_hashes(known | new_hashes)
+        return deduped

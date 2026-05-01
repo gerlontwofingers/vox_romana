@@ -110,6 +110,15 @@ class BaseConductor(ABC):
         _write_note()       — Convenience for appending an AgentNote.
     """
 
+    # Empirical correction for systematic per-turn overshoot. Battery
+    # studies (Apr 2026) showed conductors landing ~8–15% over their
+    # target word counts because LLMs treat soft per-turn targets as
+    # floors rather than midpoints. Multiplying the rebalanced fair
+    # share by this factor instructs each turn to aim slightly low so
+    # the cumulative output lands near the contracted target.
+    # Subclasses may override.
+    OVERSHOOT_COMPENSATION: float = 0.92
+
     def __init__(
         self,
         config: ContentConfig,
@@ -284,12 +293,14 @@ class BaseConductor(ABC):
     def _should_wrap_up(self) -> bool:
         """True when the conductor should start wrapping up.
 
-        Uses 90% of the target as the trigger point so the closing
-        sequence doesn't overshoot.  Returns False if no target is set.
+        Uses 70% of the target as the trigger point.  This leaves
+        headroom for closing statements + host outro, which empirically
+        add another 25-40% on top of the trigger word count.  Returns
+        False if no target is set.
         """
         if self._target_words is None:
             return False
-        return self._words_generated >= self._target_words * 0.90
+        return self._words_generated >= self._target_words * 0.70
 
     def _over_budget(self) -> bool:
         """True when the word count has exceeded the upper tolerance bound."""
@@ -358,7 +369,13 @@ class BaseConductor(ABC):
         if remaining_steps <= 0:
             return planned_words
         fair_share = self._remaining_words // remaining_steps
-        return max(planned_words, fair_share)
+        # Apply overshoot compensation so the per-turn ask aims slightly
+        # below the naive average. Empirically the model produces ~8–15%
+        # more than asked for, so scaling the budget down lands the
+        # cumulative output near target. See class-level
+        # OVERSHOOT_COMPENSATION docstring.
+        adjusted_fair_share = int(fair_share * self.OVERSHOOT_COMPENSATION)
+        return max(planned_words, adjusted_fair_share)
 
     # ── Hard length contract helpers ──────────────────────────────────
 

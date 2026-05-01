@@ -75,19 +75,30 @@ rack = build_default_rack()
 
 ```bash
 # Install server (already in requirements.txt)
-pip install mcp
+.venv/bin/pip install mcp
 
 # Start over stdio (invoked automatically by Claude Desktop / VS Code)
-python -m vox_romana.mcp
+.venv/bin/python -m vox_romana.mcp
 
 # Test by listing tools
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python -m vox_romana.mcp
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | .venv/bin/python -m vox_romana.mcp
 ```
 
 ### VS Code wiring
 
-Copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.  The MCP
-extension will auto-discover the server on next reload.
+```bash
+cp .vscode/mcp.json.example .vscode/mcp.json
+# Cmd+Shift+P → Developer: Reload Window
+```
+
+The bundled example uses `${workspaceFolder}/.venv/bin/python` as the
+command — this is required so the server process finds `mcp` and all
+vox_romana packages.  Bare `python` picks up the system interpreter and
+will fail with `ModuleNotFoundError`.  On Windows substitute
+`.venv\Scripts\python.exe`.
+
+After reload, open Copilot Chat and click the **tools icon** (hammer).
+You should see the **vox_romana** server listed with its 12 tools.
 
 ### Claude Desktop wiring
 
@@ -97,13 +108,15 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "vox_romana": {
-      "command": "python",
+      "command": "/path/to/vox_romana/.venv/bin/python",
       "args": ["-m", "vox_romana.mcp"],
-      "cwd": "/Users/bagheera/repos/vox_romana"
+      "cwd": "/path/to/vox_romana"
     }
   }
 }
 ```
+
+Replace `/path/to/vox_romana` with the absolute path to your clone.
 
 ---
 

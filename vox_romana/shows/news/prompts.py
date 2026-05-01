@@ -39,8 +39,13 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "volume": "soft|moderate|loud|rising|falling",
   "pace": "slow|medium|fast|accelerating|decelerating",
   "pause_before": "none|short|medium|long",
-  "pause_after": "none|short|medium|long"
+  "pause_after": "none|short|medium|long",
+  "nonverbal": []
 }}
+
+NONVERBAL FIELD — audible cues only, used sparingly: e.g. ["clears throat"],
+["deep breath"], ["sighs"]. Most utterances leave it empty ([]). Never use
+visual gestures — the listener cannot see them.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -79,8 +84,13 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "volume": "soft|moderate|loud|rising|falling",
   "pace": "slow|medium|fast|accelerating|decelerating",
   "pause_before": "none|short|medium|long",
-  "pause_after": "none|short|medium|long"
+  "pause_after": "none|short|medium|long",
+  "nonverbal": []
 }}
+
+NONVERBAL FIELD — audible cues only (no visual gestures). Use sparingly:
+intro/outro segments may include ["intro music"] or ["outro music"]; mid-show
+cues like ["deep breath"] are rare. Never use visual cues.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -245,6 +245,10 @@ class ScholarSession:
     updated_at: str = field(default_factory=_now_iso)
     budget_hours: float | None = None
     estimated_hours: float | None = None
+    # Absolute monotonic deadline set once by Scholar.study() so that the
+    # budget clock is never reset across seminar extend() rounds.
+    # Not persisted to JSON (monotonic clocks are process-local).
+    deadline_monotonic: float | None = field(default=None, repr=False)
     notes: list[ScholarNote] = field(default_factory=list)
     synthesis: str = ""
     articles_read: list[str] = field(default_factory=list)

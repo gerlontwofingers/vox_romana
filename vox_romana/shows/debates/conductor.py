@@ -572,6 +572,7 @@ class DebateConductor(BaseConductor):
                     f"4. Build anticipation for the debate.\n\n"
                     f"Speakers: {speaker_intros}"
                 ),
+                word_budget=self._host_intro_budget(),
             )
             raw_events.append(intro_event)
 
@@ -590,7 +591,7 @@ class DebateConductor(BaseConductor):
                 wrapping_up = True
             if not wrapping_up and self._should_wrap_up():
                 wrapping_up = True
-            if turn_number > target_turns + 6:
+            if turn_number > target_turns + 3:
                 break  # Hard cap: don't let closing statements go on forever.
             if self._over_budget():
                 break  # Hard cap: word budget exceeded.
@@ -742,6 +743,7 @@ class DebateConductor(BaseConductor):
                     f"End with something like 'This has been Vox Romana' or similar. "
                     f"3-5 sentences."
                 ),
+                word_budget=self._host_outro_budget(),
             )
             raw_events.append(outro_event)
 
@@ -981,7 +983,9 @@ class DebateConductor(BaseConductor):
             role_instructions=role_instructions,
         )
 
-    def _generate_host_event(self, *, beat: str, context_hint: str) -> dict:
+    def _generate_host_event(
+        self, *, beat: str, context_hint: str, word_budget: int | None = None
+    ) -> dict:
         """Generate one narration event from the show host.
 
         This is similar to _generate_turn() but simpler — the host doesn't
@@ -994,6 +998,9 @@ class DebateConductor(BaseConductor):
             context_hint: Specific instructions for what this narration
                           should contain. Built by the caller based on the
                           current state of the debate.
+            word_budget:  Soft cap on narration length. When set, a length
+                          contract is appended to the prompt so short shows
+                          don't get blown apart by long host monologues.
 
         Returns:
             A raw event dict with event_kind="narration" and role="host".
@@ -1004,6 +1011,11 @@ class DebateConductor(BaseConductor):
         # The host sees: their system prompt (personality) + a beat-specific
         # instruction (what to narrate right now).
         user_message = f"NARRATION BEAT: {beat.upper()}\n\n{context_hint}"
+        if word_budget and word_budget > 0:
+            user_message += (
+                f"\n\nLENGTH CONTRACT: keep this narration to about {word_budget} words "
+                f"(hard ceiling: {int(word_budget * 1.3)}). Do not exceed it."
+            )
 
         raw_response = self._client.chat(
             messages=[
@@ -1036,6 +1048,23 @@ class DebateConductor(BaseConductor):
             event_dict.setdefault("pause_before", "long")
 
         return event_dict
+
+    def _host_intro_budget(self) -> int | None:
+        """Soft word cap for the host intro narration.
+
+        Scaled to the overall word target so a 3-min show doesn't get a
+        200-word opener while a 30-min show isn't forced into 3 sentences.
+        Returns None when no target is set (let the LLM pick).
+        """
+        if self._target_words is None:
+            return None
+        return max(60, min(180, int(self._target_words * 0.18)))
+
+    def _host_outro_budget(self) -> int | None:
+        """Soft word cap for the host outro narration. Smaller than intro."""
+        if self._target_words is None:
+            return None
+        return max(40, min(120, int(self._target_words * 0.10)))
 
     # ═══════════════════════════════════════════════════════════════════
     # TURN GENERATION
@@ -1314,9 +1343,12 @@ class DebateConductor(BaseConductor):
 
         # ── Hard length contract for THIS turn ───────────
         # Wrap-up turns and the moderator's opening get a shorter target.
+        # Closing statements are also hard-capped at 60 words to prevent
+        # the LLM from delivering verbose summaries that blow the budget.
         turn_target = target_words
         if wrapping_up:
-            turn_target = max(20, target_words // 2) if target_words else 0
+            half = max(20, target_words // 2) if target_words else 0
+            turn_target = min(60, half) if half else 0
         if turn_target > 0:
             parts.append(
                 self._length_contract_block(turn_target, tolerance_pct=15.0)

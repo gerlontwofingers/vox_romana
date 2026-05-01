@@ -504,11 +504,15 @@ class TestMemoryRecallChroma:
         assert result.method == "fts5"
         assert len(result.catalog_runs) > 0
 
-    def test_no_catalog_chroma_empty_returns_fts5_method(self, ephemeral_chroma):
+    def test_no_catalog_chroma_empty_returns_fts5_method(self, ephemeral_chroma, tmp_path):
         """Empty Chroma index + no catalog → method stays 'fts5' (default)."""
         from vox_romana.memory.recall import MemoryRecall
-        recall = MemoryRecall(catalog=None, _chroma_client=ephemeral_chroma)
-        result = recall.query("anything")
+        # Redirect migrate_documents to an empty dir so no real corpus
+        # documents are indexed (which would make Chroma non-empty).
+        empty_docs = tmp_path / "docs"
+        with patch("vox_romana.memory.ingest.DEFAULT_DOCUMENT_DIR", empty_docs):
+            recall = MemoryRecall(catalog=None, _chroma_client=ephemeral_chroma)
+            result = recall.query("anything")
         assert result.method == "fts5"  # no passages, default stays
         assert result.passages == []
 

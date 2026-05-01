@@ -89,7 +89,17 @@ class EmotionSequence:
 
 @dataclass(slots=True)
 class TransitionMatrix:
-    """Markov transition matrix with Wilson-score confidence intervals."""
+    """Markov transition matrix with Wilson-score confidence intervals.
+
+    This is the same mathematical object as
+    :class:`vox_romana.core.markov.CharBigramFingerprinter` but over a
+    discrete emotion-label state space (N \u2248 7) rather than printable
+    ASCII (N = 96).  Both are first-order row-stochastic Markov matrices;
+    transformer attention is the learned, context-conditioned generalisation.
+
+    See :meth:`to_fingerprint` for inter-leader similarity comparison.
+    For char-level document fingerprinting see ``vox_romana.core.markov``.
+    """
 
     leader_name: str
     matrix: np.ndarray        # (N, N) float32 row-normalised probabilities
@@ -99,6 +109,32 @@ class TransitionMatrix:
     emotion_labels: list[str]
     smoothing_k: float
     n_transitions: int
+
+    def to_fingerprint(self) -> np.ndarray:
+        """Flatten the transition matrix to a 1-D float32 comparison vector.
+
+        Returns ``self.matrix.ravel()`` \u2014 an ``(N*N,)`` float32 vector
+        (e.g. shape ``(49,)`` for 7 emotion labels).  Two leaders' emotion
+        styles can be compared via cosine similarity on these vectors.
+
+        .. note::
+            This vector's dimension (N\u00b2) differs from
+            ``CharBigramFingerprinter.vector_dim`` (9,216), so it is
+            **not** directly compatible with
+            ``get_fingerprinter().pairwise_cosine``.  Compare directly::
+
+                import numpy as np
+                a = leader_a.to_fingerprint()
+                b = leader_b.to_fingerprint()
+                sim = float(
+                    np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
+                )
+
+            Once a ``DiscreteStateFingerprinter`` is added to
+            ``vox_romana.core.markov``, this method should delegate to
+            ``get_fingerprinter().build(self.matrix)`` instead.
+        """
+        return self.matrix.ravel().astype(np.float32, copy=False)
 
 
 @dataclass(slots=True)

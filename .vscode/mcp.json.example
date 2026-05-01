@@ -5,7 +5,10 @@
     "servers": {
         "vox_romana": {
             "type": "stdio",
-            "command": "python",
+            "// command": "Use the venv interpreter so mcp and all vox_romana deps are on sys.path.",
+            "// command-mac-linux": ".venv/bin/python",
+            "// command-windows": ".venv\\Scripts\\python.exe",
+            "command": "${workspaceFolder}/.venv/bin/python",
             "args": ["-m", "vox_romana.mcp"],
             "cwd": "${workspaceFolder}",
             "// env": "Add DEEPSEEK_API_KEY here if your shell does not export it.",

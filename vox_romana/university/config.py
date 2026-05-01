@@ -83,6 +83,10 @@ class UniversityConfig:
     colloquium_interval: int = 25
     colloquium_max_leads_per_peer: int = 3
     colloquium_snippet_chars: int = 1500
+    # Per-model latency hints (seconds) used by SeminarPlan.suggest().
+    # Keys are Ollama model tags; 'default' is the fallback.
+    # Example entry: {"deepseek-r1:14b": {"article": 25, "synth": 60, "exchange": 90}}
+    llm_latencies: dict = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Return a list of problems with this config. Empty list = all good.

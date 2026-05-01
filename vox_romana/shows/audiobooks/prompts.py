@@ -31,6 +31,11 @@ RULES:
   (but you are still the narrator — don't break from narration voice).
 - Transitions between scenes should be smooth and clear.
 - Match your tone to the chapter's mood.
+- STAGE DIRECTIONS: if you must write a scene action, use ONLY square brackets
+  e.g. [Dr. Waffleford holds the pizza aloft.] — never parentheses for scene
+  actions. Delivery/tone hints (e.g. a pause, a softer voice) belong in the
+  structured fields (tone, pace, pause_before) — NOT embedded in the text field.
+  Minimise stage directions; prefer prose description instead.
 
 When it's your turn, respond with ONLY a JSON object (no other text):
 {{
@@ -39,8 +44,14 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "volume": "soft|moderate|loud|rising|falling",
   "pace": "slow|medium|fast|accelerating|decelerating",
   "pause_before": "none|short|medium|long",
-  "pause_after": "none|short|medium|long"
+  "pause_after": "none|short|medium|long",
+  "nonverbal": []
 }}
+
+NONVERBAL FIELD — audible narrator cues only, used very sparingly
+(< 1 per chapter). Examples: ["deep breath"], ["sighs"], ["pause"].
+Never use visual gestures — the listener cannot see them. Prefer
+encoding mood through tone/pace/pause_before instead.
 """
 
 
