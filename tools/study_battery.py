@@ -19,6 +19,7 @@ off, quiet output — so the whole battery completes in reasonable time.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import re
 import subprocess
@@ -47,6 +48,17 @@ TOPICS: dict[str, list[str]] = {
         "Is geoengineering an acceptable climate intervention?",
         "Should autonomous weapons be banned by international treaty?",
         "Is privacy obsolete in the age of ambient computing?",
+        # wave 2
+        "Should private space travel be regulated like commercial aviation?",
+        "Is the death penalty ever morally justifiable?",
+        "Should wealthy nations have open borders for climate refugees?",
+        "Is addiction a disease or a moral failing?",
+        "Should tech companies be required to provide government backdoor access?",
+        "Is it ethical to eat meat in 2026?",
+        "Should the voting age be lowered to sixteen?",
+        "Is affirmative action still necessary in higher education?",
+        "Should performance-enhancing drugs be legal in competitive sports?",
+        "Is journalistic objectivity a myth worth preserving?",
     ],
     "news": [
         "Recent advances in fusion reactor design and net-energy milestones",
@@ -59,6 +71,17 @@ TOPICS: dict[str, list[str]] = {
         "Mental health crisis among adolescents — research updates",
         "Regulatory response to deepfakes and synthetic media",
         "Microplastic contamination in agricultural soil",
+        # wave 2
+        "Progress on malaria vaccine deployment in sub-Saharan Africa",
+        "Arctic permafrost methane release and climate tipping points",
+        "AI-generated scientific papers and the peer review crisis",
+        "Post-quantum cryptography standardization rollout",
+        "Water scarcity conflicts emerging in Central Asia",
+        "Central bank digital currencies and financial privacy concerns",
+        "Longevity drugs entering phase-three clinical trials",
+        "Satellite megaconstellations and radio astronomy interference",
+        "Insurance market collapse in climate-stressed coastal regions",
+        "Fentanyl supply chain disruption after major cartel prosecutions",
     ],
     "podcast": [
         "The unexpected history of the metric system",
@@ -71,6 +94,17 @@ TOPICS: dict[str, list[str]] = {
         "The mathematics of voting systems",
         "How to think about probability in everyday life",
         "The psychology of conspiracy belief",
+        # wave 2
+        "The forgotten science behind how anesthesia actually works",
+        "Why the Roman Empire took so long to fall",
+        "The surprising psychology of color perception",
+        "What the history of salt reveals about civilization",
+        "How jazz changed the trajectory of twentieth-century music",
+        "The physics of why bicycles don't fall over",
+        "The strange economics of the used-book market",
+        "How languages die and what we lose when they do",
+        "The hidden mathematics behind everyday music",
+        "Why humans are uniquely bad at assessing long-term risk",
     ],
     "audiobook": [
         "A short story about a librarian who discovers their collection rearranges itself overnight",
@@ -83,6 +117,17 @@ TOPICS: dict[str, list[str]] = {
         "A historical fiction vignette about a scribe in ancient Alexandria",
         "A horror short: a lighthouse keeper discovers the light is watching back",
         "A whimsical fable about a kingdom where everyone speaks in palindromes",
+        # wave 2
+        "A hard sci-fi short about a crew on the final mission to a dying sun",
+        "A magical realism piece about a city where dreams leave physical traces",
+        "A tragicomedy about a retired spy trying to live an ordinary life",
+        "A lyrical short about the last beekeeper on a depleted earth",
+        "A fable about a machine that learned to feel loneliness",
+        "A ghost story set in an abandoned library",
+        "A comedic vignette about two ghosts arguing over who haunts their house",
+        "A dystopian short about the last musician in a world without music",
+        "A literary piece about a grandmother teaching her granddaughter to cook",
+        "An adventure story for children about a girl who befriends a storm",
     ],
     "lecture": [
         "An introduction to Stoic ethics and how it applies to modern life",
@@ -95,6 +140,17 @@ TOPICS: dict[str, list[str]] = {
         "A lecture on how black holes warp spacetime",
         "A short course on the history and craft of bread-making",
         "A lecture on cognitive biases and how to spot them in yourself",
+        # wave 2
+        "A lecture on the history of mathematics from Euclid to Gödel",
+        "An introduction to game theory and strategic thinking",
+        "A masterclass on the biology of sleep and why it matters",
+        "A lecture on how propaganda works and how to resist it",
+        "A course unit on the fundamentals of thermodynamics",
+        "A lecture on the neuroscience of decision-making under uncertainty",
+        "A masterclass on how to read financial statements",
+        "A lecture on ancient Greek philosophy: Plato versus Aristotle",
+        "A short course on the ethics of artificial intelligence",
+        "A lecture on why ecosystems collapse and what restores them",
     ],
 }
 
@@ -387,7 +443,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Suppress per-piece progress lines.",
     )
+    parser.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of pieces to generate in parallel (default: 1 — sequential). "
+            "Each worker is an independent subprocess, so this controls how many "
+            "concurrent LLM calls are in flight. Recommended on M1 Max: 2–3."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.workers < 1:
+        print("Error: --workers must be >= 1.", file=sys.stderr)
+        sys.exit(1)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     study_dir = args.out or (REPO_ROOT / "study_results" / ts)
@@ -404,24 +475,72 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Battery study → {study_dir}")
     print(f"  shows: {', '.join(args.shows)}")
     print(f"  pieces: {len(pieces)}  (target {args.duration:.1f} min each)")
+    if args.workers > 1:
+        print(f"  workers: {args.workers}  (parallel)")
     print()
 
-    results: list[dict] = []
-    for i, (show, topic) in enumerate(pieces, 1):
-        if not args.quiet:
-            print(f"[{i:>3d}/{len(pieces)}]", end=" ", flush=True)
-        results.append(
-            _run_one(
+    if args.workers == 1:
+        # Sequential path — backward-compatible, preserves existing behaviour.
+        results: list[dict] = []
+        for i, (show, topic) in enumerate(pieces, 1):
+            if not args.quiet:
+                print(f"[{i:>3d}/{len(pieces)}]", end=" ", flush=True)
+            results.append(
+                _run_one(
+                    show_type=show,
+                    topic=topic,
+                    study_dir=study_dir,
+                    duration=args.duration,
+                    quiet=args.quiet,
+                )
+            )
+    else:
+        # Parallel path — submit all pieces, collect in original study order.
+        def _run_and_tag(idx: int, show: str, topic: str) -> tuple[int, dict]:
+            return idx, _run_one(
                 show_type=show,
                 topic=topic,
                 study_dir=study_dir,
                 duration=args.duration,
-                quiet=args.quiet,
+                quiet=True,  # progress handled below on completion
             )
-        )
+
+        slots: dict[int, dict] = {}
+        completed = 0
+        n = len(pieces)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(_run_and_tag, i, show, topic): i
+                for i, (show, topic) in enumerate(pieces)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                idx, result = future.result()
+                slots[idx] = result
+                completed += 1
+                if not args.quiet:
+                    status = "ok" if result["ok"] else f"FAIL(rc={result['exit_code']})"
+                    print(
+                        f"  [{completed:>3d}/{n}] [{result['show_type']:9s}] "
+                        f"{status:8s} {result['elapsed_secs']:6.1f}s  "
+                        f"{result['topic'][:60]}",
+                        flush=True,
+                    )
+        results = [slots[i] for i in range(len(pieces))]
 
     _build_index(study_dir, results)
-    return 0 if all(r["ok"] for r in results) else 1
+
+    # Failure summary — surface which pieces failed without digging into subdirs.
+    failed = [r for r in results if not r["ok"]]
+    if failed:
+        print(f"\n  {len(failed)} piece(s) failed:")
+        for r in failed:
+            tail = r.get("stderr_tail") or []
+            tail_str = tail[-1] if tail else "(no stderr)"
+            print(f"    [{r['show_type']:9s}] {r['topic'][:60]}")
+            print(f"               rc={r['exit_code']} | {tail_str}")
+        print()
+
+    return 0 if not failed else 1
 
 
 if __name__ == "__main__":

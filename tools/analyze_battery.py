@@ -1,6 +1,7 @@
 """Deep analysis of a study_battery run — surface patterns for improvement."""
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -10,10 +11,21 @@ from statistics import mean
 SHOW_TYPES = ["debate", "news", "podcast", "audiobook", "lecture"]
 
 
-def main(study_dir: str) -> None:
-    study = Path(study_dir)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Analyze a study_battery run.")
+    parser.add_argument("study_dir", help="Path to the study_results/<timestamp>/ dir.")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=3.0,
+        help="Target duration in minutes used for the battery (default: 3.0).",
+    )
+    args = parser.parse_args(argv)
+
+    study = Path(args.study_dir)
     idx = json.loads((study / "index.json").read_text())
     results = idx["results"]
+    TARGET = int(args.duration * 150)  # duration_minutes × 150 wpm
 
     def load_full(r: dict) -> dict:
         return json.loads((study / r["json_path"]).read_text())
@@ -32,7 +44,11 @@ def main(study_dir: str) -> None:
         for c in r["summary"].get("cast", []):
             cast_counter[c["name"]] += 1
             cast_by_show[r["show_type"]][c["name"]] += 1
+    total_cast_slots = sum(len(r["summary"].get("cast", [])) for r, _ in pieces)
+    diversity_score = len(cast_counter) / total_cast_slots if total_cast_slots else 0
     print(f"  Unique character names across all pieces: {len(cast_counter)}")
+    print(f"  Total cast slots filled: {total_cast_slots}")
+    print(f"  Name diversity score: {diversity_score:.3f}  (1.0 = all unique, 0.0 = one name everywhere)")
     print(f"  Most-reused names (>=2 appearances):")
     for name, n in cast_counter.most_common(20):
         if n >= 2:
@@ -43,8 +59,9 @@ def main(study_dir: str) -> None:
     print("\n## 2. CAST SIZE per show type")
     for show in SHOW_TYPES:
         sizes = [len(r["summary"].get("cast", [])) for r, _ in pieces if r["show_type"] == show]
+        n_pieces = len([r for r, _ in pieces if r["show_type"] == show])
         if sizes:
-            print(f"  {show:10s}  cast_size min={min(sizes)} max={max(sizes)} mean={mean(sizes):.1f}")
+            print(f"  {show:10s}  cast_size min={min(sizes)} max={max(sizes)} mean={mean(sizes):.1f}  (n={n_pieces})")
 
     # 3. Speaker turn balance
     print("\n## 3. SPEAKER TURN BALANCE (max share of turns per piece)")
@@ -76,14 +93,14 @@ def main(study_dir: str) -> None:
                 print(f"             top: {[c for c,_ in top]}")
 
     # 5. Word count vs target
-    print("\n## 5. WORD COUNT vs 3-MIN TARGET (~450 words @ 150wpm)")
-    TARGET = 450
+    print(f"\n## 5. WORD COUNT vs {args.duration:.0f}-MIN TARGET (~{TARGET} words @ 150wpm)")
     for show in SHOW_TYPES:
         wcs = [r["summary"].get("word_count", 0) for r, _ in pieces if r["show_type"] == show]
         if wcs:
             over = sum(1 for w in wcs if w > TARGET * 1.3)
             under = sum(1 for w in wcs if w < TARGET * 0.7)
-            print(f"  {show:10s}  words min={min(wcs)} max={max(wcs)} mean={mean(wcs):.0f}  over+30%={over}/{len(wcs)} under-30%={under}/{len(wcs)}")
+            ratio = mean(wcs) / TARGET if TARGET else 0
+            print(f"  {show:10s}  words min={min(wcs)} max={max(wcs)} mean={mean(wcs):.0f}  ratio={ratio:.0%}  over+30%={over}/{len(wcs)} under-30%={under}/{len(wcs)}")
 
     # 6. Event length distribution
     print("\n## 6. EVENT LENGTH (words per event)")
@@ -107,11 +124,13 @@ def main(study_dir: str) -> None:
     for show in SHOW_TYPES:
         paces: Counter[str] = Counter()
         tones: Counter[str] = Counter()
+        total_evts = 0
         for r, full in pieces:
             if r["show_type"] != show:
                 continue
             evs = full.get("events") or full.get("script", {}).get("events") or []
             for e in evs:
+                total_evts += 1
                 p = e.get("pace")
                 if isinstance(p, list):
                     for x in p:
@@ -124,8 +143,11 @@ def main(study_dir: str) -> None:
                         tones[str(x)] += 1
                 elif t:
                     tones[str(t)] += 1
-        print(f"  {show:10s}  paces: {dict(paces.most_common(6))}")
-        print(f"             tones: {dict(tones.most_common(6))}")
+        # monotony score: fraction of events using the single most common pace
+        top_pace_n = paces.most_common(1)[0][1] if paces else 0
+        pace_monotony = top_pace_n / sum(paces.values()) if paces else 0
+        print(f"  {show:10s}  pace_monotony={pace_monotony:.2f} ({len(paces)} distinct)  paces: {dict(paces.most_common(6))}")
+        print(f"             tones ({len(tones)} distinct): {dict(tones.most_common(6))}")
 
     # 8. Music
     print("\n## 8. MUSIC / SFX top-level fields")
@@ -144,7 +166,32 @@ def main(study_dir: str) -> None:
                     elif isinstance(val, dict):
                         cue_counts.append(len(val))
                     break
-        print(f"  {show:10s}  has music/sfx field: {has}/5  cue_counts={cue_counts}")
+        n_pieces = len([r for r, _ in pieces if r["show_type"] == show])
+        print(f"  {show:10s}  has music/sfx field: {has}/{n_pieces}  cue_counts={cue_counts}")
+
+    # 8b. Voice hints uniqueness
+    print("\n## 8b. VOICE HINTS uniqueness")
+    for show in SHOW_TYPES:
+        total_hints = 0
+        unique_hints: set[str] = set()
+        n_with_hints = 0
+        for r, full in pieces:
+            if r["show_type"] != show:
+                continue
+            vh = full.get("voice_hints")
+            if isinstance(vh, dict):
+                n_with_hints += 1
+                for hints in vh.values():
+                    if isinstance(hints, str):
+                        total_hints += 1
+                        unique_hints.add(hints)
+                    elif isinstance(hints, list):
+                        for h in hints:
+                            total_hints += 1
+                            unique_hints.add(str(h))
+        n_pieces = len([r for r, _ in pieces if r["show_type"] == show])
+        hint_diversity = len(unique_hints) / total_hints if total_hints else 0
+        print(f"  {show:10s}  pieces_with_hints={n_with_hints}/{n_pieces}  total_hints={total_hints}  unique={len(unique_hints)}  diversity={hint_diversity:.3f}")
 
     # 9. Top-level keys (what does each show actually save?)
     print("\n## 9. TOP-LEVEL JSON KEYS (presence per show)")
@@ -167,4 +214,4 @@ def main(study_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "study_results/20260430_175539")
+    main()
