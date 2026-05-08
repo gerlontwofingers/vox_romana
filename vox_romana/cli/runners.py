@@ -10,11 +10,14 @@ args back into an argv list.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from vox_romana.core.client import DeepSeekClient
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
@@ -25,6 +28,49 @@ from vox_romana.core.router import ShowRouter
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(f"  {msg}", flush=True)
+
+
+_PRONUNCIATION_BLOCK_RE = re.compile(
+    r"(?:^|\n)Pronunciations:\s*\n((?:[ \t]*[^\n]+\n?)*)",
+    re.IGNORECASE,
+)
+
+
+def _parse_pronunciations(brief: str) -> tuple[str, dict[str, Any]]:
+    """Strip the optional ``Pronunciations:`` block from *brief*.
+
+    Syntax (one entry per line, inside the block)::
+
+        Pronunciations:
+        Okonkwo = oh-KOHN-kwoh | /oʊˈkɒŋkwoʊ/
+        Nguyen  = nwin
+
+    Returns a ``(cleaned_brief, overrides)`` tuple where *overrides* maps
+    each source phrase to ``{"spoken": str, "ipa": str | None}``.
+    Lines that don't contain ``=`` are silently skipped.
+    """
+    m = _PRONUNCIATION_BLOCK_RE.search(brief)
+    if not m:
+        return brief, {}
+
+    block_text = m.group(1)
+    overrides: dict[str, Any] = {}
+    for line in block_text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        phrase, _, rest = line.partition("=")
+        phrase = phrase.strip()
+        if not phrase:
+            continue
+        parts = [p.strip() for p in rest.split("|", 1)]
+        spoken = parts[0] if parts else ""
+        ipa = parts[1] if len(parts) > 1 else None
+        if spoken:
+            overrides[phrase] = {"spoken": spoken, "ipa": ipa}
+
+    cleaned = _PRONUNCIATION_BLOCK_RE.sub("", brief).strip()
+    return cleaned, overrides
 
 
 def _build_series_context(catalog, series_id: str) -> str:
@@ -481,6 +527,9 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = DebateSerializer()
 
     output_path = _build_output_path(args, "debate")
@@ -593,6 +642,9 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = NewsSerializer()
 
     output_path = _build_output_path(args, "news")
@@ -695,6 +747,9 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = PodcastSerializer()
 
     output_path = _build_output_path(args, "podcast")
@@ -794,6 +849,9 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_audiobook()
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = AudiobookSerializer()
 
     output_path = _build_output_path(args, "audiobook")
@@ -885,6 +943,9 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_lecture()
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = LectureSerializer()
 
     output_path = _build_output_path(args, "lecture")
@@ -928,6 +989,10 @@ def run_generate(args: argparse.Namespace) -> Path:
     if not brief:
         print(f"Error: prompt file is empty: {args.prompt}", file=sys.stderr)
         sys.exit(1)
+
+    # ── Strip Pronunciations: block before the LLM ever sees the brief ──
+    brief, _pronunciation_overrides = _parse_pronunciations(brief)
+    args.pronunciation_overrides = _pronunciation_overrides
 
     args.output.mkdir(parents=True, exist_ok=True)
 

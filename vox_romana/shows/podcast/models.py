@@ -93,6 +93,7 @@ class MergedPodcast:
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
+    pronunciation_overrides: dict[str, Any] = field(default_factory=dict)
     series_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,5 +109,6 @@ class MergedPodcast:
             "voice_casting": dict(self.voice_casting),
             "voice_hints": dict(self.voice_hints),
             "tts_styles": dict(self.tts_styles),
+            "pronunciation_overrides": dict(self.pronunciation_overrides),
             "series_id": self.series_id,
         }

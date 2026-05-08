@@ -92,13 +92,15 @@ logger = logging.getLogger(__name__)
 # Keeps output clean without requiring every scene to repeat itself.
 DEFAULT_NEGATIVE_PROMPT = (
     "blurry, watermark, text, low quality, distorted, oversaturated, "
-    "cartoon, anime, 3d render"
+    "cartoon, anime, 3d render, bad composition, poorly framed, "
+    "cropped subject, subject at edge of frame, cluttered background, "
+    "flat lighting, overexposed, underexposed"
 )
 
 # Number of inference steps. More steps = higher quality, slower generation.
-# 25 is a good balance for editorial stills at 1080p.
+# 30 gives noticeably better compositional coherence vs 25 at ~+20% per image.
 # Users can override via the ``steps`` constructor arg.
-DEFAULT_INFERENCE_STEPS = 25
+DEFAULT_INFERENCE_STEPS = 30
 
 # Guidance scale (classifier-free guidance). 7.5 is the SD default.
 DEFAULT_GUIDANCE_SCALE = 7.5

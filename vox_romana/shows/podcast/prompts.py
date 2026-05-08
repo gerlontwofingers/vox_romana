@@ -235,6 +235,8 @@ OUTRO GUIDELINES:
 - Thank the listener naturally — don't be robotic about it.
 - Tease next episode or leave the listener with something to think about.
 - Sign off with the show name. Keep it warm and genuine.
+- On the LAST utterance object, include `"nonverbal": ["outro music"]`
+  to signal that outro music should play at the end of the show.
 """
 
 # Map segment types to their overlay text for easy lookup.

@@ -306,6 +306,38 @@ python run.py --mode music \
   --music-model large
 ```
 
+### Pronunciation guidance
+
+Add a `Pronunciations:` block anywhere in your brief to tell the TTS engines
+how to say unusual words, names, or acronyms. The block is stripped before the
+LLM sees the brief, so it never influences the generated script.
+
+**Syntax**
+
+```
+Pronunciations:
+Okonkwo  = oh-KOHN-kwoh | /oʊˈkɒŋkwoʊ/
+Nguyen   = nwin          | /ŋwɪn/
+AI       = ay-eye
+```
+
+- One entry per line: `word or phrase = spoken form`
+- Optionally append ` | /IPA/` after a pipe — stored as reference metadata
+  for future engine support; not used in rendering today
+- The block header is case-insensitive (`Pronunciations:` / `pronunciations:`)
+- Lines without `=` are ignored
+
+**How it works per engine**
+
+| Engine | Behaviour |
+|--------|-----------|
+| Kokoro (MLX/MPS) | In Chunk 2, spoken form is appended to the per-utterance instruct hint: *"pronounce Okonkwo as oh-KOHN-kwoh"* |
+| Piper (ONNX/CPU) | In Chunk 2, the source phrase is rewritten in the TTS input text before synthesis |
+
+The `pronunciation_overrides` dict is persisted in the generated JSON under
+every show type, so re-running `--mode render` on an existing file applies
+the same overrides without re-parsing the brief.
+
 ### Ingest a knowledge base
 
 ```bash

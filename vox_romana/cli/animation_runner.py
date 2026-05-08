@@ -334,16 +334,24 @@ def run_animation(
         video_path = output_dir / yt_fname
 
     else:
-        # youtube or tiktok: generate SDXL frames at native 1024×1024,
-        # then composite to the target resolution via moviepy.
+        # youtube or tiktok: generate SDXL frames at aspect-ratio-correct
+        # dimensions that stay within SDXL's MPS-safe range, then composite
+        # to the full target resolution via moviepy cover-crop.
         # Asking SDXL to generate at 1920×1080 or 1080×1920 directly
         # produces NaN tensors on MPS → solid black frames.
         _RESOLUTIONS = {
             "youtube": (1920, 1080),
             "tiktok":  (1080, 1920),
         }
+        # Generation dims: correct aspect ratio, SDXL-safe pixel budget.
+        # 1024×576 (16:9) and 576×1024 (9:16) avoid MPS NaN artifacts while
+        # letting the model compose for the correct frame shape.
+        _GEN_RESOLUTIONS = {
+            "youtube": (1024, 576),
+            "tiktok":  (576, 1024),
+        }
         output_resolution = _RESOLUTIONS[platform]
-        plan.resolution = (1024, 1024)   # SDXL native — avoids MPS NaN/black
+        plan.resolution = _GEN_RESOLUTIONS[platform]  # aspect-correct, MPS-safe
         fname = explicit_filename or f"video_{platform}.mp4"
 
         renderer = AnimationRenderer(face_animator=face_animator)

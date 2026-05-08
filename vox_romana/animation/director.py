@@ -198,13 +198,26 @@ DIRECTING RULES:
     * Specific (subject, setting, lighting, mood, framing)
     * Style-consistent across the whole plan
     * 15-40 words; avoid bullet-point style
-  Example (documentary): "modern television studio, anchor desk, warm
-  studio lighting, professional camera angle, broadcast news set, blue
-  and grey color scheme, cinematic depth of field, 35mm"
+    * ALWAYS include one COMPOSITION term — pick the one that serves the
+      scene's emotional purpose:
+          rule of thirds, leading lines, foreground interest,
+          shallow depth of field, deep focus, wide establishing shot,
+          low angle, high angle, overhead shot, extreme close-up,
+          over-the-shoulder, symmetrical framing, negative space,
+          Dutch angle (for tension), centered hero shot
+    * ALWAYS include one LIGHTING quality term:
+          golden hour, magic hour, overcast diffuse, hard side-light,
+          soft three-point studio, backlit silhouette, rim light,
+          neon fill, candlelight, harsh noon sun, blue-hour twilight,
+          motivated window light, chiaroscuro
+  Example (documentary): "modern television studio, anchor desk, rule of
+  thirds framing, soft three-point studio lighting, professional camera
+  angle, broadcast news set, blue and grey color scheme, 35mm lens"
 
 - NEGATIVE_PROMPT: short list of what to exclude. Reuse the same negative
   prompt across scenes when possible. Default: "blurry, watermark, text,
-  low quality, distorted, oversaturated"
+  low quality, distorted, oversaturated, bad composition, poorly framed,
+  cropped subject, cluttered background, flat lighting"
 
 - TEXT_OVERLAY: use sparingly. Best for headlines, key facts, pull quotes.
   null for most scenes (audio carries the content). Maximum ~80 chars.

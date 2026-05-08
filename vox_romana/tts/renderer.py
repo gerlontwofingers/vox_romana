@@ -105,6 +105,7 @@ from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
+from .voice_catalog import UNIFIED_VOICE_CATALOG
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,39 @@ _MUSIC_CUE_RE = re.compile(r'\[\s*music\s*:\s*([^\]]+?)\s*\]', re.IGNORECASE)
 _THEME_MUSIC_MARKERS: frozenset[str] = frozenset({"theme music", "theme song", "intro music", "outro music"})
 
 
+def _ensure_music_bumpers(events: list[dict]) -> None:
+    """Mutate *events* in-place to guarantee intro/outro music cues exist.
+
+    Called by :meth:`TTSRenderer.render` when a music engine is active.  This
+    is a safety net for show JSONs generated before the prompts carried the
+    explicit cue instructions, for re-renders, and for LLM non-compliance.
+
+    A cue is already considered present if:
+    - the event's ``event_kind`` is ``"bumper"`` (an explicit bumper event), OR
+    - ``"intro music"`` / ``"outro music"`` already appears in the event's
+      ``nonverbal`` list (case-insensitive substring match).
+    """
+    if not events:
+        return
+
+    def _has_cue(event: dict, cue: str) -> bool:
+        if event.get("event_kind") == "bumper":
+            return True
+        return any(cue in nv.lower() for nv in event.get("nonverbal") or [])
+
+    first = events[0]
+    if not _has_cue(first, "intro music"):
+        nv = list(first.get("nonverbal") or [])
+        nv.append("intro music")
+        first["nonverbal"] = nv
+
+    last = events[-1]
+    if not _has_cue(last, "outro music"):
+        nv = list(last.get("nonverbal") or [])
+        nv.append("outro music")
+        last["nonverbal"] = nv
+
+
 def strip_markdown_emphasis(text: str) -> str:
     """Remove Markdown emphasis markers from TTS text, keeping the inner word.
 
@@ -224,6 +258,55 @@ def strip_markdown_emphasis(text: str) -> str:
         'Plain text unchanged.'
     """
     return _MD_EMPHASIS_RE.sub(r'\2', text)
+
+
+def apply_pronunciation_rewrites(text: str, overrides: dict[str, Any]) -> str:
+    """Replace source phrases with their spoken forms (Piper text-rewrite path).
+
+    Performs a single-pass, case-insensitive, whole-word substitution so that
+    no replacement can be re-matched by a subsequent shorter rule.  Longer
+    phrases are listed first in the alternation so "New York" wins over "York".
+    """
+    if not overrides:
+        return text
+    # Build lookup: normalised source -> spoken form (skip empty spoken)
+    spoken_map: dict[str, str] = {}
+    for phrase in sorted(overrides, key=len, reverse=True):
+        entry = overrides[phrase]
+        spoken = entry.get("spoken", "") if isinstance(entry, dict) else str(entry)
+        if spoken:
+            spoken_map[phrase] = spoken
+    if not spoken_map:
+        return text
+    pattern = re.compile(
+        r'(?<![^\W_])(?:' +
+        '|'.join(re.escape(p) for p in spoken_map) +
+        r')(?![^\W_])',
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: spoken_map[next(
+        k for k in spoken_map if k.lower() == m.group().lower()
+    )], text)
+
+
+def build_pronunciation_hint(overrides: dict[str, Any]) -> str:
+    """Build a natural-language pronunciation guidance suffix for Kokoro.
+
+    Returns a string like::
+
+        "pronounce Okonkwo as oh-KOHN-kwoh; pronounce Nguyen as nwin"
+
+    appended to the emotion hint so Kokoro's instruct layer can shape
+    phoneme production.  Returns an empty string when *overrides* is empty.
+    """
+    if not overrides:
+        return ""
+    parts = []
+    for phrase, val in overrides.items():
+        spoken = val.get("spoken", "") if isinstance(val, dict) else str(val)
+        if spoken:
+            parts.append(f"pronounce {phrase} as {spoken}")
+    return "; ".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -429,7 +512,10 @@ class TTSRenderer:
             RenderResult with stats about the rendering.
         """
         output_path = Path(output_path)
-        events = debate_data.get("events", [])
+        events = list(debate_data.get("events", []))
+        if self._music_engine is not None and events:
+            events = [dict(e) for e in events]  # shallow-copy — do not mutate caller's data
+            _ensure_music_bumpers(events)
         participants = debate_data.get("participants", [])
         # The show's language drives voice selection and is passed to every
         # synthesize() call so the engine can validate / route appropriately.
@@ -448,6 +534,10 @@ class TTSRenderer:
         voice_casting = debate_data.get("voice_casting", {})
         voice_hints = debate_data.get("voice_hints", {})
         tts_styles = debate_data.get("tts_styles", {})
+        pronunciation_overrides = debate_data.get("pronunciation_overrides", {})
+
+        # Pre-build the Kokoro instruct suffix once — same string every utterance.
+        _pron_hint_suffix = build_pronunciation_hint(pronunciation_overrides)
         _title = debate_data.get("title", "")
         _seed = sum(ord(c) for c in _title[:32]) if _title else 0
 
@@ -619,12 +709,26 @@ class TTSRenderer:
             if voice_id is None:
                 voice_id = self._default_voice()
 
+            # ── Pronunciation overrides ───────────────────────────
+            # Determine engine for this voice once per utterance.
+            # Piper: rewrite source phrase directly in the text.
+            # Kokoro: append a guidance suffix to the emotion hint.
+            _voice_engine = "kokoro"
+            if pronunciation_overrides or _pron_hint_suffix:
+                _desc = UNIFIED_VOICE_CATALOG.get(voice_id)
+                if _desc is not None:
+                    _voice_engine = _desc.engine
+                if _voice_engine == "piper" and pronunciation_overrides:
+                    text = apply_pronunciation_rewrites(text, pronunciation_overrides)
+
             # ── Build the emotion hint from event metadata ────────
             # We combine tone, pace, volume, and nonverbal cues into
             # a single string that the engine can interpret.
             # If a persistent tts_style is set for this speaker, it
             # is prepended as a baseline delivery instruction.
             emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
+            if _pron_hint_suffix and _voice_engine == "kokoro":
+                emotion = (emotion + "; " + _pron_hint_suffix).lstrip("; ")
 
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))

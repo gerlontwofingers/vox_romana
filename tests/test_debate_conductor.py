@@ -517,3 +517,69 @@ class TestContextCompression:
 
         # Should not have called the LLM.
         mock_client.chat.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REGRESSION — DebateDirectorBrief.dramatic_arc attribute access
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPreflightCheckBootstrap:
+    """Regression tests for _preflight_check_bootstrap.
+
+    DebateDirectorBrief uses `dramatic_arc` (not `arc`).  Accessing `.arc`
+    previously raised AttributeError and aborted the conductor mid-run.
+    """
+
+    def _make_conductor_with_fact_checker(self, dramatic_arc: str = "") -> tuple:
+        """Return (conductor, mock_fact_checker) with a minimal config."""
+        from vox_romana.shows.debates.config import DebateDirectorBrief
+
+        config = make_test_config()
+        config.director_brief = DebateDirectorBrief(dramatic_arc=dramatic_arc)
+        config.topic = "Garlic trade policy"
+        mock_client = Mock()
+        conductor = DebateConductor(config, client=mock_client)
+        conductor._build_agents()
+
+        mock_fc = Mock()
+        mock_report = Mock()
+        mock_report.has_fabrications = False
+        mock_fc.check_content.return_value = mock_report
+        conductor._fact_checker = mock_fc
+        return conductor, mock_fc
+
+    def test_no_attribute_error_with_dramatic_arc_set(self):
+        """No AttributeError when dramatic_arc is populated."""
+        conductor, mock_fc = self._make_conductor_with_fact_checker(
+            dramatic_arc="Act 1: posturing. Act 2: clash. Act 3: détente."
+        )
+        # Must not raise AttributeError
+        conductor._preflight_check_bootstrap()
+        mock_fc.check_content.assert_called_once()
+
+    def test_no_attribute_error_with_empty_dramatic_arc(self):
+        """No AttributeError when dramatic_arc is empty string."""
+        conductor, mock_fc = self._make_conductor_with_fact_checker(dramatic_arc="")
+        conductor._preflight_check_bootstrap()
+        # topic-only surface — still calls fact-checker (topic is non-empty)
+        mock_fc.check_content.assert_called_once()
+
+    def test_dramatic_arc_included_in_surfaces_when_non_empty(self):
+        """dramatic_arc text is passed to fact-checker when present."""
+        arc_text = "Three-act structure with escalating tension."
+        conductor, mock_fc = self._make_conductor_with_fact_checker(dramatic_arc=arc_text)
+        conductor._preflight_check_bootstrap()
+        checked_text = mock_fc.check_content.call_args[0][0]
+        assert arc_text in checked_text
+
+    def test_no_fact_checker_skips_silently(self):
+        """If _fact_checker is None, _preflight_check_bootstrap returns immediately."""
+        from vox_romana.shows.debates.config import DebateDirectorBrief
+
+        config = make_test_config()
+        config.director_brief = DebateDirectorBrief(dramatic_arc="some arc")
+        conductor = DebateConductor(config, client=Mock())
+        conductor._build_agents()
+        conductor._fact_checker = None
+        # Must not raise
+        conductor._preflight_check_bootstrap()

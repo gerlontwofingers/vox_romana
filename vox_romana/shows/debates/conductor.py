@@ -460,8 +460,8 @@ class DebateConductor(BaseConductor):
         surfaces: list[str] = []
         if config.topic:
             surfaces.append(config.topic)
-        if config.director_brief and config.director_brief.arc:
-            surfaces.append(config.director_brief.arc)
+        if config.director_brief and config.director_brief.dramatic_arc:
+            surfaces.append(config.director_brief.dramatic_arc)
         bootstrap_text = " ".join(surfaces).strip()
         if not bootstrap_text:
             return

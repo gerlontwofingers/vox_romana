@@ -114,6 +114,45 @@ _OVERLAY_MARGIN_PX = 40
 _LABEL_FONTSIZE = 32
 _OVERLAY_FONTSIZE = 28
 
+# ── Font resolution ───────────────────────────────────────────────────────────
+
+def _resolve_font() -> str | None:
+    """Return an absolute path to a usable TrueType/TTC font file, or None.
+
+    ImageMagick (Homebrew) does not inherit macOS system fonts, so passing a
+    font *name* such as "Helvetica" fails with "unable to read font".
+    Passing an absolute path bypasses the font registry and works via
+    FreeType directly.  We probe candidates in preference order and cache
+    the first hit at module import time.
+    """
+    import platform as _platform
+    from pathlib import Path as _Path
+
+    _CANDIDATES: list[str]
+    if _platform.system() == "Darwin":
+        _CANDIDATES = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/opt/homebrew/share/fonts/dejavu-fonts-ttf/DejaVuSans.ttf",
+            "/usr/local/share/fonts/DejaVuSans.ttf",
+        ]
+    else:
+        _CANDIDATES = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+    for candidate in _CANDIDATES:
+        if _Path(candidate).exists():
+            return candidate
+    return None
+
+
+# Resolved once at import time; None means use ImageMagick's built-in default.
+_RESOLVED_FONT: str | None = _resolve_font()
+
 
 class MoviePyBackend(BaseAnimationBackend):
     """MoviePy-based video compositor — the functional backend.
@@ -357,8 +396,19 @@ class MoviePyBackend(BaseAnimationBackend):
             if img_path.exists():
                 try:
                     clip = mpy.ImageClip(str(img_path)).set_duration(duration)  # type: ignore[attr-defined]
-                    # Resize to fill frame (crop if aspect ratio differs).
-                    clip = clip.resize((width, height))  # type: ignore[attr-defined]
+                    # Scale to cover: resize proportionally so both dimensions
+                    # are >= target, then center-crop to exact frame size.
+                    # This is the CSS background-size:cover equivalent —
+                    # no aspect-ratio distortion regardless of source dims.
+                    img_w, img_h = clip.size  # type: ignore[attr-defined]
+                    scale = max(width / img_w, height / img_h)
+                    clip = clip.resize(scale)  # type: ignore[attr-defined]
+                    clip = clip.crop(  # type: ignore[attr-defined]
+                        x_center=clip.w / 2,  # type: ignore[attr-defined]
+                        y_center=clip.h / 2,  # type: ignore[attr-defined]
+                        width=width,
+                        height=height,
+                    )
                     return clip
                 except Exception as exc:
                     logger.warning(
@@ -455,18 +505,25 @@ class MoviePyBackend(BaseAnimationBackend):
         mpy: object,
     ) -> object | None:
         """Create a text overlay clip, returning None if ImageMagick is absent."""
-        import platform as _platform
-        _font = "Helvetica" if _platform.system() == "Darwin" else "DejaVu-Sans"
+        # Use an absolute font path so ImageMagick (Homebrew) can find it via
+        # FreeType without relying on its own font-name registry, which does
+        # not include macOS system fonts.  If no candidate path was found at
+        # import time we omit the font kwarg and let ImageMagick pick its
+        # own default rather than crashing.
+        base_kwargs: dict = {
+            "fontsize": fontsize,
+            "color": "white",
+            "stroke_color": "black",
+            "stroke_width": 1,
+            "method": "caption",
+            "size": (width - _OVERLAY_MARGIN_PX * 2, None),
+        }
+        if _RESOLVED_FONT is not None:
+            base_kwargs["font"] = _RESOLVED_FONT
         try:
             txt = mpy.TextClip(  # type: ignore[attr-defined]
                 text,
-                font=_font,
-                fontsize=fontsize,
-                color="white",
-                stroke_color="black",
-                stroke_width=1,
-                method="caption",
-                size=(width - _OVERLAY_MARGIN_PX * 2, None),
+                **base_kwargs,
             ).set_duration(duration).set_position(position)
             return txt
         except Exception as exc:

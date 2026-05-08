@@ -156,6 +156,8 @@ SECTION MODE — OUTRO:
 - Leave the listener with one specific thing to think about, read, or try.
 - Thank the listener naturally. Sign off with grace, not formula.
 - Keep it tight — outros run 60-120 words.
+- On the LAST utterance object, include `"nonverbal": ["outro music"]`
+  to signal that outro music should play at the end of the lecture.
 """
 
 OVERLAY_BY_TYPE = {
