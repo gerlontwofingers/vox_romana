@@ -105,6 +105,11 @@ DEFAULT_SOFT_OVERLAP_MS = 200
 # quiet enough that peaks don't clip.
 TARGET_DBFS = -20.0
 
+# Target loudness for music clips *before* they enter the mix (dBFS).
+# Set below TARGET_DBFS so music sits under speech rather than competing
+# with it. 8 dB of headroom is a comfortable starting point.
+TARGET_MUSIC_DBFS = -28.0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CLIP CONTAINER
@@ -224,7 +229,8 @@ class AudioMixer:
         fade_in_ms: int = 500,
         fade_out_ms: int = 1000,
         pause_before: int = 0,
-        pause_after: int = 0,
+        pause_after: int = 800,
+        gain_db: float = 0.0,
     ) -> None:
         """Add a generated music clip (bumper, stinger, theme cue) to the mix.
 
@@ -247,7 +253,11 @@ class AudioMixer:
                           (1 second) gives a natural end. Set to 0 to disable.
             pause_before: Silence before the clip (ms). Default 0 — music
                           bumpers usually butt up against the preceding speech.
-            pause_after:  Silence after the clip (ms). Default 0.
+            pause_after:  Silence after the clip (ms). Default 800ms gives a
+                          natural breath before the first speech turn.
+            gain_db:      Additional gain trim in dB applied on top of the
+                          TARGET_MUSIC_DBFS normalisation. Negative = quieter
+                          (e.g. -6 to push music further back). Default 0.
 
         Example:
             result = music_engine.generate("upbeat jazz intro", duration=8.0)
@@ -259,6 +269,13 @@ class AudioMixer:
             )
         """
         segment = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+
+        # Normalise music to TARGET_MUSIC_DBFS so it sits below speech in the
+        # final mix regardless of what loudness MusicGen produced.  Apply any
+        # caller-supplied trim on top.
+        if segment.rms > 0:
+            change = TARGET_MUSIC_DBFS - segment.dBFS + gain_db
+            segment = segment.apply_gain(change)
 
         if fade_in_ms > 0:
             segment = segment.fade_in(fade_in_ms)

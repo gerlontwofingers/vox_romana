@@ -1354,6 +1354,18 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Duration in seconds of each generated music clip (default: 8.0).",
     )
     parser.add_argument(
+        "--music-volume",
+        type=float,
+        default=0.0,
+        dest="music_volume",
+        metavar="DB",
+        help=(
+            "Adjust music level relative to speech in dB. Negative = quieter "
+            "(e.g. -6). Default 0 — music is already normalised to "
+            "-28 dBFS, 8 dB below speech."
+        ),
+    )
+    parser.add_argument(
         "--series-id",
         type=str,
         default=None,
@@ -1443,6 +1455,7 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         music_engine=_build_music_engine(args),
         music_style=args.music_style,
         music_duration=args.music_duration,
+        music_volume_db=args.music_volume,
         parallel_workers=args.tts_workers,
     )
 

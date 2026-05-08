@@ -91,6 +91,12 @@ FACTUAL ACCURACY — CRITICAL:
 - WHEN IN DOUBT: have the host hedge explicitly ("I don't know the exact
   figure but...") rather than guessing a number that sounds plausible.
 
+SPEAKER NAMES — CRITICAL:
+The `speaker_name` field MUST be EXACTLY one of: {host_names}
+Do NOT use shortened forms, titles, nicknames, or informal variants.
+"Lord Bridgerton" is WRONG if the name is "Viscount Anthony Bridgerton" — use the
+full canonical name exactly as listed above, character by character.
+
 OUTPUT FORMAT:
 Respond with ONLY a JSON array of utterance objects (no other text):
 [
@@ -126,7 +132,7 @@ in multi-host segments.
 # fills one of these per host and joins them into {host_descriptions}.
 
 HOST_DESCRIPTION_TEMPLATE = """\
-  {name} ({role}):
+  {name} ({role}, {gender}):
     Style: {speech_style}
     Voice: {voice_fingerprint}
     Expertise: {knowledge_domains}

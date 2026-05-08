@@ -283,11 +283,13 @@ class PodcastConductor(BaseConductor):
         # Build host descriptions for the system prompt.
         host_descriptions = self._build_host_descriptions(config.hosts)
 
+        host_names = ", ".join(f'"{h.name}"' for h in config.hosts)
         self._system_prompt = PODCAST_HOST_SYSTEM_PROMPT.format(
             show_name=config.show_name or "Untitled Podcast",
             topic=config.topic or config.brief[:200],
             tone=config.tone or "engaging",
             host_descriptions=host_descriptions,
+            host_names=host_names,
             current_date=datetime.date.today().isoformat(),
         )
 
@@ -881,6 +883,7 @@ class PodcastConductor(BaseConductor):
             desc = HOST_DESCRIPTION_TEMPLATE.format(
                 name=host.name,
                 role=host.role,
+                gender=host.gender or "unspecified",
                 speech_style=host.speech_style or "natural and engaging",
                 voice_fingerprint=host.voice_fingerprint or "(no specific voice style)",
                 knowledge_domains=", ".join(host.knowledge_domains) or "general",

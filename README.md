@@ -1,13 +1,13 @@
 # vox_romana
 
-LLM-driven audio content generation. Feed it a brief, get a structured script and audio in any language.
+LLM-driven show generation. Feed it a brief, get a structured script plus audio, video, and publishable docs.
 
 ## What this does
 
-vox_romana uses LLM agents (currently DeepSeek) to generate scripted audio content — debates, news shows, podcasts, audiobooks — as structured JSON documents, then feeds those documents through a local text-to-speech pipeline to produce audio. The entire pipeline runs from a single CLI entry point.
+vox_romana uses LLM agents (currently DeepSeek) to generate scripted shows — debates, news shows, podcasts, audiobooks, and lectures — as structured JSON documents, then feeds those documents through local text-to-speech, publishing, music, and animation pipelines. The entire workflow runs from a single CLI entry point.
 
 ```
-prompt → classify → bootstrap → conduct → edit → JSON → translate → TTS → audio
+prompt → classify → bootstrap → conduct → edit → JSON → translate → TTS → audio → publish / video / package
 ```
 
 ## Architecture
@@ -27,7 +27,13 @@ vox_romana/
 │   ├── debates/            #   Debate generation pipeline
 │   ├── news/               #   News show pipeline
 │   ├── podcast/            #   Podcast / interview pipeline
-│   └── audiobooks/         #   Long-form chapter narration pipeline
+│   ├── audiobooks/         #   Long-form chapter narration pipeline
+│   └── lecture/            #   Lecture / professor pipeline
+├── animation/              # Video generation + compositing
+│   ├── director.py         #   Scene planning and prompt expansion
+│   ├── renderer.py         #   Animation pipeline orchestration
+│   ├── sync.py             #   Maps rendered audio timing onto scene timing
+│   └── backends/           #   MoviePy compositor backend(s)
 ├── translate/              # Multi-language translation
 │   ├── __init__.py         #   Translator ABC, TranslationError, re-exports
 │   ├── llm_translator.py   #   LLMTranslator — JSON-array batch protocol
@@ -62,15 +68,15 @@ docs/
 ```
 
 `run.py` is the recommended entry point — it chains script generation, TTS
-render, and (optionally) document publishing. Use `run_show.py` /
-`render_show.py` directly when you want to inspect or edit the JSON
-between the two stages.
+render, and optional publishing, music, packaging, and video generation.
+Use `run_show.py` / `render_show.py` directly when you want to inspect or
+edit the JSON between the two stages.
 
 ## Modes
 
 | Mode | What it does |
 |------|-------------|
-| `full` (default) | Generate script → translate → render audio → publish document |
+| `full` (default) | Generate script → translate → render audio (`--publish` adds a document pass) |
 | `generate` | Text generation only — produces a JSON script |
 | `render` | Audio rendering only from an existing JSON |
 | `video` | Full pipeline + Stable Diffusion animation → MP4 |
@@ -262,6 +268,43 @@ python run.py prompts/tech_news.txt --mode video \
 
 See [docs/SETUP_VIDEO.md](docs/SETUP_VIDEO.md) for the full setup guide
 (Python packages, Apple Silicon notes, and known limitations).
+
+### Music bumpers and standalone music
+
+MusicGen can be used in two ways:
+
+- Inside `full`, `render`, or `video` runs when `--music` is enabled and the
+  script contains bumper or `[music: ...]` cues
+- As a standalone generator via `--mode music`
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--music` | `full`, `render`, `video` | Enable generative music for bumper/theme cues in the script |
+| `--music-style TEXT` | `full`, `render`, `video` | Default prompt used when a music cue has no explicit inline description |
+| `--music-duration SECONDS` | all music modes | Length of each generated music clip |
+| `--music-model {small,medium,large}` | all music modes | MusicGen model size |
+| `--music-volume DB` | `full`, `render`, `video` | Trim music relative to speech. Negative values push it further back |
+
+```bash
+# Add MusicGen bumpers to a video run
+python run.py prompts/bridgerton_brief.txt --mode video \
+  --music \
+  --music-style "subtle harpsichord music" \
+  --music-duration 12 \
+  --music-model large
+
+# Render an existing JSON with quieter theme music under the bumper events
+python run.py --mode render --script-input output/text/podcasts/episode.json \
+  --music \
+  --music-style "warm chamber orchestra intro" \
+  --music-volume -6
+
+# Standalone MusicGen clip
+python run.py --mode music \
+  --music-prompt "subtle harpsichord music, elegant Regency atmosphere" \
+  --music-duration 30 \
+  --music-model large
+```
 
 ### Ingest a knowledge base
 

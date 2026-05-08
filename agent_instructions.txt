@@ -1,11 +1,33 @@
-Agent Instructions — Implementer Handoff
+Agent Instructions — Historical Notes and Future Design Reference
 Date: April 18, 2026
+Clarified: May 8, 2026
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NOTE TO AGENT: Sections 1–8 are HISTORICAL CONTEXT only — they describe how
-we arrived at the current design. Do NOT treat them as active instructions.
-The Active Design Spec begins at the APPENDIX section below. That is the
-authoritative source of truth for what to build.
+CURRENT STATUS — READ THIS FIRST
+
+This file is NOT the live architecture spec for the current repository.
+
+Current shipped system in this repo:
+- Primary entry point: `run.py`
+- Current production flow: prompt -> classify/bootstrap -> conductor -> JSON
+  -> TTS -> audio, with optional publish/video/music/analysis/emotion-flow/
+  audition/package/series/university modes routed by CLI mode
+- Current show implementations in repo: debates, news, podcast, audiobooks,
+  lecture
+- Current video path: `run.py --mode video` -> animation pipeline -> MP4
+
+What is NOT currently implemented repo-wide:
+- No persistent Director/Editor/Cast/Librarian session architecture as a
+  general runtime model
+- No global chunk review + retry loop of the kind described later in this
+  file
+- No repository-wide historical notes archive agent wired as a live system
+
+How to read this file:
+- Sections 1–8 are historical session notes from the design discussion
+- Sections A–K are a PROPOSED FUTURE ARCHITECTURE, not the current codebase
+- For shipped behavior, trust the code, `README.md`, CLI help, and current
+  module docstrings over this file
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. Conversation Overview
@@ -80,8 +102,12 @@ authoritative source of truth for what to build.
 - Priority: implementer to select which deliverable to prepare first; assistant can produce that intention-first artifact (no code) and record it in persistent memory if requested.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ACTIVE DESIGN SPEC — authoritative source of truth for implementation
+PROPOSED FUTURE ARCHITECTURE — design reference, not yet implemented
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The material below captures a design direction discussed during an earlier
+planning session. Preserve it as reference for future implementation work,
+but do NOT read it as a description of the currently shipped system.
 
 A. Core Principle
 -----------------

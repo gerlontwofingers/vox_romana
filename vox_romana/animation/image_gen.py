@@ -229,10 +229,20 @@ class ImageGenerator:
         # SDXL models expose DiffusionPipeline; SD 1.x/2.x expose
         # StableDiffusionPipeline. We try DiffusionPipeline first (it works
         # for both), which is the recommended API for SDXL.
+        #
+        # MPS dtype: float16 UNet produces NaN latents on Apple Silicon — the
+        # NaN propagates through to the VAE and yields solid-black frames.
+        # Loading the entire pipeline in float32 on MPS avoids this.  The
+        # memory cost on a 32 GB M1 Max (~14 GB vs ~7 GB) is acceptable.
+        # CUDA keeps float16 for speed; CPU has always used float32.
+        _dtype = (
+            torch.float32 if self._device in ("cpu", "mps") else torch.float16
+        )
+
         try:
             pipeline = DiffusionPipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch.float16 if self._device != "cpu" else torch.float32,
+                torch_dtype=_dtype,
                 use_safetensors=True,
             )
         except Exception:
@@ -243,27 +253,15 @@ class ImageGenerator:
             )
             pipeline = StableDiffusionPipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch.float16 if self._device != "cpu" else torch.float32,
+                torch_dtype=_dtype,
             )
 
         pipeline = pipeline.to(self._device)
 
-        # MPS (Apple Silicon) VAE dtype handling differs by model family:
-        #
-        #  SDXL: float16 VAE decode produces NaN → upcast VAE to float32.
-        #        The heavier UNet stays in float16 so memory overhead is small.
-        #        See: https://github.com/huggingface/diffusers/issues/4078
-        #
-        #  SD 1.x: UNet loads in float16; the VAE *must* also be float16 or MPS
-        #          raises a dtype mismatch: "Input type (c10::Half) and bias type
-        #          (float) should be the same".
-        if self._device == "mps" and hasattr(pipeline, "vae"):
-            if isinstance(pipeline, StableDiffusionXLPipeline):
-                pipeline.vae.to(torch.float32)
-                logger.info("ImageGenerator: VAE upcast to float32 (SDXL MPS NaN workaround)")
-            else:
-                pipeline.vae.to(torch.float16)
-                logger.info("ImageGenerator: VAE cast to float16 (SD 1.x MPS dtype alignment)")
+        logger.info(
+            "ImageGenerator: loaded %s in %s on %s",
+            model_id, _dtype, self._device,
+        )
 
         # Disable SD 1.x safety checker — fires false positives at low step
         # counts (e.g. 4 steps in --video-platform fast), returning all-black

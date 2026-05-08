@@ -56,9 +56,11 @@ TRANSITIONS:
 
 AUDIO:
 
-    The audio file is attached to the final composite clip using
-    ``CompositeAudioClip``. Duration is taken from the video, not the
-    audio — the audio is cropped or looped to match.
+    The audio file is attached to the final composite clip. If the audio
+    is longer than the assembled video (e.g. because a music bumper adds
+    time that scene timestamps don't fully account for), the video is
+    extended by freezing the last frame for the overshoot duration — audio
+    is never truncated. Differences of less than 50 ms are ignored.
 
 EXAMPLE:
 
@@ -186,9 +188,23 @@ class MoviePyBackend(BaseAnimationBackend):
         if audio_path and audio_path.exists():
             logger.debug("MoviePyBackend: attaching audio from %s", audio_path)
             audio_clip = mpy.AudioFileClip(str(audio_path))
-            # Crop audio to match video duration (avoids mismatch issues).
-            if audio_clip.duration > final_clip.duration:
-                audio_clip = audio_clip.subclip(0, final_clip.duration)
+            # If the audio is longer than the video (e.g. because the intro
+            # music duration wasn't fully accounted for in scene timing, or
+            # mixer pauses add a small tail), extend the video by freezing
+            # the last frame rather than truncating the audio.
+            overshoot = audio_clip.duration - final_clip.duration
+            if overshoot > 0.05:  # ignore sub-50ms rounding differences
+                logger.debug(
+                    "MoviePyBackend: audio is %.2fs longer than video — "
+                    "freezing last frame to fill gap",
+                    overshoot,
+                )
+                freeze_t = max(0.0, final_clip.duration - 0.001)
+                freeze = (
+                    final_clip.to_ImageClip(t=freeze_t)
+                    .set_duration(overshoot)
+                )
+                final_clip = mpy.concatenate_videoclips([final_clip, freeze])
             final_clip = final_clip.set_audio(audio_clip)
 
         # Determine codec from extension.
@@ -439,9 +455,12 @@ class MoviePyBackend(BaseAnimationBackend):
         mpy: object,
     ) -> object | None:
         """Create a text overlay clip, returning None if ImageMagick is absent."""
+        import platform as _platform
+        _font = "Helvetica" if _platform.system() == "Darwin" else "DejaVu-Sans"
         try:
             txt = mpy.TextClip(  # type: ignore[attr-defined]
                 text,
+                font=_font,
                 fontsize=fontsize,
                 color="white",
                 stroke_color="black",

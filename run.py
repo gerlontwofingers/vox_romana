@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """run.py — master CLI for the vox_romana production pipeline.
 
-One command to generate text, render audio, or do both.  This replaces
+One command to generate text, render audio/video, or do both.  This replaces
 the old two-step workflow of ``run_show.py`` → ``render_show.py`` with
 a single entry point that handles the full pipeline end-to-end.
 
-    prompt file → classify → bootstrap → conductor → editor → JSON → TTS → audio
+    prompt file → classify → bootstrap → conductor → editor → JSON → TTS → audio → optional video
 
 THE PRODUCTION STUDIO ANALOGY:
 
@@ -18,10 +18,14 @@ THE PRODUCTION STUDIO ANALOGY:
     2. THE SOUND BOOTH (render_show.py) records the script into audio
        using the TTS engine of your choice (Kokoro or Piper).
 
-    3. THE DATA SCIENTIST (WPM logging) records how long the audio
+    3. THE ANIMATION STUDIO (--mode video) turns the rendered audio into
+       an MP4 using the animation planner, image generation, timeline sync,
+       and MoviePy compositing stack.
+
+    4. THE DATA SCIENTIST (WPM logging) records how long the audio
        actually came out, so future duration estimates get better.
 
-    run.py coordinates all three.  You can also ask it to do just one
+    run.py coordinates all four.  You can also ask it to do just one
     step (--mode generate or --mode render) if you want manual control.
 
 MODES:
@@ -57,6 +61,7 @@ MODES:
 
         python run.py prompts/ubi_debate.txt
         python run.py prompts/tech_news.txt --engine kokoro --format mp3
+        python run.py prompts/ai_ethics_lecture.txt --type lecture --engine both
 
         # --name gives the output files a fixed stem (no timestamp):
         python run.py prompts/ubi_debate.txt --name ubi_v4
@@ -102,6 +107,13 @@ MODES:
         python run.py prompts/ubi_debate.txt --mode video \\
             --video-platform both
         # → video_youtube.mp4  +  video_tiktok.mp4
+
+        # Add generated bumper music when the script includes music cues:
+        python run.py prompts/period_drama.txt --mode video \
+            --music \
+            --music-style "subtle harpsichord music" \
+            --music-duration 12 \
+            --music-model large
 
         # --name controls the video stem too:
         python run.py prompts/ubi_debate.txt --mode video \\
@@ -815,6 +827,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     render_group.add_argument(
+        "--music-volume",
+        type=float,
+        default=0.0,
+        dest="music_volume",
+        metavar="DB",
+        help=(
+            "Adjust music level relative to speech in dB. Negative = quieter "
+            "(e.g. --music-volume -6). Default 0. Ignored when --music is not set."
+        ),
+    )
+    render_group.add_argument(
         "--music-prompt",
         type=str,
         default=None,
@@ -1523,6 +1546,8 @@ def _build_render_argv(
         argv += ["--music-model", args.music_model]
     if args.music_duration != 8.0:
         argv += ["--music-duration", str(args.music_duration)]
+    if args.music_volume != 0.0:
+        argv += ["--music-volume", str(args.music_volume)]
     if args.quiet:
         argv.append("--quiet")
     if getattr(args, "verbose", False):

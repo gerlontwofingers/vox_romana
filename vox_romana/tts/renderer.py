@@ -332,6 +332,7 @@ class TTSRenderer:
         music_engine: "MusicGenEngine | None" = None,
         music_style: str = "",
         music_duration: float = 8.0,
+        music_volume_db: float = 0.0,
         parallel_workers: int = 1,
     ) -> None:
         """Initialize the renderer.
@@ -396,6 +397,7 @@ class TTSRenderer:
         self._music_engine = music_engine
         self._music_style = music_style
         self._music_duration = music_duration
+        self._music_volume_db = music_volume_db
         if parallel_workers < 1:
             raise ValueError(f"parallel_workers must be >= 1, got {parallel_workers}")
         self._parallel_workers = parallel_workers
@@ -463,6 +465,21 @@ class TTSRenderer:
             language=language, seed=_seed,
             registry=self._registry, series_key=series_key,
         )
+
+        # _build_voice_map normalises speaker names to canonical host names
+        # (e.g. "Lord Bridgerton" → "Viscount Anthony Bridgerton").  Events in
+        # the JSON still carry the original speaker_name, so add alias entries
+        # so the main render loop can look up either form.
+        _raw_speakers = self._extract_speakers(events)
+        for raw_name in _raw_speakers:
+            canonical = voice_map.get(raw_name)
+            if canonical is None:
+                # Try suffix-token match against existing keys.
+                raw_last = raw_name.lower().split()[-1] if raw_name else ""
+                for key, vid in voice_map.items():
+                    if raw_last and raw_last in key.lower().split():
+                        voice_map[raw_name] = vid
+                        break
 
         # Build a VoiceConfig map covering all auto-assigned speakers so that
         # engine-specific extras (e.g. Piper speaker-id) are populated even
@@ -572,7 +589,18 @@ class TTSRenderer:
                     mixer.add_music_clip(
                         music_result.audio,
                         sample_rate=music_result.sample_rate,
+                        gain_db=self._music_volume_db,
                     )
+                    # Record music clip duration so TimelineSync can account
+                    # for it when building scene timestamps.  Without this,
+                    # music events are invisible to the timeline and all
+                    # subsequent scenes start too early in video time.
+                    try:
+                        with wave.open(io.BytesIO(music_result.audio)) as _wf:
+                            event_durations[i] = _wf.getnframes() / _wf.getframerate()
+                    except Exception:
+                        # Fall back to the requested duration if WAV probe fails.
+                        event_durations[i] = self._music_duration
                     rendered += 1
                 except Exception as exc:
                     logger.warning(
@@ -805,6 +833,52 @@ class TTSRenderer:
         casting = voice_casting or {}
         hints = voice_hints or {}
         result: dict[str, str] = {}
+
+        # ── Normalize speaker names to canonical host names ────────────
+        # The conductor LLM sometimes uses shortened or informal variants of
+        # a host's canonical name (e.g. "Lord Bridgerton" instead of
+        # "Viscount Anthony Bridgerton"). This causes casting / hints lookups
+        # to silently miss, dropping gender info and producing wrong voices.
+        # Build a name_map that resolves event speaker_names to the canonical
+        # key used in voice_casting / voice_hints.
+        #
+        # Match priority (first hit wins):
+        #   1. Exact match — no-op, already correct.
+        #   2. Case-insensitive exact match.
+        #   3. Suffix token match: last whitespace-delimited token of the
+        #      event name appears as a token in exactly one canonical name
+        #      (e.g. "Bridgerton" → "Viscount Anthony Bridgerton").
+        canonical_names: set[str] = set(casting) | set(hints)
+
+        def _resolve_name(name: str) -> str:
+            if name in canonical_names:
+                return name
+            name_lower = name.lower()
+            for cname in canonical_names:
+                if cname.lower() == name_lower:
+                    return cname
+            # Suffix token match: last token of event name appears in canonical
+            tokens_event = name.lower().split()
+            if tokens_event:
+                last_token = tokens_event[-1]
+                matches = [
+                    c for c in canonical_names
+                    if last_token in c.lower().split()
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+            return name
+
+        # Remap speaker_names list and build a translation table so that
+        # result keys are always the canonical form used by casting/hints.
+        name_map: dict[str, str] = {n: _resolve_name(n) for n in speaker_names}
+        speaker_names = [name_map[n] for n in speaker_names]
+        # Deduplicate while preserving order (two variants of the same host).
+        seen_canonical: set[str] = set()
+        speaker_names = [
+            n for n in speaker_names
+            if not (n in seen_canonical or seen_canonical.add(n))  # type: ignore[func-returns-value]
+        ]
 
         # Detect which engine is active and pick the right catalog.
         from .engine import BaseTTSEngine
@@ -1190,7 +1264,10 @@ class TTSRenderer:
         for marker in nonverbal:
             marker_lc = (marker or "").lower()
             if any(theme in marker_lc for theme in _THEME_MUSIC_MARKERS):
-                return marker.strip()
+                # The nonverbal marker is a *trigger* signal ("intro music",
+                # "outro music", etc.), not a descriptive MusicGen prompt.
+                # Fall through to music_style / generic fallback below.
+                break
 
         if self._music_style:
             return self._music_style

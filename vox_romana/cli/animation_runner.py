@@ -334,12 +334,16 @@ def run_animation(
         video_path = output_dir / yt_fname
 
     else:
-        # youtube or tiktok: single render pass at the target resolution.
+        # youtube or tiktok: generate SDXL frames at native 1024×1024,
+        # then composite to the target resolution via moviepy.
+        # Asking SDXL to generate at 1920×1080 or 1080×1920 directly
+        # produces NaN tensors on MPS → solid black frames.
         _RESOLUTIONS = {
             "youtube": (1920, 1080),
             "tiktok":  (1080, 1920),
         }
-        plan.resolution = _RESOLUTIONS[platform]
+        output_resolution = _RESOLUTIONS[platform]
+        plan.resolution = (1024, 1024)   # SDXL native — avoids MPS NaN/black
         fname = explicit_filename or f"video_{platform}.mp4"
 
         renderer = AnimationRenderer(face_animator=face_animator)
@@ -348,6 +352,7 @@ def run_animation(
             output_dir,
             audio_path=audio_path,
             event_durations=event_durations,
+            output_resolution=output_resolution,
             output_filename=fname,
         )
 
