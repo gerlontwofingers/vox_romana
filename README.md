@@ -434,6 +434,7 @@ Unknown language codes fall back to English labels.
 | `GOOGLE_API_KEY` | No | Enables Google web search for `--research` |
 | `GOOGLE_CSE_ID` | No | Custom Search Engine ID for `--research` |
 | `PIPER_VOICES_DIR` | No | Override the directory scanned for Piper ONNX voice models |
+| `HF_TOKEN` | No | HuggingFace read token — enables higher download rate limits for SDXL/MusicGen models. Free at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Works without one; add it to remove the unauthenticated warning. |
 
 Set these in a `.env` file at the project root (loaded automatically by `python-dotenv`).
 
