@@ -1638,8 +1638,7 @@ def _build_render_argv(
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
         argv += ["--voice-policy", args.voice_policy]
-    if args.model_dir != str(_PIPER_VOICES_DIR):
-        argv += ["--model-dir", args.model_dir]
+    argv += ["--model-dir", args.model_dir]
     if args.model:
         argv += ["--model", args.model]
     if args.no_normalize:
@@ -1703,6 +1702,14 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace):
     Returns:
         RenderResult with stats including per-event audio durations.
     """
+    from vox_romana.tts.voice_preflight import check_piper_voices
+    check_piper_voices(
+        json_path,
+        model_dir=args.model_dir,
+        engine=args.engine,
+        quiet=getattr(args, "quiet", False),
+    )
+
     from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
