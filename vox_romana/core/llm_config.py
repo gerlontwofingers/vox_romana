@@ -79,3 +79,33 @@ def parse_lens_overrides(specs: list[str] | None) -> dict[str, str]:
             )
         out[role] = lens_name
     return out
+
+
+def parse_character_langs(specs: list[str] | None) -> dict[str, str]:
+    """Parse ``--character-lang NAME=CODE`` argv values.
+
+    Args:
+        specs: Raw values collected by ``argparse`` for the
+               ``--character-lang`` flag (may be ``None``).
+
+    Returns:
+        Mapping of character display name → BCP-47 language code (lowercased).
+
+    Raises:
+        ValueError: When any spec is malformed.
+    """
+    out: dict[str, str] = {}
+    for raw in specs or []:
+        if "=" not in raw:
+            raise ValueError(
+                f"Bad --character-lang value '{raw}': expected 'NAME=CODE'."
+            )
+        name, _, code = raw.partition("=")
+        name = name.strip()
+        code = code.strip().lower()
+        if not name or not code:
+            raise ValueError(
+                f"Bad --character-lang value '{raw}': empty name or language code."
+            )
+        out[name] = code
+    return out

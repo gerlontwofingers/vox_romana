@@ -426,7 +426,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "dedupe", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package"],
+        choices=["generate", "render", "full", "ingest", "dedupe", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package", "voice-prep", "voice-assign"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -1485,6 +1485,120 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "translator, character:<Name>, default."
         ),
     )
+    llm_group.add_argument(
+        "--character-lang",
+        dest="character_lang",
+        action="append",
+        default=None,
+        metavar="NAME=CODE",
+        help=(
+            "Per-character language override, repeatable.  E.g. "
+            "--character-lang 'Marcus=zh' --character-lang 'Giulia=it'. "
+            "NAME is the speaker display name; CODE is a BCP-47 code (en, zh, es, fr, …)."
+        ),
+    )
+
+    voice_prep_group = parser.add_argument_group(
+        "voice-prep (--mode voice-prep)",
+        "Clean a reference audio file and register it as a named voice-clone profile.",
+    )
+    voice_prep_group.add_argument(
+        "--vp-source",
+        dest="vp_source",
+        type=Path,
+        default=None,
+        metavar="AUDIO_FILE",
+        help=(
+            "Path to the reference audio file (MP3, WAV, FLAC, …). "
+            "Required for voice-prep mode."
+        ),
+    )
+    voice_prep_group.add_argument(
+        "--vp-name",
+        dest="vp_name",
+        type=str,
+        default=None,
+        metavar="VOICE_NAME",
+        help=(
+            "Short alphanumeric name for the voice profile (e.g. marcus_deep). "
+            "Stored as vc_<name>. Required for voice-prep mode."
+        ),
+    )
+    voice_prep_group.add_argument(
+        "--vp-gender",
+        dest="vp_gender",
+        type=str,
+        default="neutral",
+        metavar="GENDER",
+        help="Gender hint for the voice (male / female / neutral). Default: neutral.",
+    )
+    voice_prep_group.add_argument(
+        "--vp-tone",
+        dest="vp_tone",
+        type=str,
+        default="",
+        metavar="DESCRIPTION",
+        help='Free-text tone description (e.g. "deep, measured, resonant").',
+    )
+    voice_prep_group.add_argument(
+        "--vp-best-for",
+        dest="vp_best_for",
+        type=str,
+        default="",
+        metavar="USE_CASE",
+        help='Best-use hint (e.g. "narration", "dialogue", "lecture").',
+    )
+    voice_prep_group.add_argument(
+        "--vp-tags",
+        dest="vp_tags",
+        nargs="+",
+        default=None,
+        metavar="TAG",
+        help="Space-separated tags (e.g. --vp-tags deep male measured).",
+    )
+    voice_prep_group.add_argument(
+        "--vp-force",
+        dest="vp_force",
+        action="store_true",
+        default=False,
+        help="Overwrite an existing profile with the same name.",
+    )
+    voice_prep_group.add_argument(
+        "--skip-demucs",
+        dest="skip_demucs",
+        action="store_true",
+        default=False,
+        help="Skip the demucs vocal-separation stage (faster, but no stem isolation).",
+    )
+
+    voice_assign_group = parser.add_argument_group(
+        "voice-assign (--mode voice-assign)",
+        "Lock a cloned voice to a series character and record it in the catalog.",
+    )
+    voice_assign_group.add_argument(
+        "--voice-id",
+        dest="voice_id",
+        type=str,
+        default=None,
+        metavar="VC_ID",
+        help='Cloned voice ID to assign (must start with "vc_").',
+    )
+    voice_assign_group.add_argument(
+        "--va-character",
+        dest="va_character",
+        type=str,
+        default=None,
+        metavar="CHARACTER_NAME",
+        help="Character display name to lock the voice to.",
+    )
+    voice_assign_group.add_argument(
+        "--series-id",
+        dest="series_id",
+        type=str,
+        default=None,
+        metavar="SERIES_ID",
+        help="Series ID (from --mode series create or catalog list).",
+    )
 
     return parser.parse_args(argv)
 
@@ -2127,6 +2241,30 @@ def _mode_publish(
 # Translation + multi-language fan-out
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _mode_voice_prep(args: argparse.Namespace) -> None:
+    """Run voice-prep mode: clean reference audio + register as voice profile.
+
+    Delegates to :func:`vox_romana.cli.voice_prep_cli.run_voice_prep`.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.cli.voice_prep_cli import run_voice_prep
+    run_voice_prep(args)
+
+
+def _mode_voice_assign(args: argparse.Namespace) -> None:
+    """Run voice-assign mode: lock cloned voice to a series character.
+
+    Delegates to :func:`vox_romana.cli.voice_assign_cli.run_voice_assign`.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.cli.voice_assign_cli import run_voice_assign
+    run_voice_assign(args)
+
+
 def _mode_translate(
     src_json: Path,
     target_lang: str,
@@ -2525,6 +2663,38 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(1)
 
     # ── Validate and normalise language args ─────────────────────────
+    # Inject voice_profiles_dir onto args for voice-prep / voice-assign modes.
+    if args.mode in ("voice-prep", "voice-assign"):
+        from vox_romana.core.paths import VOICE_PROFILES_DIR
+        args.voice_profiles_dir = VOICE_PROFILES_DIR
+
+    if args.mode == "voice-prep":
+        if args.vp_source is None:
+            print("Error: --vp-source is required for 'voice-prep' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.vp_name is None:
+            print("Error: --vp-name is required for 'voice-prep' mode.", file=sys.stderr)
+            sys.exit(1)
+
+    if args.mode == "voice-assign":
+        if args.voice_id is None:
+            print("Error: --voice-id is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.va_character is None:
+            print("Error: --va-character is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.series_id is None:
+            print("Error: --series-id is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+
+    # Parse --character-lang NAME=CODE overrides into a dict
+    from vox_romana.core.llm_config import parse_character_langs
+    try:
+        args.character_langs = parse_character_langs(getattr(args, "character_lang", None))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     # Normalise root_lang
     args.root_lang = args.root_lang.strip().lower()
     if args.root_lang not in LANGUAGE_CODES:
@@ -2721,6 +2891,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n{'\u2550' * 60}")
             print("  Packaging complete!")
             print(f"{'\u2550' * 60}\n")
+
+    elif args.mode == "voice-prep":
+        _mode_voice_prep(args)
+
+    elif args.mode == "voice-assign":
+        _mode_voice_assign(args)
 
     elif args.mode == "video":
         _mode_video(args)

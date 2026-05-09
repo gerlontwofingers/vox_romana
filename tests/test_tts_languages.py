@@ -1,8 +1,8 @@
 """Tests for Shot 3 — Language-Aware TTS.
 
 Covers:
-  * `_lang_from_voice_id` parsing of Piper voice ids.
-  * KokoroEngine: rejects non-English `language=` requests.
+    * `_lang_from_voice_id` parsing of Piper voice ids.
+    * KokoroEngine: maps supported `language=` values to mlx-audio `lang_code`.
   * PiperEngine: validates voice/language match, picks language-appropriate
     default voice, exposes `available_languages()` /
     `available_voices_for_language()`.
@@ -21,8 +21,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vox_romana.tts.engine import BaseTTSEngine, SynthesizedAudio
-from vox_romana.tts.engines.kokoro_engine import KOKORO_LANGUAGES, KokoroEngine
+from vox_romana.tts.engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
+from vox_romana.tts.engines.kokoro_engine import (
+    KOKORO_LANG_CODES,
+    KOKORO_LANGUAGES,
+    KokoroEngine,
+)
+from vox_romana.tts.engines.multi_engine import MultiEngine
 from vox_romana.tts.engines.piper_engine import PiperEngine, _lang_from_voice_id
 from vox_romana.tts.renderer import TTSRenderer
 
@@ -72,6 +77,16 @@ class _RecordingEngine(BaseTTSEngine):
         return list(self.voices)
 
 
+class _NamedRecordingEngine(_RecordingEngine):
+    def __init__(self, name: str, voices: list[str] | None = None):
+        super().__init__(voices=voices)
+        self._engine_name = name
+
+    @property
+    def name(self) -> str:
+        return self._engine_name
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _lang_from_voice_id
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,8 +128,9 @@ class TestLangFromVoiceId:
 
 
 class TestKokoroLanguage:
-    def test_kokoro_languages_constant_is_english_only(self):
-        assert KOKORO_LANGUAGES == frozenset({"en"})
+    def test_kokoro_languages_constant_lists_supported_languages(self):
+        assert KOKORO_LANGUAGES == frozenset(KOKORO_LANG_CODES)
+        assert {"en", "en-gb", "zh", "es", "fr", "hi", "it", "ja", "pt", "pt-br"} <= KOKORO_LANGUAGES
 
     def test_synthesize_default_language_succeeds(self):
         engine = KokoroEngine()
@@ -131,21 +147,68 @@ class TestKokoroLanguage:
             result = engine.synthesize("hello", voice="af_heart")
         assert isinstance(result, SynthesizedAudio)
         mock_gen.assert_called_once()
+        assert mock_gen.call_args.kwargs["lang_code"] == "a"
 
-    def test_synthesize_spanish_raises(self):
+    def test_synthesize_spanish_passes_lang_code(self):
         engine = KokoroEngine()
-        with pytest.raises(ValueError, match="English"):
+        with patch(
+            "vox_romana.tts.engines.kokoro_engine._lazy_generate_audio"
+        ) as mock_gen, patch(
+            "vox_romana.tts.engines.kokoro_engine.Path"
+        ) as mock_path_cls:
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_path.read_bytes.return_value = _wav_bytes()
+            mock_path_cls.return_value.__truediv__.return_value = mock_path
             engine.synthesize("hola", voice="af_heart", language="es")
+        assert mock_gen.call_args.kwargs["lang_code"] == "e"
 
-    def test_synthesize_french_raises(self):
+    def test_synthesize_french_passes_lang_code(self):
         engine = KokoroEngine()
-        with pytest.raises(ValueError, match="French|fr|English"):
+        with patch(
+            "vox_romana.tts.engines.kokoro_engine._lazy_generate_audio"
+        ) as mock_gen, patch(
+            "vox_romana.tts.engines.kokoro_engine.Path"
+        ) as mock_path_cls:
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_path.read_bytes.return_value = _wav_bytes()
+            mock_path_cls.return_value.__truediv__.return_value = mock_path
             engine.synthesize("bonjour", voice="af_heart", language="fr")
+        assert mock_gen.call_args.kwargs["lang_code"] == "f"
 
-    def test_error_message_mentions_piper(self):
+    def test_synthesize_en_gb_passes_british_lang_code(self):
         engine = KokoroEngine()
-        with pytest.raises(ValueError, match="Piper"):
-            engine.synthesize("ciao", language="it")
+        with patch(
+            "vox_romana.tts.engines.kokoro_engine._lazy_generate_audio"
+        ) as mock_gen, patch(
+            "vox_romana.tts.engines.kokoro_engine.Path"
+        ) as mock_path_cls:
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_path.read_bytes.return_value = _wav_bytes()
+            mock_path_cls.return_value.__truediv__.return_value = mock_path
+            engine.synthesize("good evening", voice="bf_emma", language="en-gb")
+        assert mock_gen.call_args.kwargs["lang_code"] == "b"
+
+    def test_synthesize_region_variant_falls_back_to_primary_language(self):
+        engine = KokoroEngine()
+        with patch(
+            "vox_romana.tts.engines.kokoro_engine._lazy_generate_audio"
+        ) as mock_gen, patch(
+            "vox_romana.tts.engines.kokoro_engine.Path"
+        ) as mock_path_cls:
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_path.read_bytes.return_value = _wav_bytes()
+            mock_path_cls.return_value.__truediv__.return_value = mock_path
+            engine.synthesize("ni hao", voice="af_heart", language="zh-CN")
+        assert mock_gen.call_args.kwargs["lang_code"] == "z"
+
+    def test_unsupported_language_raises(self):
+        engine = KokoroEngine()
+        with pytest.raises(ValueError, match="Supported language codes"):
+            engine.synthesize("hallo", language="de")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +408,99 @@ class TestRendererLanguage:
         assert engine.calls, "expected at least one synthesize call"
         for call in engine.calls:
             assert call["language"] == "es"
+
+    def test_character_langs_override_language_per_event(self, tmp_path):
+        engine = _RecordingEngine()
+        renderer = TTSRenderer(engine)
+        data = self._show(language="en")
+        data["character_langs"] = {"Alice": "es", "Bob": "it"}
+
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert [call["language"] for call in engine.calls] == ["es", "it"]
+
+    def test_prepare_synth_kwargs_uses_character_language(self):
+        engine = _RecordingEngine()
+        renderer = TTSRenderer(engine)
+        kwargs = renderer._prepare_synth_kwargs(
+            {
+                "speaker_name": "Alice",
+                "text": "Hola.",
+                "event_kind": "utterance",
+            },
+            {"Alice": "voice_a"},
+            {"Alice": VoiceConfig(voice_id="voice_a")},
+            {},
+            {"Alice": "es"},
+            "en",
+        )
+
+        assert kwargs is not None
+        assert kwargs["language"] == "es"
+
+    def test_manual_custom_voice_receives_character_language(self, tmp_path):
+        engine = _RecordingEngine(voices=["vc_marcus"])
+        renderer = TTSRenderer(
+            engine,
+            voice_map={"Alice": VoiceConfig(voice_id="vc_marcus")},
+        )
+        data = self._show(language="en")
+        data["character_langs"] = {"Alice": "zh"}
+
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+
+        assert engine.calls[0]["voice"] == "vc_marcus"
+        assert engine.calls[0]["language"] == "zh"
+
+    def test_piper_voice_pool_filtered_per_speaker_language(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _make_piper_dir(models_dir, [
+            "en_US-lessac-medium",
+            "en_US-ryan-high",
+            "es_ES-davefx-medium",
+        ])
+        engine = PiperEngine(model_dir=models_dir)
+        renderer = TTSRenderer(engine)
+
+        voice_map = renderer._build_voice_map(
+            ["Alice", "Bob"],
+            language="en",
+            character_langs={"Bob": "es"},
+        )
+
+        assert voice_map["Alice"].startswith("en_")
+        assert voice_map["Bob"].startswith("es_")
+
+    def test_piper_region_variant_uses_primary_subtag(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _make_piper_dir(models_dir, [
+            "pt_BR-faber-medium",
+            "en_US-lessac-medium",
+        ])
+        engine = PiperEngine(model_dir=models_dir)
+        renderer = TTSRenderer(engine)
+
+        voice_map = renderer._build_voice_map(
+            ["Alice"], language="pt-br",
+        )
+
+        assert voice_map["Alice"].startswith("pt_")
+
+    def test_multi_engine_non_english_can_assign_kokoro_voice(self):
+        kokoro = _NamedRecordingEngine("Kokoro", ["af_heart", "am_adam"])
+        piper = _NamedRecordingEngine("Piper", ["es_ES-davefx-medium"])
+        renderer = TTSRenderer(MultiEngine([kokoro, piper]))
+
+        voice_map = renderer._build_voice_map(
+            ["Sofia"],
+            voice_casting={"Sofia": "female"},
+            language="es",
+            character_langs={"Sofia": "es"},
+        )
+
+        assert voice_map["Sofia"] == "af_heart"
 
     def test_piper_voice_pool_filtered_by_language(self, tmp_path):
         # Build a Piper engine with mixed-language voices.

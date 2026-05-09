@@ -412,6 +412,24 @@ def _build_output_path(args: argparse.Namespace, content_type: str) -> Path:
     return args.output / filename
 
 
+def _apply_character_langs(participants: list, args: argparse.Namespace) -> None:
+    """Stamp per-character language overrides onto participant profiles.
+
+    Reads ``args.character_langs`` (a ``{name: code}`` dict set by
+    ``parse_character_langs()`` in ``main()``) and sets
+    ``profile.language`` on any participant whose display name appears
+    as a key.  Unmatched names in the dict are silently ignored (the
+    name might belong to a news anchor, narrator, etc.).
+    """
+    character_langs: dict[str, str] = getattr(args, "character_langs", {})
+    if not character_langs:
+        return
+    for profile in participants:
+        lang = character_langs.get(profile.name)
+        if lang is not None:
+            profile.language = lang
+
+
 # ── Show runners ──────────────────────────────────────────────────────────
 
 
@@ -490,6 +508,9 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log(f"  Participants: {', '.join(p.name for p in config.participants)}", quiet=args.quiet)
     log(f"  Format: {config.debate_format} | Tone: {config.tone} | Turns: {config.target_turns}", quiet=args.quiet)
     print()
+
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.participants, args)
 
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (running the debate)...", quiet=args.quiet)
@@ -611,6 +632,9 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log(f"  Segments: {len(config.segments)} | Tone: {config.tone}", quiet=args.quiet)
     print()
 
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.anchors, args)
+
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (generating the broadcast)...", quiet=args.quiet)
     t2 = time.time()
@@ -715,6 +739,9 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log(f"  Hosts: {host_names}", quiet=args.quiet)
     log(f"  Segments: {len(config.segments)} | Tone: {config.tone}", quiet=args.quiet)
     print()
+
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.hosts, args)
 
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (generating the episode)...", quiet=args.quiet)

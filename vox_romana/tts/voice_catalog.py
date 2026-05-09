@@ -866,3 +866,85 @@ def match_voices_for_cast(
             assigned[speaker] = "default"
 
     return assigned
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CLONED VOICE CATALOG LOADER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def load_cloned_voice_catalog(profiles_dir: str | "Path") -> dict[str, VoiceDescriptor]:  # type: ignore[name-defined]
+    """Build a voice catalog dict from a voice_prep profiles directory.
+
+    Reads every ``vc_*`` profile sub-directory that contains a valid
+    ``metadata.json`` and converts it into a :class:`VoiceDescriptor`
+    with ``engine="voice_clone"``.  Profiles without a readable
+    ``metadata.json`` are silently skipped.
+
+    The returned dict can be merged into :data:`UNIFIED_VOICE_CATALOG`
+    at runtime so :func:`match_voice` and :func:`match_voices_for_cast`
+    can consider cloned voices alongside Kokoro and Piper:
+
+        from vox_romana.tts.voice_catalog import (
+            UNIFIED_VOICE_CATALOG,
+            load_cloned_voice_catalog,
+        )
+
+        cloned = load_cloned_voice_catalog("/data/voice_profiles")
+        catalog = {**UNIFIED_VOICE_CATALOG, **cloned}
+        voice_id = match_voice("deep authoritative", catalog=catalog)
+
+    Args:
+        profiles_dir:
+            Root directory containing ``vc_*`` profile sub-directories
+            written by :func:`vox_romana.voice_prep.profiler.register_voice`.
+
+    Returns:
+        Dict mapping ``voice_id`` → :class:`VoiceDescriptor` for every
+        valid cloned profile found.  Empty dict if ``profiles_dir`` does
+        not exist or contains no valid profiles.
+    """
+    from pathlib import Path as _Path
+    import json as _json
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    root = _Path(profiles_dir)
+    if not root.exists():
+        return {}
+
+    cloned: dict[str, VoiceDescriptor] = {}
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        if not entry.name.startswith("vc_"):
+            continue
+        meta_path = entry / "metadata.json"
+        if not meta_path.exists():
+            _log.debug(
+                "load_cloned_voice_catalog: skipping %s (no metadata.json)",
+                entry.name,
+            )
+            continue
+        try:
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _log.warning(
+                "load_cloned_voice_catalog: malformed metadata in %s: %s",
+                entry.name, exc,
+            )
+            continue
+
+        voice_id = meta.get("voice_id", entry.name)
+        tags_raw = meta.get("tags", [])
+        cloned[voice_id] = VoiceDescriptor(
+            voice_id=voice_id,
+            gender=meta.get("gender", "unknown"),
+            accent=meta.get("accent", "unknown"),
+            age=meta.get("age", "unknown"),
+            tone=meta.get("tone", ""),
+            best_for=meta.get("best_for", ""),
+            tags=tuple(str(t) for t in tags_raw),
+            engine="voice_clone",
+        )
+
+    return cloned

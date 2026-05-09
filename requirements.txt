@@ -109,3 +109,9 @@ datasets>=3.0,<3.2          # dataset loading for memory trainer
 # If WeasyPrint is missing, --publish-format pdf is skipped with a
 # warning and TXT is still produced.
 weasyprint>=62
+
+# ── Voice cloning (--mode voice-prep) — OPTIONAL ─────────────────────────────
+# Pure MLX voice cloning for Apple Silicon. No PyTorch dependency.
+# Install: pip install f5-tts-mlx>=0.2.6
+# Skip if you don't need voice cloning (VoiceCloneEngine is imported lazily).
+f5-tts-mlx>=0.2.6

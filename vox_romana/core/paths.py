@@ -76,6 +76,15 @@ def _piper_voices_dir(data_root: Path) -> Path:
     return data_root / "piper-voices"
 
 
+def _voice_profiles_dir(data_root: Path) -> Path:
+    """Resolve the voice-clone profiles directory."""
+    cfg = _load_config()
+    override = cfg.get("voice_profiles_dir")
+    if override:
+        return Path(override).expanduser()
+    return data_root / "voice_profiles"
+
+
 # ── Public path constants ─────────────────────────────────────────────────────
 # Evaluated once at import time.
 
@@ -92,5 +101,6 @@ LM_DIR:           Path = MEMORY_ROOT / "lm"
 CORPUS_ROOT:      Path = MEMORY_ROOT / "corpus"
 HF_CACHE_DIR:     Path = DATA_ROOT / "hf_cache"
 PIPER_VOICES_DIR: Path = _piper_voices_dir(DATA_ROOT)
+VOICE_PROFILES_DIR: Path = _voice_profiles_dir(DATA_ROOT)
 UNIVERSITY_ROOT:  Path = DATA_ROOT / "university"
 WIKIPEDIA_CACHE_DIR: Path = DATA_ROOT / "wikipedia_cache"

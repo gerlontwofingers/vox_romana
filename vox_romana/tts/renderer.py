@@ -520,6 +520,7 @@ class TTSRenderer:
         # The show's language drives voice selection and is passed to every
         # synthesize() call so the engine can validate / route appropriately.
         language = debate_data.get("language", "en")
+        character_langs = dict(debate_data.get("character_langs", {}))
 
         # ── Infer content type from show JSON keys ────────────────────
         content_type = next(
@@ -552,7 +553,7 @@ class TTSRenderer:
 
         voice_map = self._build_voice_map(
             speaker_names, voice_casting, voice_hints,
-            language=language, seed=_seed,
+            language=language, character_langs=character_langs, seed=_seed,
             registry=self._registry, series_key=series_key,
         )
 
@@ -570,6 +571,13 @@ class TTSRenderer:
                     if raw_last and raw_last in key.lower().split():
                         voice_map[raw_name] = vid
                         break
+            if raw_name in character_langs:
+                continue
+            raw_last = raw_name.lower().split()[-1] if raw_name else ""
+            for key, code in list(character_langs.items()):
+                if raw_last and raw_last in key.lower().split():
+                    character_langs[raw_name] = code
+                    break
 
         # Build a VoiceConfig map covering all auto-assigned speakers so that
         # engine-specific extras (e.g. Piper speaker-id) are populated even
@@ -607,7 +615,12 @@ class TTSRenderer:
                 if self._music_engine is not None and self._is_music_cue(event):
                     continue
                 synth_kwargs = self._prepare_synth_kwargs(
-                    event, voice_map, voice_cfg_map, tts_styles, language,
+                    event,
+                    voice_map,
+                    voice_cfg_map,
+                    tts_styles,
+                    character_langs,
+                    language,
                 )
                 if synth_kwargs is None:
                     continue
@@ -705,6 +718,11 @@ class TTSRenderer:
                 continue
 
             speaker = event.get("speaker_name", "Unknown")
+            event_language = self._event_language(
+                event,
+                character_langs,
+                default_language=language,
+            )
             voice_id = voice_map.get(speaker)
             if voice_id is None:
                 voice_id = self._default_voice()
@@ -768,7 +786,7 @@ class TTSRenderer:
                         voice=voice_id,
                         emotion=emotion,
                         speed=speed,
-                        language=language,
+                        language=event_language,
                         **extras,
                     )
 
@@ -896,6 +914,7 @@ class TTSRenderer:
         voice_hints: dict[str, str] | None = None,
         *,
         language: str = "en",
+        character_langs: dict[str, str] | None = None,
         seed: int = 0,
         registry: "VoiceRegistry | None" = None,
         series_key: str | None = None,
@@ -929,6 +948,7 @@ class TTSRenderer:
                             pre-filtered to voices whose id encodes that
                             language; catalog matching is skipped (the
                             built-in catalogs only cover English voices).
+            character_langs: Optional per-speaker language overrides.
 
         Returns:
             Dict mapping every speaker name to a voice_id string.
@@ -936,6 +956,7 @@ class TTSRenderer:
         available = self._engine.available_voices()
         casting = voice_casting or {}
         hints = voice_hints or {}
+        language_overrides = character_langs or {}
         result: dict[str, str] = {}
 
         # ── Normalize speaker names to canonical host names ────────────
@@ -983,6 +1004,14 @@ class TTSRenderer:
             n for n in speaker_names
             if not (n in seen_canonical or seen_canonical.add(n))  # type: ignore[func-returns-value]
         ]
+        speaker_languages: dict[str, str] = {}
+        for raw_name, canonical_name in name_map.items():
+            effective_language = (
+                language_overrides.get(canonical_name)
+                or language_overrides.get(raw_name)
+                or language
+            )
+            speaker_languages.setdefault(canonical_name, effective_language)
 
         # Detect which engine is active and pick the right catalog.
         from .engine import BaseTTSEngine
@@ -1005,19 +1034,6 @@ class TTSRenderer:
         except Exception:
             _is_multi = False
 
-        # ── Filter the voice pool by language ─────────────────────────
-        # For Piper (and MultiEngine, which delegates to Piper for non-en),
-        # restrict the candidate voices to those whose id encodes the
-        # requested language. The built-in catalogs are English-only, so
-        # we skip catalog matching entirely for non-English shows.
-        skip_catalog = False
-        if language != "en" and (_is_piper or _is_multi):
-            available = [
-                v for v in available
-                if _lang_from_voice_id(v) == language
-            ]
-            skip_catalog = True
-
         if _is_multi:
             # Both Kokoro + Piper voices are valid candidates; the engine
             # will route synthesis to the right backend based on voice_id.
@@ -1026,6 +1042,39 @@ class TTSRenderer:
             active_catalog = PIPER_VOICE_CATALOG
         else:
             active_catalog = KOKORO_VOICE_CATALOG
+
+        try:
+            from .engines.kokoro_engine import KOKORO_LANGUAGES as _KOKORO_LANGUAGES
+        except Exception:
+            _KOKORO_LANGUAGES = frozenset()
+
+        def _candidate_pool_for_language(speaker_language: str) -> list[str]:
+            normalized_language = speaker_language.strip().lower().replace("_", "-")
+            primary_language = normalized_language.split("-", 1)[0]
+
+            if primary_language == "en" or not (_is_piper or _is_multi):
+                return list(available)
+
+            if _is_multi:
+                kokoro_supported = (
+                    normalized_language in _KOKORO_LANGUAGES
+                    or primary_language in _KOKORO_LANGUAGES
+                )
+                return [
+                    voice_id for voice_id in available
+                    if voice_id.startswith("vc_")
+                    or _lang_from_voice_id(voice_id) == primary_language
+                    or (
+                        kokoro_supported
+                        and voice_id in active_catalog
+                        and active_catalog[voice_id].engine == "kokoro"
+                    )
+                ]
+
+            return [
+                voice_id for voice_id in available
+                if _lang_from_voice_id(voice_id) == primary_language
+            ]
 
         # ── Manual overrides first ────────────────────────────────────
         for name in speaker_names:
@@ -1037,10 +1086,12 @@ class TTSRenderer:
         # in the available pool, reuse it so the same character keeps the
         # same voice across episodes within the series.
         if registry is not None and series_key:
-            available_set = set(available)
             for name in speaker_names:
                 if name in result:
                     continue
+                available_set = set(
+                    _candidate_pool_for_language(speaker_languages.get(name, language))
+                )
                 try:
                     locked = registry.resolve(name, series_key)
                 except Exception:
@@ -1060,11 +1111,15 @@ class TTSRenderer:
         # ── Catalog matching (when any speaker has a voice_hint) ──────
         # Build a cast dict for unassigned speakers that have hints.
         remaining = [n for n in speaker_names if n not in result]
-        if not skip_catalog and remaining and any(n in hints for n in remaining):
+        catalog_remaining = [
+            n for n in remaining
+            if speaker_languages.get(n, language) == "en"
+        ]
+        if catalog_remaining and any(n in hints for n in catalog_remaining):
             from .voice_catalog import match_voices_for_cast
 
             cast_info: dict[str, dict] = {}
-            for name in remaining:
+            for name in catalog_remaining:
                 info: dict[str, str] = {}
                 if name in casting:
                     info["gender"] = casting[name]
@@ -1152,20 +1207,26 @@ class TTSRenderer:
         for name in speaker_names:
             if name in result:
                 continue
-            if name in casting and casting[name] == "female" and female_voices:
-                result[name] = female_voices[female_idx % len(female_voices)]
+            speaker_available = _candidate_pool_for_language(
+                speaker_languages.get(name, language)
+            )
+            speaker_available_set = set(speaker_available)
+            speaker_male_voices = [v for v in male_voices if v in speaker_available_set]
+            speaker_female_voices = [v for v in female_voices if v in speaker_available_set]
+            if name in casting and casting[name] == "female" and speaker_female_voices:
+                result[name] = speaker_female_voices[female_idx % len(speaker_female_voices)]
                 female_idx += 1
-            elif name in casting and casting[name] == "male" and male_voices:
-                result[name] = male_voices[male_idx % len(male_voices)]
+            elif name in casting and casting[name] == "male" and speaker_male_voices:
+                result[name] = speaker_male_voices[male_idx % len(speaker_male_voices)]
                 male_idx += 1
-            elif male_voices:
+            elif speaker_male_voices:
                 # No gender info — default to male (safer than round-robin
                 # through all voices which starts with female).
-                result[name] = male_voices[male_idx % len(male_voices)]
+                result[name] = speaker_male_voices[male_idx % len(speaker_male_voices)]
                 male_idx += 1
-            elif available:
+            elif speaker_available:
                 # No gendered voices found — raw round-robin fallback.
-                result[name] = available[fallback_idx % len(available)]
+                result[name] = speaker_available[fallback_idx % len(speaker_available)]
                 fallback_idx += 1
             else:
                 result[name] = "default"
@@ -1193,13 +1254,25 @@ class TTSRenderer:
         voices = self._engine.available_voices()
         return voices[0] if voices else "default"
 
+    @staticmethod
+    def _event_language(
+        event: dict,
+        character_langs: dict[str, str],
+        *,
+        default_language: str,
+    ) -> str:
+        """Resolve the effective language for a single event."""
+        speaker = event.get("speaker_name", "Unknown")
+        return character_langs.get(speaker, default_language)
+
     def _prepare_synth_kwargs(
         self,
         event: dict,
         voice_map: dict[str, str],
         voice_cfg_map: dict[str, VoiceConfig],
         tts_styles: dict[str, str],
-        language: str,
+        character_langs: dict[str, str],
+        default_language: str,
     ) -> dict | None:
         """Build the kwargs dict for an engine.synthesize() call.
 
@@ -1226,12 +1299,17 @@ class TTSRenderer:
         emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
         speed = self._pace_to_speed(event.get("pace"))
         voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
+        event_language = self._event_language(
+            event,
+            character_langs,
+            default_language=default_language,
+        )
         kwargs = {
             "text": text,
             "voice": voice_id,
             "emotion": emotion,
             "speed": speed,
-            "language": language,
+            "language": event_language,
         }
         kwargs.update(voice_cfg.extras)
         return kwargs

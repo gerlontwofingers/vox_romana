@@ -46,6 +46,16 @@
 # piper_voices_dir: ~/piper-voices
 
 
+# VOICE CLONE PROFILES (optional override)
+# Where cloned voice profiles (reference.wav + metadata.json) are stored.
+# Defaults to data_dir/voice_profiles/ if not set.
+#
+# Example:
+#   voice_profiles_dir: /Volumes/BigDisk/voice_profiles
+
+# voice_profiles_dir: ~/vox_romana_data/voice_profiles
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # FOLDER LAYOUT UNDER data_dir
 # ──────────────────────────────────────────────────────────────────────────────

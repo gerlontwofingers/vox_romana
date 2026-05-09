@@ -153,6 +153,7 @@ class MergedDebate:
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
+    character_langs: dict[str, str] = field(default_factory=dict)
     pronunciation_overrides: dict[str, Any] = field(default_factory=dict)
     series_id: str | None = None
 
@@ -179,6 +180,7 @@ class MergedDebate:
             "voice_casting": self.voice_casting,
             "voice_hints": self.voice_hints,
             "tts_styles": self.tts_styles,
+            "character_langs": self.character_langs,
             "pronunciation_overrides": dict(self.pronunciation_overrides),
             "series_id": self.series_id,
         }

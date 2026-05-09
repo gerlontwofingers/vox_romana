@@ -310,6 +310,7 @@ class ParticipantProfile(VoiceProfile):
     name: str = ""
     side: str | None = None
     role: str = "participant"
+    language: str | None = None  # BCP-47, e.g. "zh", "es". None = use show language.
     behavioral_triggers: str | None = None
     emotional_arc: str | None = None
     key_positions: list[str] = field(default_factory=list)

@@ -51,6 +51,7 @@ RULES:
 - RESPOND to what was just said. Don't just recite talking points.
 - Keep responses to 2-5 sentences. This is a debate, not a monologue.
 - If interrupted, you may respond with frustration per your behavioral triggers.
+{language_instruction}
 
 SPEAKER IDENTIFICATION (critical for audio listeners):
 - This is AUDIO-ONLY. The listener cannot see who is talking.

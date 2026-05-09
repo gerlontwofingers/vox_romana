@@ -117,6 +117,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_language_instruction(language: str | None) -> str:
+    """Return a prompt instruction for a character's assigned language.
+
+    Returns an empty string when *language* is ``None`` or ``"en"`` so that
+    the ``{language_instruction}`` placeholder leaves no trace in the prompt.
+    For any other language code, returns an explicit instruction block that
+    tells the LLM to write all dialogue in that language.
+    """
+    if not language or language == "en":
+        return ""
+    from ...core.languages import LANGUAGE_NAMES
+    lang_name = LANGUAGE_NAMES.get(language, language)
+    return (
+        f"\nLANGUAGE CONSTRAINT (critical):\n"
+        f"- You MUST write ALL of your dialogue in {lang_name} ({language}).\n"
+        f"- Every word in the \"text\" field must be in {lang_name}.\n"
+        f"- The debate topic, names, and other speakers' words may be in English —\n"
+        f"  but YOUR spoken lines are always in {lang_name}.\n"
+        f"- JSON keys and tone/volume/pace values remain in English as usual."
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # How many recent utterances to include verbatim in each agent's context.
 # Older turns get compressed into a summary. This is the "sliding window."
@@ -212,6 +234,7 @@ class DebateConductorResult(ConductorResult):
         voice_casting: dict[str, str] = {}
         voice_hints: dict[str, str] = {}
         tts_styles: dict[str, str] = {}
+        character_langs: dict[str, str] = {}
         for p in config.participants:
             if p.voice_gender:
                 voice_casting[p.name] = p.voice_gender
@@ -219,6 +242,8 @@ class DebateConductorResult(ConductorResult):
                 voice_hints[p.name] = p.voice_hint
             if p.tts_style:
                 tts_styles[p.name] = p.tts_style
+            if p.language and p.language != "en":
+                character_langs[p.name] = p.language
         if config.moderator and config.moderator.name:
             # Moderators don't have profiles, default to male.
             voice_casting.setdefault(config.moderator.name, "male")
@@ -259,6 +284,7 @@ class DebateConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            character_langs=character_langs,
             series_id=series_id,
         )
 
@@ -856,6 +882,7 @@ class DebateConductor(BaseConductor):
             factual_claims=claims_str,
             tangent_topics=tangents_str,
             reference_corpus_section=corpus_section,
+            language_instruction=_build_language_instruction(profile.language),
         )
 
     def _build_ground_rules(self, profile: ParticipantProfile) -> str:
