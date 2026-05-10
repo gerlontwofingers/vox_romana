@@ -134,6 +134,8 @@ class AudiobookConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            language=config.language,
+            music_style=config.music_style,
         )
 
 

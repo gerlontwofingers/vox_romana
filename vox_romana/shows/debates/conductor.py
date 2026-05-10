@@ -285,6 +285,8 @@ class DebateConductorResult(ConductorResult):
             voice_hints=voice_hints,
             tts_styles=tts_styles,
             character_langs=character_langs,
+            language=config.language,
+            music_style=config.music_style,
             series_id=series_id,
         )
 
@@ -882,7 +884,7 @@ class DebateConductor(BaseConductor):
             factual_claims=claims_str,
             tangent_topics=tangents_str,
             reference_corpus_section=corpus_section,
-            language_instruction=_build_language_instruction(profile.language),
+            language_instruction=_build_language_instruction(profile.language or config.language),
         )
 
     def _build_ground_rules(self, profile: ParticipantProfile) -> str:

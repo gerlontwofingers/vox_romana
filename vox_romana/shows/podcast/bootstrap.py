@@ -115,7 +115,9 @@ claim expertise in"],
       "duration_hint": "string — 'short', 'medium', or 'long'",
       "target_words": "integer — approximate word count for this segment"
     }}
-  ]
+  ],
+  "language": "BCP-47 code of the primary spoken language. Infer from host names, topic keywords, location references in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this podcast's intro/outro bumpers. Infer from the brief's genre, tone, language, and location. Be specific and evocative. Examples: 'lo-fi hip hop beats, chill' (casual tech), 'upbeat acoustic indie, energetic' (lifestyle), 'warm orchestral underscores' (storytelling). Never null or empty."
 }}
 
 RULES:
@@ -472,6 +474,8 @@ class PodcastBootstrap(BaseShowBootstrap):
             tone=data.get("tone"),
             hosts=hosts,
             segments=segments,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
         )
 
     # ═══════════════════════════════════════════════════════════════════

@@ -103,7 +103,9 @@ text outside the JSON block. No markdown, no commentary, just raw JSON.
     "name": "string — host's name (a memorable character name; AVOID overused defaults like 'Marcus Webb', 'Sarah Chen', or 'Elena Vasquez'. Draw from diverse cultural backgrounds. Can also be a stage name like 'The Narrator')",
     "role": "string — 'narrator' (third-person, documentary style) or 'emcee' (first-person, podcast host style)",
     "style": "string — hosting style description, e.g., 'Warm but authoritative, uses vivid scene-setting language'"
-  }
+  },
+  "language": "BCP-47 code of the primary spoken language. Infer from participant names, locations, topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this debate's intro/outro bumpers. Infer from the brief's genre, tone, language, and setting. Be specific and evocative. Examples: 'measured orchestral underscore, formal' (academic), 'tense dramatic strings' (political), 'electronic debate beat, energetic' (competitive). Never null or empty."
 }
 
 RULES:
@@ -300,4 +302,6 @@ class DebateArchitect:
             moderator=moderator,
             audience=audience,
             show_host=show_host,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
         )

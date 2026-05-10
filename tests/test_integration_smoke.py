@@ -213,6 +213,7 @@ def test_render_debate_mocked_tts(tmp_path, monkeypatch):
         "--audio-output", str(audio_out),
         "--format", "wav",
         "--no-log-audio-duration",   # skip catalog write
+        "--no-music",                # avoid loading MusicGen model in tests
         "--quiet",
     ])
 

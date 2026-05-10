@@ -156,6 +156,7 @@ class MergedDebate:
     character_langs: dict[str, str] = field(default_factory=dict)
     pronunciation_overrides: dict[str, Any] = field(default_factory=dict)
     series_id: str | None = None
+    music_style: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +184,7 @@ class MergedDebate:
             "character_langs": self.character_langs,
             "pronunciation_overrides": dict(self.pronunciation_overrides),
             "series_id": self.series_id,
+            "music_style": self.music_style,
         }
 
 

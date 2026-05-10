@@ -489,6 +489,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--skip-resource-monitor",
+        action="store_true",
+        default=False,
+        dest="skip_resource_monitor",
+        help=(
+            "Disable the background disk/RAM monitor. "
+            "Use in CI or tests where resources are intentionally constrained."
+        ),
+    )
+
+    parser.add_argument(
         "--tts-workers",
         type=int,
         default=1,
@@ -782,13 +793,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render_group.add_argument(
         "--music",
         action="store_true",
-        default=False,
+        default=True,
         dest="music",
         help=(
             "Enable generative music for bumper events and [music: …] cues. "
             "Uses MusicGen via HuggingFace Transformers. Model auto-downloads "
-            "on first use (~300 MB for small)."
+            "on first use (~300 MB for small). Enabled by default."
         ),
+    )
+    render_group.add_argument(
+        "--no-music",
+        action="store_false",
+        dest="music",
+        help="Disable generative music intro/outro (enabled by default).",
     )
     render_group.add_argument(
         "--music-style",
@@ -1778,6 +1795,18 @@ def _mode_video(args: argparse.Namespace) -> None:
     audio_suffix = f".{args.format}"
     audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)
 
+    # Mid-pipeline resource checkpoint: audio render consumed disk/RAM;
+    # re-check before the much heavier animation phase starts.
+    monitor = getattr(args, "_resource_monitor", None)
+    if monitor is not None:
+        from vox_romana.core.resource_monitor import ResourceError
+        try:
+            monitor.checkpoint("pre-animate")
+        except ResourceError as _re:
+            print(f"\nError: {_re}", file=sys.stderr)
+            monitor.stop()
+            sys.exit(1)
+
     if not args.quiet:
         platform = getattr(args, "video_platform", "youtube")
         print(f"\n{'─' * 60}")
@@ -2712,6 +2741,39 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # ── Resource monitor ─────────────────────────────────────────────
+    # Start the background disk+RAM sampler before any model loading.
+    # Modes that don't write large outputs (ingest, dedupe, analysis, …)
+    # still benefit from at least knowing disk state at launch.
+    if not getattr(args, "skip_resource_monitor", False):
+        from vox_romana.core.resource_monitor import ResourceMonitor, ResourceError
+        _resource_monitor = ResourceMonitor.for_mode(args.mode, args)
+        _resource_monitor.start()
+        # First checkpoint: verify there is enough headroom right now.
+        # This catches the case where the disk is already nearly full before
+        # we even start generating.  Later checkpoints fire mid-pipeline.
+        try:
+            snapshot = _resource_monitor.checkpoint("pre-flight")
+            if not args.quiet:
+                ram_str = (
+                    f" | RAM avail: {snapshot.available_ram_gb:.1f} GB"
+                    if snapshot.available_ram_gb is not None
+                    else ""
+                )
+                print(
+                    f"  Resources: {snapshot.free_disk_gb:.1f} GB disk free"
+                    f" ({snapshot.disk_path}){ram_str}"
+                )
+        except ResourceError as _re:
+            print(f"\nError: {_re}", file=sys.stderr)
+            _resource_monitor.stop()
+            sys.exit(1)
+        # Store on args so _mode_video can call checkpoint() again
+        # between pipeline steps.
+        args._resource_monitor = _resource_monitor
+    else:
+        args._resource_monitor = None
 
     # Normalise out_lang → resolved list (includes root_lang if not already)
     if args.out_lang is None:

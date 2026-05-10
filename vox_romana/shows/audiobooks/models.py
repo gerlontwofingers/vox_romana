@@ -62,6 +62,9 @@ class MergedAudiobook:
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
     pronunciation_overrides: dict[str, Any] = field(default_factory=dict)
+    language: str = "en"
+    series_id: str | None = None
+    music_style: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,4 +81,7 @@ class MergedAudiobook:
             "voice_hints": dict(self.voice_hints),
             "tts_styles": dict(self.tts_styles),
             "pronunciation_overrides": dict(self.pronunciation_overrides),
+            "language": self.language,
+            "series_id": self.series_id,
+            "music_style": self.music_style,
         }

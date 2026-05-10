@@ -2039,7 +2039,10 @@ class TestRendererMusicRouting:
 
         assert len(tts_engine.calls) == 1
         assert tts_engine.calls[0]["text"] == "Welcome to the show."
-        assert len(music_engine.calls) == 0
+        # _ensure_music_bumpers inserts a separate intro + outro bumper around
+        # the speech event, so the music engine IS called for those two bumpers.
+        # The key guarantee is that the speech itself still routes to TTS.
+        assert len(music_engine.calls) == 2  # intro bumper + outro bumper
 
     def test_mixed_events_route_correctly(self):
         """Bumper → music, utterances → TTS, all in a single render pass."""
@@ -2075,9 +2078,11 @@ class TestRendererMusicRouting:
         ]
         result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
 
-        assert len(music_engine.calls) == 1     # Only the bumper.
-        assert len(tts_engine.calls) == 2        # Both utterances.
-        assert result.rendered == 3
+        # _ensure_music_bumpers inserts an intro bumper before 'Hello.' and an
+        # outro bumper after 'And goodbye.' (both are plain speech events).
+        assert len(music_engine.calls) == 3     # intro_bumper + original bumper + outro_bumper
+        assert len(tts_engine.calls) == 2        # Both utterances still route to TTS.
+        assert result.rendered == 5              # 3 music + 2 TTS
 
 
 # ═══════════════════════════════════════════════════════════════════════════

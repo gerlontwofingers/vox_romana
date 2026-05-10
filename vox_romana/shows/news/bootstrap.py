@@ -73,7 +73,9 @@ text outside the JSON block.
     "name": "string — host name. Pick a memorable, varied name. AVOID overused defaults like 'Marcus Webb', 'Sarah Chen', 'Elena Vasquez', or any 'Chen' surname. Draw from diverse cultural backgrounds.",
     "role": "string — 'narrator' or 'emcee'",
     "style": "string — hosting style"
-  }
+  },
+  "language": "BCP-47 code of the primary spoken language. Infer from anchor names, location keywords, topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this show's intro/outro bumpers. Infer from the brief's genre, tone, language, and location. Be specific and evocative. Examples: 'upbeat latin cumbia news theme' (Guatemala/Mexico), 'orchestral news underscore, authoritative BBC style' (English news), 'electronic news beat, modern' (tech show). Never null or empty."
 }
 
 RULES:
@@ -343,6 +345,8 @@ class NewsBootstrap(BaseShowBootstrap):
             anchors=anchors,
             segments=segments,
             show_host=show_host,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
         )
 
     def _profile_anchor(

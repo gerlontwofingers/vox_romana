@@ -72,24 +72,9 @@ text outside the JSON block.
       "target_beats": "integer — how many generation beats (1=short, 2-3=standard, 4+=deep). Default 2.",
       "characters": ["array of character names who appear in this chapter"]
     }}
-  ]
-}}
-
-RULES:
-- Plan enough chapters for the scope described. A short story: 3-5 chapters.
-  A novella: 8-15. A full novel: 20-60. Scale to match the brief.
-- If the user specifies a word count or duration, the TARGET LENGTH block
-  takes precedence over these defaults — scale chapters AND beats per chapter
-  up as needed to reach the word budget. Each beat produces ~150-250 words
-  of narration (~200 on average). Use this to derive your plan:
-      ideal_chapters   = max(3, target_words // 2000)
-      beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
-  A 74,000-word audiobook → ~37 chapters, ~10 beats each.
-  A 20,000-word novella  → ~10 chapters, ~10 beats each.
-  There is no upper cap on beats_per_chapter for long-form content.
-- Each chapter should have 2-6 key_points — these are the narrative beats
-  the narrator will cover in order.
-- The first chapter should hook the reader. The last should resolve or conclude.
+  ],
+  "language": "BCP-47 code of the primary spoken language. Infer from character names, location references, and topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this audiobook's intro/outro bumpers. Infer from the genre, tone, and setting. Be specific and evocative. Examples: 'atmospheric orchestral, cinematic' (thriller), 'gentle acoustic guitar bed' (self-help), 'sweeping fantasy orchestra with choir' (epic fantasy). Never null or empty."
 - Characters array should list all named characters with roles.
 - ALWAYS respond with valid JSON. Nothing else.
 """
@@ -350,6 +335,8 @@ class AudiobookBootstrap(BaseShowBootstrap):
             narrator=narrator,
             characters=characters,
             chapters=chapters,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
         )
 
     def _profile_narrator(

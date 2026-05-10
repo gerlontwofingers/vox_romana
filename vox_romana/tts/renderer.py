@@ -210,36 +210,45 @@ _THEME_MUSIC_MARKERS: frozenset[str] = frozenset({"theme music", "theme song", "
 
 
 def _ensure_music_bumpers(events: list[dict]) -> None:
-    """Mutate *events* in-place to guarantee intro/outro music cues exist.
+    """Insert synthetic bumper events at the list boundaries if none exist.
 
     Called by :meth:`TTSRenderer.render` when a music engine is active.  This
     is a safety net for show JSONs generated before the prompts carried the
     explicit cue instructions, for re-renders, and for LLM non-compliance.
 
-    A cue is already considered present if:
-    - the event's ``event_kind`` is ``"bumper"`` (an explicit bumper event), OR
-    - ``"intro music"`` / ``"outro music"`` already appears in the event's
-      ``nonverbal`` list (case-insensitive substring match).
+    A bumper event is inserted at the *start* if the first event is not
+    already a music cue, and at the *end* if the last event is not already a
+    music cue.  An event is considered a music cue if any of the following
+    apply:
+
+    - ``event_kind == "bumper"``
+    - the event text contains an inline ``[music: …]`` cue
+    - any theme-music marker (``_THEME_MUSIC_MARKERS``) appears in the
+      ``nonverbal`` list (case-insensitive substring match)
+
+    Speech events are never mutated — only dedicated bumper dicts are
+    inserted so that TTS synthesis of adjacent speech is unaffected.
     """
     if not events:
         return
 
-    def _has_cue(event: dict, cue: str) -> bool:
-        if event.get("event_kind") == "bumper":
+    def _is_music_event(event: dict) -> bool:
+        if (event.get("event_kind") or "").lower() == "bumper":
             return True
-        return any(cue in nv.lower() for nv in event.get("nonverbal") or [])
+        if _MUSIC_CUE_RE.search(event.get("text") or ""):
+            return True
+        return any(
+            any(theme in (nv or "").lower() for theme in _THEME_MUSIC_MARKERS)
+            for nv in (event.get("nonverbal") or [])
+        )
 
-    first = events[0]
-    if not _has_cue(first, "intro music"):
-        nv = list(first.get("nonverbal") or [])
-        nv.append("intro music")
-        first["nonverbal"] = nv
+    _bumper: dict = {"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}
 
-    last = events[-1]
-    if not _has_cue(last, "outro music"):
-        nv = list(last.get("nonverbal") or [])
-        nv.append("outro music")
-        last["nonverbal"] = nv
+    if not _is_music_event(events[0]):
+        events.insert(0, dict(_bumper))
+
+    if not _is_music_event(events[-1]):
+        events.append(dict(_bumper))
 
 
 def strip_markdown_emphasis(text: str) -> str:
@@ -1035,18 +1044,13 @@ class TTSRenderer:
             _is_multi = False
 
         if _is_multi:
-            # Both Kokoro + Piper voices are valid candidates; the engine
-            # will route synthesis to the right backend based on voice_id.
+            # MultiEngine exposes the unified catalog for voice lookup; the
+            # language gate below decides which voices are eligible.
             active_catalog = UNIFIED_VOICE_CATALOG
         elif _is_piper:
             active_catalog = PIPER_VOICE_CATALOG
         else:
             active_catalog = KOKORO_VOICE_CATALOG
-
-        try:
-            from .engines.kokoro_engine import KOKORO_LANGUAGES as _KOKORO_LANGUAGES
-        except Exception:
-            _KOKORO_LANGUAGES = frozenset()
 
         def _candidate_pool_for_language(speaker_language: str) -> list[str]:
             normalized_language = speaker_language.strip().lower().replace("_", "-")
@@ -1056,19 +1060,15 @@ class TTSRenderer:
                 return list(available)
 
             if _is_multi:
-                kokoro_supported = (
-                    normalized_language in _KOKORO_LANGUAGES
-                    or primary_language in _KOKORO_LANGUAGES
-                )
+                # Only route non-English speakers to voices that are truly
+                # language-aware. Voice clones (vc_*) are cross-lingual, and
+                # Piper voices are native-language models. Kokoro voices are
+                # intentionally excluded here: their voices are English-trained
+                # even when the phonemizer is switched to a non-English code.
                 return [
                     voice_id for voice_id in available
                     if voice_id.startswith("vc_")
                     or _lang_from_voice_id(voice_id) == primary_language
-                    or (
-                        kokoro_supported
-                        and voice_id in active_catalog
-                        and active_catalog[voice_id].engine == "kokoro"
-                    )
                 ]
 
             return [
@@ -1207,12 +1207,24 @@ class TTSRenderer:
         for name in speaker_names:
             if name in result:
                 continue
+            speaker_language = speaker_languages.get(name, language)
             speaker_available = _candidate_pool_for_language(
-                speaker_languages.get(name, language)
+                speaker_language
             )
             speaker_available_set = set(speaker_available)
             speaker_male_voices = [v for v in male_voices if v in speaker_available_set]
             speaker_female_voices = [v for v in female_voices if v in speaker_available_set]
+            if not speaker_available:
+                fallback_voice = self._default_voice()
+                logger.warning(
+                    "TTSRenderer: no native voice available for speaker %r "
+                    "(language=%s); falling back to %r.",
+                    name,
+                    speaker_language,
+                    fallback_voice,
+                )
+                result[name] = fallback_voice
+                continue
             if name in casting and casting[name] == "female" and speaker_female_voices:
                 result[name] = speaker_female_voices[female_idx % len(speaker_female_voices)]
                 female_idx += 1
@@ -1224,12 +1236,10 @@ class TTSRenderer:
                 # through all voices which starts with female).
                 result[name] = speaker_male_voices[male_idx % len(speaker_male_voices)]
                 male_idx += 1
-            elif speaker_available:
+            else:
                 # No gendered voices found — raw round-robin fallback.
                 result[name] = speaker_available[fallback_idx % len(speaker_available)]
                 fallback_idx += 1
-            else:
-                result[name] = "default"
 
         # ── Persist assignments to the registry ──────────────────
         # register() is idempotent: it locks the voice on first sight and

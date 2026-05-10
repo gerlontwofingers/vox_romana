@@ -1174,6 +1174,7 @@ _CONTENT_TYPE_KEYS: dict[str, str] = {
     "show_id": "news",
     "podcast_id": "podcast",
     "book_id": "audiobook",
+    "audiobook_id": "audiobook",
 }
 
 
@@ -1528,6 +1529,29 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         print(f"Error creating {args.engine} engine: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # ── Pre-load show JSON for voice policy and music style resolution ─
+    with open(json_path) as f:
+        show_data = json.load(f)
+
+    # Under 'auto' policy, strip voice_hints so the renderer falls back
+    # to the simpler gender-based round-robin assignment.
+    if args.voice_policy == "auto":
+        show_data.pop("voice_hints", None)
+
+    # ── Resolve music style: CLI arg > show JSON field > type-based default ─
+    _MUSIC_STYLE_FALLBACK: dict[str, str] = {
+        "news": "news broadcast theme music, professional and authoritative",
+        "podcast": "podcast background music, warm and conversational",
+        "debate": "measured discussion underscore, formal",
+        "audiobook": "cinematic orchestral underscore, atmospheric and immersive",
+    }
+    _music_style = args.music_style
+    if not _music_style:
+        _music_style = show_data.get("music_style", "")
+    if not _music_style:
+        _ct = _detect_content_type(show_data)
+        _music_style = _MUSIC_STYLE_FALLBACK.get(_ct, "background music")
+
     # ── Build the renderer and render ────────────────────────────────
     registry = None
     series_key = getattr(args, "series_id", None)
@@ -1545,7 +1569,7 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         series_key=series_key,
         exclude_whispery=args.no_whisper_voices,
         music_engine=_build_music_engine(args),
-        music_style=args.music_style,
+        music_style=_music_style,
         music_duration=args.music_duration,
         music_volume_db=args.music_volume,
         parallel_workers=args.tts_workers,
@@ -1558,15 +1582,6 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         print()
 
     start_time = time.time()
-
-    # Load the show JSON so we can apply the voice policy before rendering.
-    with open(json_path) as f:
-        show_data = json.load(f)
-
-    # Under 'auto' policy, strip voice_hints so the renderer falls back
-    # to the simpler gender-based round-robin assignment.
-    if args.voice_policy == "auto":
-        show_data.pop("voice_hints", None)
 
     if not args.quiet:
         title = show_data.get("title", json_path.stem)

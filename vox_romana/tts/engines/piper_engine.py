@@ -74,10 +74,13 @@ EXAMPLE:
 from __future__ import annotations
 
 import io
+import logging
 import wave
 from pathlib import Path
 
 from ..engine import BaseTTSEngine, SynthesizedAudio
+
+logger = logging.getLogger(__name__)
 
 
 def _lang_from_voice_id(voice_id: str) -> str | None:
@@ -302,9 +305,19 @@ class PiperEngine(BaseTTSEngine):
         """
         for_lang = self.available_voices_for_language(language)
         if for_lang:
+            logger.info(
+                "PiperEngine: language=%r \u2192 voice %r (model_dir=%s)",
+                language, for_lang[0], self._model_dir,
+            )
             return for_lang[0]
         all_voices = self.available_voices()
-        return all_voices[0] if all_voices else "default"
+        chosen = all_voices[0] if all_voices else "default"
+        logger.warning(
+            "PiperEngine: no %r voices found in %s \u2014 falling back to %r "
+            "(language mismatch likely; check --model-dir and installed voices)",
+            language, self._model_dir, chosen,
+        )
+        return chosen
 
     def _load_voice(self, voice_id: str) -> object:
         """Lazy-load a Piper voice model.

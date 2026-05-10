@@ -488,7 +488,7 @@ class TestRendererLanguage:
 
         assert voice_map["Alice"].startswith("pt_")
 
-    def test_multi_engine_non_english_can_assign_kokoro_voice(self):
+    def test_multi_engine_non_english_prefers_native_voice_over_kokoro(self):
         kokoro = _NamedRecordingEngine("Kokoro", ["af_heart", "am_adam"])
         piper = _NamedRecordingEngine("Piper", ["es_ES-davefx-medium"])
         renderer = TTSRenderer(MultiEngine([kokoro, piper]))
@@ -500,7 +500,41 @@ class TestRendererLanguage:
             character_langs={"Sofia": "es"},
         )
 
+        assert voice_map["Sofia"] == "es_ES-davefx-medium"
+
+    def test_multi_engine_non_english_keeps_voice_clone_voices(self):
+        kokoro = _NamedRecordingEngine("Kokoro", ["af_heart", "am_adam"])
+        voice_clone = _NamedRecordingEngine("VoiceClone", ["vc_marcus"])
+        renderer = TTSRenderer(MultiEngine([kokoro, voice_clone]))
+
+        voice_map = renderer._build_voice_map(
+            ["Marcus"],
+            language="es",
+            character_langs={"Marcus": "es"},
+        )
+
+        assert voice_map["Marcus"] == "vc_marcus"
+
+    def test_multi_engine_warns_and_falls_back_when_no_native_voice(
+        self,
+        caplog,
+    ):
+        kokoro = _NamedRecordingEngine("Kokoro", ["af_heart", "am_adam"])
+        renderer = TTSRenderer(MultiEngine([kokoro]))
+
+        with caplog.at_level("WARNING"):
+            voice_map = renderer._build_voice_map(
+                ["Sofia"],
+                voice_casting={"Sofia": "female"},
+                language="es",
+                character_langs={"Sofia": "es"},
+            )
+
         assert voice_map["Sofia"] == "af_heart"
+        assert any(
+            "no native voice available" in record.message
+            for record in caplog.records
+        )
 
     def test_piper_voice_pool_filtered_by_language(self, tmp_path):
         # Build a Piper engine with mixed-language voices.

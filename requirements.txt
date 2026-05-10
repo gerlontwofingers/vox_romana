@@ -10,6 +10,7 @@
 # ── Core ────────────────────────────────────────────────────────────────
 openai==2.30.0
 python-dotenv==1.2.2
+psutil>=5.9,<8              # RAM availability probe for resource monitoring
 pyyaml>=6.0
 mcp>=1.0                    # MCP server (vox_romana/mcp/) — Copilot/Claude integration
 
