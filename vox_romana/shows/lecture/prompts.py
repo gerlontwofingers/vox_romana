@@ -59,7 +59,7 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "text": "your spoken words — what the professor actually says",
   "tone": "neutral|calm|warm|emphatic|curious|skeptical|playful|grave|enthusiastic|reflective",
   "volume": "soft|moderate|loud|rising|falling",
-  "pace": "slow|medium|fast|accelerating|decelerating — default to slow or medium for teaching",
+  "pace": "slow|medium|fast|accelerating|decelerating — VARY across the lecture: medium is the resting baseline, slow for definitions and emphatic moments, fast or accelerating during enthusiastic riffs and digressions, decelerating into recaps. Avoid using the same pace for every beat.",
   "pause_before": "none|short|medium|long",
   "pause_after": "none|short|medium|long",
   "nonverbal": []

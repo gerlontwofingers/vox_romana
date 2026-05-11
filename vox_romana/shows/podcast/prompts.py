@@ -32,6 +32,7 @@ THE HOSTS (you write lines for ALL of them):
 
 RULES:
 - Write natural, conversational dialogue suitable for audio recording.
+- 2–4 hosts maximum. Never exceed 4 unless the brief explicitly requests more.
 - Each host has their own personality, speech style, and expertise —
   make them sound DISTINCT from each other.
 - Hosts should RESPOND to each other. This is a conversation, not parallel

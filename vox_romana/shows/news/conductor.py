@@ -89,6 +89,14 @@ DURATION_SENTENCES = {
     "long": (10, 18),
 }
 
+# Per-beat hard word cap. Two purposes:
+#   1. Q-5: keep individual events short enough for TTS pacing
+#      (overnight battery showed news avg 103w/event was too long).
+#   2. B-3: caps the anchor's per-segment share, rebalancing toward
+#      the show host narrations and reducing anchor monopoly.
+# Applied unconditionally (with or without target_words).
+MAX_BEAT_WORDS = 80
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NewsConductorResult
@@ -243,7 +251,9 @@ class NewsConductor(BaseConductor):
         self._anchor_sessions = {}
         for name, prompt in self._anchor_prompts.items():
             self._anchor_sessions[name] = self._create_session(
-                prompt, recent_window=DEFAULT_RECENT_WINDOW,
+                prompt,
+                recent_window=DEFAULT_RECENT_WINDOW,
+                session_name=f"anchor:{name}",
             )
 
         # Build FactChecker (news is always factual).
@@ -281,6 +291,7 @@ class NewsConductor(BaseConductor):
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode="factual",
+                perspective=config.perspective,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -623,9 +634,17 @@ class NewsConductor(BaseConductor):
                 words_per_segment = config.target_words // total_segments
                 words_per_beat = words_per_segment // num_beats
                 words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
+                # B-3 / Q-5: clamp to the per-beat hard cap so length
+                # contracts never exceed the TTS-friendly ceiling.
+                words_per_beat = min(words_per_beat, MAX_BEAT_WORDS)
                 duration_instruction += "\n" + self._length_contract_block(
                     words_per_beat, tolerance_pct=12.0,
                 )
+
+            # B-3 / Q-5: unconditional per-beat cap, even without target_words.
+            duration_instruction += (
+                f"\nHARD CAP: this beat must not exceed {MAX_BEAT_WORDS} words."
+            )
 
             # Append runtime budget status for the LLM.
             budget_status = self._budget_status_for_prompt(
@@ -643,19 +662,19 @@ class NewsConductor(BaseConductor):
                 )
             elif beat_label == "lead":
                 beat_instruction = (
-                    f"Deliver the LEAD for this story — hook the listener, establish "
-                    f"the headline, and set up the key question or conflict. "
+                    f"Open this story by hooking the listener, establishing "
+                    f"the headline, and setting up the key question or conflict. "
                     f"{duration_instruction}"
                 )
             elif beat_label == "tag":
                 beat_instruction = (
-                    f"Deliver the TAG for this story — wrap up the segment with "
-                    f"context, implications, or a forward-looking note. "
+                    f"Close this story with context, implications, or a "
+                    f"forward-looking note. "
                     f"{duration_instruction}"
                 )
             else:
                 beat_instruction = (
-                    f"Continue the BODY of this story — go deeper into the facts, "
+                    f"Continue this story by going deeper into the facts, "
                     f"provide context, examples, or expert perspectives. "
                     f"Do NOT repeat what you already covered in earlier beats. "
                     f"{duration_instruction}"
@@ -690,7 +709,10 @@ class NewsConductor(BaseConductor):
                 )
                 self._llm_calls += 1
 
-            event_dict = self._parse_response(raw_response)
+            event_dict = self._parse_response(
+                raw_response,
+                from_agent=f"anchor:{anchor.name}",
+            )
             event_dict["speaker"] = anchor.name
             event_dict["role"] = "anchor"
             event_dict["event_kind"] = "utterance"
@@ -750,6 +772,7 @@ class NewsConductor(BaseConductor):
                         reference_material=config.reference_material,
                         mode=config.fact_check,
                         content_mode="factual",
+                        perspective=config.perspective,
                         prior_context=self._build_prior_context(),
                     )
                 except Exception as exc:
@@ -758,6 +781,13 @@ class NewsConductor(BaseConductor):
                         seg_id, exc,
                     )
                     break
+
+                if fc_report.has_fabrications:
+                    fc_report = self._challenge_fabrications(
+                        fc_report,
+                        generator_agent=f"anchor:{anchor.name}",
+                        perspective=config.perspective,
+                    )
 
                 if not (fc_report.has_fabrications or fc_report.has_contradictions):
                     break  # Segment passed.
@@ -797,7 +827,10 @@ class NewsConductor(BaseConductor):
                                 ]
                             )
                         )
-                        retry_event = self._parse_response(retry_raw)
+                        retry_event = self._parse_response(
+                            retry_raw,
+                            from_agent=f"anchor:{anchor.name}",
+                        )
                         retry_event["speaker"] = anchor.name
                         retry_event["role"] = "anchor"
                         retry_event["event_kind"] = "utterance"
@@ -815,6 +848,17 @@ class NewsConductor(BaseConductor):
                         )
                         break
                 else:
+                    self._report_issue_to_director(
+                        from_agent=f"anchor:{anchor.name}",
+                        summary=(
+                            f"Could not resolve fact-check objections for {seg_id} "
+                            f"after {config.max_retries} attempts."
+                        ),
+                        proposed_remediation=(
+                            "Tighten the next segment around reference-backed facts "
+                            "and avoid disputed claims."
+                        ),
+                    )
                     for r in blocking:
                         self._length_warnings.append(
                             f"[{seg_id}] FACT_CHECK_WARN: Published with "
@@ -860,7 +904,10 @@ class NewsConductor(BaseConductor):
         )
         self._llm_calls += 1
 
-        event_dict = self._parse_response(raw_response)
+        event_dict = self._parse_response(
+            raw_response,
+            from_agent=f"host:{host.name}",
+        )
         event_dict["speaker"] = host.name
         event_dict["role"] = "host"
         event_dict["event_kind"] = "narration"
@@ -881,7 +928,7 @@ class NewsConductor(BaseConductor):
     # RESPONSE PARSING
     # ═══════════════════════════════════════════════════════════════════
 
-    def _parse_response(self, raw: str) -> dict:
+    def _parse_response(self, raw: str, *, from_agent: str | None = None) -> dict:
         """Parse an agent's JSON response into an event dict.
 
         Handles markdown fences, preamble text, and graceful fallback.
@@ -901,7 +948,7 @@ class NewsConductor(BaseConductor):
 
         try:
             data = json.loads(cleaned)
-            return data
+            return self._capture_issue_flag(data, from_agent=from_agent)
         except (json.JSONDecodeError, TypeError):
             return {
                 "text": raw.strip()[:500],
@@ -972,6 +1019,8 @@ class NewsConductor(BaseConductor):
             closing_strategy=director.closing_strategy or "(natural ending)",
             recent_content=recent_text or "(broadcast just started)",
         )
+        if pending_issues := self._consume_pending_issue_reports():
+            prompt = f"PENDING ISSUE REPORTS FROM CAST:\n{pending_issues}\n\n{prompt}"
 
         raw = self._client.chat(
             messages=[
@@ -983,8 +1032,14 @@ class NewsConductor(BaseConductor):
         self._llm_calls += 1
 
         result = self._parse_response(raw)
+        previous_note = self._director_note
         mood = result.get("mood_note", "")
         nudge = result.get("nudge", "")
         self._director_note = f"{mood} {nudge}".strip() if (mood or nudge) else ""
+        if self._director_note != previous_note:
+            self._broadcast_director_note(
+                self._director_note,
+                summary="Director updated pacing guidance.",
+            )
 
         return result

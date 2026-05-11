@@ -175,7 +175,7 @@ def _extract_json(path: Path) -> str:
     ``{"text": …}`` dict entry is included.  Falls back to empty string if
     no textual content is found.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, str):
         return data
@@ -1070,7 +1070,7 @@ class DocumentIngester:
         deduped = 0
         new_hashes: set[str] = set()
         path = self._output_dir / f"{doc_hash}.jsonl"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             for chunk in chunks:
                 # Normalise before hashing: collapse whitespace, strip.
                 normalised = " ".join(chunk.text.split())

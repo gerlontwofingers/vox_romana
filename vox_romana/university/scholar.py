@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 # Per-prompt char caps — keep small models happy and prompts well under 8k tokens.
 _MAX_ARTICLE_CHARS = 6000
-_MAX_SYNTHESIS_CHARS_IN_PROMPT = 2500
+MAX_SYNTHESIS_CHARS_IN_PROMPT = 2500
 _MAX_LINKS_IN_PROMPT = 50
 _MAX_NOTES_FOR_SYNTHESIS = 40       # most-recent-N notes packed into the synthesis prompt
 _MAX_NOTES_FOR_FINALIZE = 200       # final pass gets a wider window
@@ -66,12 +66,12 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE | re.IGNORECASE)
 
 
-def _strip_think(raw: str) -> str:
+def strip_think(raw: str) -> str:
     """Strip DeepSeek-R1 ``<think>…</think>`` blocks from a response."""
     return _THINK_RE.sub("", raw or "").strip()
 
 
-def _extract_json(raw: str) -> Any | None:
+def extract_json(raw: str) -> Any | None:
     """Best-effort JSON extraction from an LLM response.
 
     Strips ``<think>`` blocks (DeepSeek-R1), code fences, and tries to
@@ -80,7 +80,7 @@ def _extract_json(raw: str) -> Any | None:
     """
     if not raw:
         return None
-    text = _strip_think(raw)
+    text = strip_think(raw)
     # Strip ```json … ``` fences if present.
     text = _FENCE_RE.sub("", text).strip()
     # Direct parse.
@@ -99,6 +99,12 @@ def _extract_json(raw: str) -> Any | None:
                 continue
     logger.warning("Could not parse JSON from response: %.200s", text)
     return None
+
+
+# Backwards-compatible aliases for older internal callers and tests.
+_MAX_SYNTHESIS_CHARS_IN_PROMPT = MAX_SYNTHESIS_CHARS_IN_PROMPT
+_strip_think = strip_think
+_extract_json = extract_json
 
 
 def _format_hms(seconds: float) -> str:

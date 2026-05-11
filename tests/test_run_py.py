@@ -118,6 +118,19 @@ class TestParseArgs:
         ])
         assert args.video_output == tmp_path
 
+    def test_perspective_default_none(self, tmp_prompt):
+        """--perspective should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.perspective is None
+
+    def test_perspective_parses(self, tmp_prompt):
+        """--perspective should capture the provided framing string."""
+        args = parse_args([
+            str(tmp_prompt),
+            "--perspective", "from Guatemala's geographic perspective",
+        ])
+        assert args.perspective == "from Guatemala's geographic perspective"
+
     def test_render_mode_with_script_input(self, tmp_json):
         """--mode render with --script-input should parse correctly."""
         args = parse_args([

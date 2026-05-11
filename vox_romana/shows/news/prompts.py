@@ -113,7 +113,7 @@ You are an EMCEE — a first-person host who speaks directly TO the audience.
 # ═══════════════════════════════════════════════════════════════════════════
 
 SEGMENT_DELIVERY_PROMPT = """\
-SEGMENT {segment_number} of {total_segments}: {headline}
+HEADLINE: {headline}
 
 ANGLE: {angle}
 TONE FOR THIS SEGMENT: {segment_tone}

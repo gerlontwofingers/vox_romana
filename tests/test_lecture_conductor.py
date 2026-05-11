@@ -189,7 +189,10 @@ class TestLectureArchitectParsing:
         })
 
         config = bootstrap._parse_architect_response(
-            canned, brief="x", reference_material=None, fact_check="off",
+            canned,
+            brief="A lecture by Prof. Marcus Aurelio on Stoic ethics",
+            reference_material=None,
+            fact_check="off",
         )
 
         assert config.title == "Why Stoicism Endures"
@@ -209,9 +212,23 @@ class TestLectureArchitectParsing:
             "professor": {"name": "P"},
             "sections": [{"title": "S", "section_type": "concept"}],
         }) + "\n```"
-        config = bootstrap._parse_architect_response(wrapped)
+        config = bootstrap._parse_architect_response(wrapped, brief="Lecture by P")
         assert config.title == "X"
         assert config.professor.name == "P"
+
+    def test_curates_professor_name_when_brief_is_generic(self):
+        client = Mock()
+        bootstrap = LectureBootstrap(client=client)
+        canned = json.dumps({
+            "title": "Why Stoicism Endures",
+            "professor": {"name": "Prof. Marcus Aurelio", "voice_gender": "male"},
+            "sections": [{"title": "Intro", "section_type": "intro"}],
+        })
+
+        config = bootstrap._parse_architect_response(canned, brief="A lecture on Stoicism")
+
+        assert config.professor.name != "Prof. Marcus Aurelio"
+        assert config.professor.name
 
     def test_invalid_json_raises(self):
         client = Mock()
@@ -289,6 +306,24 @@ class TestResponseParsing:
         wrapped = "```json\n" + make_professor_json(text="Wrapped.") + "\n```"
         result = conductor._parse_response(wrapped)
         assert result["text"] == "Wrapped."
+
+    def test_issue_flag_queues_report_and_strips_field(self):
+        config = make_test_config()
+        conductor = LectureConductor(config, client=Mock())
+        raw = json.dumps({
+            "text": "Hello.",
+            "issue_flag": {
+                "summary": "This explanation needs a sourced example.",
+                "proposed_remediation": "Use a simpler verified example.",
+            },
+        })
+
+        result = conductor._parse_response(raw, from_agent="professor")
+
+        assert "issue_flag" not in result
+        rendered = conductor._consume_pending_issue_reports()
+        assert "FROM: professor" in rendered
+        assert '"summary": "This explanation needs a sourced example."' in rendered
 
     def test_fallback_on_invalid_json(self):
         config = make_test_config()

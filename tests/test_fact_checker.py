@@ -1259,3 +1259,143 @@ class TestKnowledgeVerifier:
         system_content = next(m["content"] for m in messages if m["role"] == "system")
         assert system_content == CLAIM_VERIFIER_PROMPT
         assert system_content != KNOWLEDGE_VERIFIER_PROMPT
+
+
+class TestPerspectivePromptGuardrails:
+    """Prompt contracts for observer-relative geographic phrasing."""
+
+    def test_extract_claims_uses_observer_relative_guardrail(self):
+        client = _make_client("[]")
+        checker = FactChecker(client=client)
+
+        checker.extract_claims("Advertencias de seguridad en la frontera norte.")
+
+        call_args = client.chat.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        system_content = next(m["content"] for m in messages if m["role"] == "system")
+        assert "observer-relative geographic or relational labels" in system_content.lower()
+        assert "the northern border" in system_content.lower()
+
+    def test_reference_verifier_uses_perspectival_guardrail(self):
+        claims = [FlaggedClaim(text="Advertencias en la frontera norte", reason="geography")]
+        client = _make_client(json.dumps([
+            {
+                "claim": "Advertencias en la frontera norte",
+                "verdict": "unverifiable",
+                "explanation": "Perspective-dependent wording",
+                "source": "reference_material",
+            }
+        ]))
+        checker = FactChecker(client=client)
+
+        checker.verify_claims(
+            claims,
+            reference_material="Safety warnings on the southern border with Guatemala.",
+            content_mode="factual",
+        )
+
+        call_args = client.chat.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        system_content = next(m["content"] for m in messages if m["role"] == "system")
+        assert "perspectival naming differences" in system_content
+        assert "the southern border" in system_content
+
+    def test_knowledge_verifier_uses_perspectival_guardrail(self):
+        claims = [FlaggedClaim(text="Advertencias en la frontera norte", reason="geography")]
+        client = _make_client(json.dumps([
+            {
+                "claim": "Advertencias en la frontera norte",
+                "verdict": "unverifiable",
+                "explanation": "Perspective-dependent wording",
+                "source": "llm_knowledge",
+            }
+        ]))
+        checker = FactChecker(client=client)
+
+        checker.verify_claims(claims, reference_material=None, content_mode="factual")
+
+        call_args = client.chat.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        system_content = next(m["content"] for m in messages if m["role"] == "system")
+        assert "perspectival naming differences" in system_content
+        assert "the southern border" in system_content
+
+    def test_canon_verifier_uses_perspectival_guardrail(self):
+        claims = [FlaggedClaim(text="The southern marches lie beyond the northern border", reason="location")]
+        client = _make_client(json.dumps([
+            {
+                "claim": "The southern marches lie beyond the northern border",
+                "verdict": "unverifiable",
+                "explanation": "Perspective-dependent wording",
+                "source": "none",
+            }
+        ]))
+        checker = FactChecker(client=client)
+
+        checker.verify_claims(
+            claims,
+            reference_material=None,
+            content_mode="fictional-universe",
+        )
+
+        call_args = client.chat.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        system_content = next(m["content"] for m in messages if m["role"] == "system")
+        assert "perspectival naming differences" in system_content
+        assert "the northern border" in system_content
+
+
+class TestPerspectiveContextWiring:
+    """Perspective strings are threaded into verifier user messages."""
+
+    def test_reference_verifier_prepends_perspective_context(self):
+        claims = [FlaggedClaim(text="Advertencias en la frontera norte", reason="geography")]
+        client = _make_client(json.dumps([
+            {
+                "claim": "Advertencias en la frontera norte",
+                "verdict": "unverifiable",
+                "explanation": "Perspective-dependent wording",
+                "source": "reference_material",
+            }
+        ]))
+        checker = FactChecker(client=client)
+
+        checker.verify_claims(
+            claims,
+            reference_material="Warnings about the southern border.",
+            content_mode="factual",
+            perspective="from Guatemala's geographic perspective",
+        )
+
+        call_args = client.chat.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        user_content = next(m["content"] for m in messages if m["role"] == "user")
+        assert user_content.startswith("PERSPECTIVE CONTEXT:\nfrom Guatemala's geographic perspective")
+        assert "REFERENCE MATERIAL:" in user_content
+
+    def test_check_content_forwards_perspective_to_verifier(self):
+        extractor_resp = json.dumps([
+            {"claim": "Advertencias en la frontera norte", "reason": "geography", "search_query": None},
+        ])
+        verifier_resp = json.dumps([
+            {
+                "claim": "Advertencias en la frontera norte",
+                "verdict": "unverifiable",
+                "explanation": "Perspective-dependent wording",
+                "source": "reference_material",
+            }
+        ])
+        client = _make_client(extractor_resp, verifier_resp)
+        checker = FactChecker(client=client)
+
+        checker.check_content(
+            "Advertencias de seguridad en la frontera norte.",
+            content_id="seg_001",
+            reference_material="Warnings about the southern border.",
+            perspective="from Guatemala's geographic perspective",
+        )
+
+        verify_call = client.chat.call_args_list[1]
+        messages = verify_call[1]["messages"] if "messages" in verify_call[1] else verify_call[0][0]
+        user_content = next(m["content"] for m in messages if m["role"] == "user")
+        assert user_content.startswith("PERSPECTIVE CONTEXT:\nfrom Guatemala's geographic perspective")

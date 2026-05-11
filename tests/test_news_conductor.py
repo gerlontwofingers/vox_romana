@@ -239,6 +239,37 @@ class TestPromptBuilding:
         assert conductor._host_prompt is None
 
 
+class TestPromptMetadataLeaks:
+    """Regression tests for machine-only metadata leaking into anchor prompts."""
+
+    def test_generate_segment_prompt_omits_rundown_index_and_beat_labels(self):
+        config = make_test_config(num_segments=3, with_host=False)
+        config.segments[0].target_beats = 3
+        conductor = NewsConductor(config, client=Mock())
+        conductor._show_id = "test1234"
+        conductor._anchor_prompts = {config.anchors[0].name: "anchor prompt"}
+
+        session = Mock()
+        session.send.return_value = make_anchor_json("Story delivered.")
+        conductor._anchor_sessions = {config.anchors[0].name: session}
+
+        conductor._generate_segment(
+            segment=config.segments[0],
+            anchor=config.anchors[0],
+            segment_number=1,
+            total_segments=3,
+            global_order_start=0,
+        )
+
+        prompts = [call.args[0] for call in session.send.call_args_list]
+        assert len(prompts) == 3
+        assert all("SEGMENT 1 of 3" not in prompt for prompt in prompts)
+        assert all("LEAD for this story" not in prompt for prompt in prompts)
+        assert all("BODY of this story" not in prompt for prompt in prompts)
+        assert all("TAG for this story" not in prompt for prompt in prompts)
+        assert all("HEADLINE: Story 1 Headline" in prompt for prompt in prompts)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 3: Response Parsing
 # ═══════════════════════════════════════════════════════════════════════════
@@ -262,6 +293,22 @@ class TestResponseParsing:
         preambled = f"Here's my delivery:\n{make_anchor_json('After preamble.')}"
         result = self.conductor._parse_response(preambled)
         assert result["text"] == "After preamble."
+
+    def test_parse_issue_flag_queues_report_and_strips_field(self):
+        payload = json.dumps({
+            "text": "Breaking news.",
+            "issue_flag": {
+                "summary": "Need a cited source for this claim.",
+                "proposed_remediation": "Trim to already verified facts.",
+            },
+        })
+
+        result = self.conductor._parse_response(payload, from_agent="anchor:Mara")
+
+        assert "issue_flag" not in result
+        rendered = self.conductor._consume_pending_issue_reports()
+        assert "FROM: anchor:Mara" in rendered
+        assert '"summary": "Need a cited source for this claim."' in rendered
 
     def test_parse_garbage_falls_back(self):
         result = self.conductor._parse_response("I refuse to use JSON!")
@@ -555,7 +602,9 @@ class TestBootstrapParsing:
         })
 
         config = bootstrap._parse_architect_response(
-            raw, brief="Test brief", fact_check="off",
+            raw,
+            brief="Test brief starring Alex Rivera and The Narrator",
+            fact_check="off",
         )
 
         assert config.title == "Tech Weekly"
@@ -566,6 +615,33 @@ class TestBootstrapParsing:
         assert config.segments[0].headline == "AI Breakthrough"
         assert config.show_host is not None
         assert config.show_host.name == "The Narrator"
+
+    def test_parse_architect_curates_generated_names(self):
+        bootstrap = NewsBootstrap(client=Mock())
+
+        raw = json.dumps({
+            "title": "Tech Weekly",
+            "topic": "This week in technology",
+            "tone": "conversational",
+            "anchors": [
+                {"name": "Alex Rivera", "style": "Tech-savvy, fast-paced"}
+            ],
+            "segments": [
+                {"headline": "AI Breakthrough", "segment_type": "anchor_read"}
+            ],
+            "show_host": {
+                "name": "The Narrator",
+                "role": "narrator",
+                "style": "Documentary tone",
+            },
+        })
+
+        config = bootstrap._parse_architect_response(raw, brief="Weekly tech headlines")
+
+        assert config.anchors[0].name != "Alex Rivera"
+        assert config.show_host is not None
+        assert config.show_host.name != "The Narrator"
+        assert config.anchors[0].name != config.show_host.name
 
     def test_parse_director_response(self):
         """Canned director JSON should produce a valid DirectorBrief."""
@@ -652,6 +728,15 @@ class TestNewsModels:
 class TestDirectorCheckIn:
     """Tests for the Director check-in mechanism."""
 
+    def test_build_agents_registers_named_anchor_sessions(self):
+        config = make_test_config(num_segments=1, with_host=False)
+        conductor = NewsConductor(config, client=Mock())
+
+        conductor._build_agents()
+
+        for anchor in config.anchors:
+            assert f"anchor:{anchor.name}" in conductor._session_registry
+
     def test_director_check_updates_note(self):
         """Director check-in should update _director_note."""
         config = make_test_config(num_segments=2, with_host=False)
@@ -670,6 +755,25 @@ class TestDirectorCheckIn:
         result = conductor._director_check(2, 3)
 
         assert "energy" in conductor._director_note.lower() or "speed" in conductor._director_note.lower()
+
+    def test_director_check_broadcasts_updated_note(self):
+        config = make_test_config(num_segments=2, with_host=False)
+        mock_client = Mock()
+        mock_client.chat.return_value = make_director_json(
+            "Bring more energy.", nudge="Speed up the next segment.",
+        )
+        conductor = NewsConductor(config, client=mock_client)
+        conductor._build_agents()
+        anchor_name = config.anchors[0].name
+        routed = Mock()
+        conductor._session_registry[f"anchor:{anchor_name}"] = routed
+
+        conductor._director_check(2, 3)
+
+        routed.inject_context.assert_called_once()
+        rendered = routed.inject_context.call_args.args[0]
+        assert "MESSAGE TYPE: broadcast" in rendered
+        assert "Bring more energy." in rendered
 
     def test_no_director_returns_empty(self):
         """Without a director brief, check should return empty dict."""

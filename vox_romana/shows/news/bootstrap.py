@@ -26,6 +26,7 @@ from typing import Any
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
+from ...core.names import build_curated_name_map, remap_name
 from ...core.search import BaseSearchProvider, build_research_provider
 from .config import AnchorConfig, NewsConfig, NewsDirectorBrief, SegmentConfig
 
@@ -75,7 +76,8 @@ text outside the JSON block.
     "style": "string — hosting style"
   },
   "language": "BCP-47 code of the primary spoken language. Infer from anchor names, location keywords, topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
-  "music_style": "string — music style for this show's intro/outro bumpers. Infer from the brief's genre, tone, language, and location. Be specific and evocative. Examples: 'upbeat latin cumbia news theme' (Guatemala/Mexico), 'orchestral news underscore, authoritative BBC style' (English news), 'electronic news beat, modern' (tech show). Never null or empty."
+  "music_style": "string — music style for this show's intro/outro bumpers. Infer from the brief's genre, tone, language, and location. Be specific and evocative. Examples: 'upbeat latin cumbia news theme' (Guatemala/Mexico), 'orchestral news underscore, authoritative BBC style' (English news), 'electronic news beat, modern' (tech show). Never null or empty.",
+  "perspective": "string or null — the primary geographic, cultural, or institutional vantage point from which this broadcast speaks. This anchors observer-relative language ('the northern border', 'our country', 'the opposition') so downstream fact-checkers do not flag perspectival phrasing as fabrication. Examples: 'from Guatemala' (a Guatemalan news show — Mexico is to its NORTH, El Salvador/Honduras to its south), 'from the Venezuelan opposition's viewpoint', 'from a Tokyo financial-markets desk', 'from inside the EU institutions in Brussels'. Use null ONLY if the show is genuinely neutral / global / non-positional (e.g. a planetary science roundup with no national framing). When in doubt about location keywords in the brief, infer a perspective rather than null."
 }
 
 RULES:
@@ -219,7 +221,10 @@ class NewsBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
             else:
                 researcher = DebateResearcher(self._client, effective_provider, query_formulator_prompt=NEWS_QUERY_FORMULATOR_PROMPT)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
         config = self._run_architect(brief, reference_material, fact_check, target_words=target_words)
@@ -302,11 +307,19 @@ class NewsBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
+        host_data = data.get("show_host") or {}
+        name_specs = [
+            (a.get("name", ""), None, f"news.anchor.{idx}")
+            for idx, a in enumerate(data.get("anchors", []))
+        ]
+        name_specs.append((host_data.get("name", ""), None, "news.show_host"))
+        name_map = build_curated_name_map(name_specs, brief=brief)
+
         # Build anchors.
         anchors = []
         for a in data.get("anchors", []):
             anchors.append(AnchorConfig(
-                name=a.get("name", ""),
+                name=remap_name(a.get("name", ""), name_map) or "",
                 style=a.get("style"),
             ))
 
@@ -328,7 +341,7 @@ class NewsBootstrap(BaseShowBootstrap):
         show_host = None
         if host_data:
             show_host = ShowHostConfig(
-                name=host_data.get("name", ""),
+                name=remap_name(host_data.get("name", ""), name_map) or "",
                 role=host_data.get("role", "narrator"),
                 style=host_data.get("style"),
             )
@@ -347,6 +360,7 @@ class NewsBootstrap(BaseShowBootstrap):
             show_host=show_host,
             language=(data.get("language") or "en").strip().lower(),
             music_style=data.get("music_style", ""),
+            perspective=(data.get("perspective") or None),
         )
 
     def _profile_anchor(

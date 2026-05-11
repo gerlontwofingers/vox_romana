@@ -1009,10 +1009,12 @@ class TTSRenderer:
         speaker_names = [name_map[n] for n in speaker_names]
         # Deduplicate while preserving order (two variants of the same host).
         seen_canonical: set[str] = set()
-        speaker_names = [
-            n for n in speaker_names
-            if not (n in seen_canonical or seen_canonical.add(n))  # type: ignore[func-returns-value]
-        ]
+        deduped: list[str] = []
+        for n in speaker_names:
+            if n not in seen_canonical:
+                seen_canonical.add(n)
+                deduped.append(n)
+        speaker_names = deduped
         speaker_languages: dict[str, str] = {}
         for raw_name, canonical_name in name_map.items():
             effective_language = (

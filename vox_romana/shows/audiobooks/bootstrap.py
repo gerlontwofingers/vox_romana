@@ -20,6 +20,7 @@ import json
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
+from ...core.names import build_curated_name_map, remap_name, remap_names
 from ...core.search import BaseSearchProvider
 from .config import (
     AudiobookConfig,
@@ -74,7 +75,8 @@ text outside the JSON block.
     }}
   ],
   "language": "BCP-47 code of the primary spoken language. Infer from character names, location references, and topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
-  "music_style": "string — music style for this audiobook's intro/outro bumpers. Infer from the genre, tone, and setting. Be specific and evocative. Examples: 'atmospheric orchestral, cinematic' (thriller), 'gentle acoustic guitar bed' (self-help), 'sweeping fantasy orchestra with choir' (epic fantasy). Never null or empty."
+  "music_style": "string — music style for this audiobook's intro/outro bumpers. Infer from the genre, tone, and setting. Be specific and evocative. Examples: 'atmospheric orchestral, cinematic' (thriller), 'gentle acoustic guitar bed' (self-help), 'sweeping fantasy orchestra with choir' (epic fantasy). Never null or empty.",
+  "perspective": "string or null — the primary geographic, cultural, or institutional vantage point from which this audiobook is narrated. This anchors observer-relative language ('the northern border', 'our city', 'the empire to the east') so downstream fact-checkers do not flag perspectival phrasing as fabrication. Examples: 'from Guatemala' (Mexico is to its NORTH, El Salvador/Honduras to its south), 'from the perspective of the Roman Senate, late Republic', 'from a 19th-century New England whaling town'. For fiction, give the in-world vantage point. Use null ONLY if the work is genuinely placeless / omniscient with no positional framing."
 - Characters array should list all named characters with roles.
 - ALWAYS respond with valid JSON. Nothing else.
 """
@@ -199,7 +201,10 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
         config = self._run_architect(
@@ -294,10 +299,19 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        # Build narrator.
         narrator_data = data.get("narrator", {})
+        name_specs = [
+            (narrator_data.get("name", ""), None, "audiobook.narrator"),
+        ]
+        name_specs.extend(
+            (c.get("name", ""), c.get("voice_gender"), f"audiobook.character.{idx}")
+            for idx, c in enumerate(data.get("characters", []))
+        )
+        name_map = build_curated_name_map(name_specs, brief=brief)
+
+        # Build narrator.
         narrator = NarratorConfig(
-            name=narrator_data.get("name", ""),
+            name=remap_name(narrator_data.get("name", ""), name_map) or "",
             style=narrator_data.get("style"),
         )
 
@@ -305,7 +319,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
         characters = []
         for c in data.get("characters", []):
             characters.append(ParticipantProfile(
-                name=c.get("name", ""),
+                name=remap_name(c.get("name", ""), name_map) or "",
                 role=c.get("role", "character"),
                 voice_gender=c.get("voice_gender"),
             ))
@@ -320,7 +334,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 tone=ch.get("tone"),
                 duration_hint=ch.get("duration_hint", "medium"),
                 target_beats=ch.get("target_beats", 2),
-                characters=ch.get("characters", []),
+                characters=remap_names(ch.get("characters", []), name_map),
             ))
 
         return AudiobookConfig(
@@ -337,6 +351,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
             chapters=chapters,
             language=(data.get("language") or "en").strip().lower(),
             music_style=data.get("music_style", ""),
+            perspective=(data.get("perspective") or None),
         )
 
     def _profile_narrator(

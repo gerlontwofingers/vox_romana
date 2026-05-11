@@ -61,6 +61,7 @@ from typing import Any
 
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
+from ...core.names import build_curated_name_map, remap_name
 from ...core.search import BaseSearchProvider, build_research_provider
 from .config import (
     PodcastConfig,
@@ -321,7 +322,10 @@ class PodcastBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 1: ARCHITECT
@@ -440,11 +444,19 @@ class PodcastBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
+        name_map = build_curated_name_map(
+            [
+                (h.get("name", ""), h.get("gender"), f"podcast.host.{idx}")
+                for idx, h in enumerate(data.get("hosts", []))
+            ],
+            brief=brief,
+        )
+
         # ── Build hosts ──────────────────────────────────────────────
         hosts = []
         for h in data.get("hosts", []):
             hosts.append(PodcastHostProfile(
-                name=h.get("name", ""),
+                name=remap_name(h.get("name", ""), name_map) or "",
                 gender=h.get("gender"),  # REQUIRED — validate() will catch if missing
                 role=h.get("role", "host"),
                 speech_style=h.get("speech_style"),
@@ -459,7 +471,7 @@ class PodcastBootstrap(BaseShowBootstrap):
             segments.append(PodcastSegmentConfig(
                 segment_type=s.get("segment_type", "banter"),
                 topic=s.get("topic", ""),
-                lead_host=s.get("lead_host"),
+                lead_host=remap_name(s.get("lead_host"), name_map),
                 target_words=s.get("target_words"),
                 duration_hint=s.get("duration_hint", "medium"),
             ))

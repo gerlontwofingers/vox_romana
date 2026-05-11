@@ -60,7 +60,7 @@ encoding mood through tone/pace/pause_before instead.
 # ═══════════════════════════════════════════════════════════════════════════
 
 CHAPTER_DELIVERY_PROMPT = """\
-CHAPTER {chapter_number} of {total_chapters}: {title}
+CHAPTER TITLE: {title}
 
 SYNOPSIS: {synopsis}
 

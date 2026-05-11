@@ -434,9 +434,9 @@ class ScholarSession:
         The ``text`` field contains the note's summary + key_facts so it
         is fully searchable via the existing ChromaVectorIndex and MemoryRecall.
 
-        The ``source`` field uses ``university://{session_id}`` so
-        MemorySearchProvider can distinguish university notes from other
-        ingested documents.
+        The ``source`` field preserves the note's original ``source_url``
+        when present, including pseudo-URLs like ``memory://...``. Notes
+        without provenance fall back to ``university://{session_id}``.
 
         Format is identical to :meth:`vox_romana.memory.ingest.DocumentChunk.to_dict`:
 
@@ -462,10 +462,12 @@ class ScholarSession:
             if facts_block:
                 text = f"{text}\n\nKey facts:\n{facts_block}" if text else facts_block
 
+            source = note.source_url or f"university://{self.session_id}/{note.article_title}"
+
             chunks.append({
                 "text": text,
                 "title": note.article_title,
-                "source": f"university://{self.session_id}/{note.article_title}",
+                "source": source,
                 "chunk_index": i,
                 "total_chunks": total,
                 "format": ".university_note",

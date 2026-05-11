@@ -61,10 +61,10 @@ from typing import TYPE_CHECKING
 from vox_romana.university.config import UniversityConfig
 from vox_romana.university.seminar_plan import SeminarPlan
 from vox_romana.university.scholar import (
+    MAX_SYNTHESIS_CHARS_IN_PROMPT,
     Scholar,
-    _MAX_SYNTHESIS_CHARS_IN_PROMPT,
-    _extract_json,
-    _strip_think,
+    extract_json,
+    strip_think,
 )
 from vox_romana.university.session import (
     ColloquiumExchange,
@@ -267,7 +267,7 @@ class University:
 
         # Build per-session blocks. Cap each block so the merged prompt
         # stays a reasonable size even with 4–6 sessions.
-        per_block_cap = max(800, _MAX_SYNTHESIS_CHARS_IN_PROMPT // max(1, len(usable)))
+        per_block_cap = max(800, MAX_SYNTHESIS_CHARS_IN_PROMPT // max(1, len(usable)))
         blocks: list[str] = []
         for s in usable:
             synth = s.synthesis or "[no synthesis written — using notes only]"
@@ -756,7 +756,7 @@ class University:
             )
             return None
 
-        data = _extract_json(_strip_think(raw or ""))
+        data = extract_json(strip_think(raw or ""))
         comment = ""
         queries: list[str] = []
         if isinstance(data, dict):

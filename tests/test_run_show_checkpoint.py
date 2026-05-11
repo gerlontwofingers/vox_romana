@@ -188,3 +188,39 @@ class TestPreflightBriefValidation:
 
         captured = capsys.readouterr()
         assert "PRE-FLIGHT WARNING" not in captured.out
+
+    def test_preflight_forwards_perspective_to_fact_checker(self, tmp_path):
+        """run_generate forwards args.perspective into brief preflight checking."""
+        from vox_romana.core.editing.models import FactCheckReport
+
+        mock_checker = MagicMock()
+        mock_checker.check_content.return_value = FactCheckReport(
+            content_id="brief",
+            mode="quick",
+            results=[],
+            summary="clean",
+        )
+
+        args = _make_preflight_args(tmp_path, fact_check="quick")
+        args.perspective = "from Guatemala's geographic perspective"
+        args.output.mkdir(parents=True, exist_ok=True)
+        out_file = tmp_path / "show.json"
+
+        with (
+            patch("vox_romana.cli.runners.DeepSeekClient"),
+            patch("vox_romana.cli.runners.FactChecker") as MockFC,
+            patch("vox_romana.cli.runners._RUNNERS", {"news": MagicMock(return_value=out_file)}),
+            patch("vox_romana.cli.runners.ShowRouter") as MockRouter,
+        ):
+            MockFC.build_default.return_value = mock_checker
+            router_instance = MockRouter.return_value
+            router_instance.classify.return_value = MagicMock(
+                show_type="news", confidence=0.9, needs_research=False, reasoning="test"
+            )
+
+            from vox_romana.cli.runners import run_generate
+            run_generate(args)
+
+        assert mock_checker.check_content.call_args.kwargs["perspective"] == (
+            "from Guatemala's geographic perspective"
+        )

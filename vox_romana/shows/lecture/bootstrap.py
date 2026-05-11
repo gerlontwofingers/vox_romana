@@ -12,6 +12,7 @@ import json
 
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
+from ...core.names import build_curated_name_map, remap_name
 from ...core.search import BaseSearchProvider
 from .config import (
     LectureConfig,
@@ -120,7 +121,10 @@ class LectureBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
         config = self._run_architect(
@@ -201,10 +205,21 @@ class LectureBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        # Build professor.
         prof_data = data.get("professor", {})
+        name_map = build_curated_name_map(
+            [
+                (
+                    prof_data.get("name", ""),
+                    prof_data.get("voice_gender"),
+                    "lecture.professor",
+                )
+            ],
+            brief=brief,
+        )
+
+        # Build professor.
         professor = ProfessorConfig(
-            name=prof_data.get("name", ""),
+            name=remap_name(prof_data.get("name", ""), name_map) or "",
             title=prof_data.get("title"),
             style=prof_data.get("style"),
             expertise=prof_data.get("expertise", []),

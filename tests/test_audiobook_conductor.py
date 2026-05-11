@@ -223,6 +223,34 @@ class TestConductorPrompts:
         assert conductor._build_narrator_prompt() == ""
 
 
+class TestPromptMetadataLeaks:
+    """Regression tests for machine-only metadata leaking into narrator prompts."""
+
+    def test_generate_chapter_prompt_omits_indices_and_raw_beat_labels(self):
+        config = make_test_config(num_chapters=3, with_director=False, target_beats=3)
+        conductor = AudiobookConductor(config, client=Mock())
+        conductor._audiobook_id = "test1234"
+
+        session = Mock()
+        session.send.return_value = make_narrator_json("Narration beat.")
+        conductor._narrator_session = session
+
+        conductor._generate_chapter(
+            chapter=config.chapters[0],
+            chapter_number=1,
+            total_chapters=3,
+            global_order_start=0,
+        )
+
+        prompts = [call.args[0] for call in session.send.call_args_list]
+        assert len(prompts) == 3
+        assert all("CHAPTER 1 of 3" not in prompt for prompt in prompts)
+        assert all("OPENING of this chapter" not in prompt for prompt in prompts)
+        assert all("BODY of this chapter" not in prompt for prompt in prompts)
+        assert all("CLOSING of this chapter" not in prompt for prompt in prompts)
+        assert all("CHAPTER TITLE: Chapter 1: Title 1" in prompt for prompt in prompts)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 3: Response Parsing
 # ═══════════════════════════════════════════════════════════════════════════
@@ -251,6 +279,23 @@ class TestResponseParsing:
         raw = f"Here is the narration:\n{make_narrator_json()}"
         result = c._parse_response(raw)
         assert "waves" in result["text"]
+
+    def test_parse_issue_flag_queues_report_and_strips_field(self):
+        c = self._get_conductor()
+        raw = json.dumps({
+            "text": "The waves crashed against the ancient seawall.",
+            "issue_flag": {
+                "summary": "This detail is not grounded in the source text.",
+                "proposed_remediation": "Stay with reference-backed narration.",
+            },
+        })
+
+        result = c._parse_response(raw, from_agent="narrator")
+
+        assert "issue_flag" not in result
+        rendered = c._consume_pending_issue_reports()
+        assert "FROM: narrator" in rendered
+        assert '"summary": "This detail is not grounded in the source text."' in rendered
 
     def test_parse_garbage_falls_back(self):
         c = self._get_conductor()
@@ -571,7 +616,10 @@ class TestBootstrapParsing:
         })
 
         config = bootstrap._parse_architect_response(
-            raw, brief="Test brief", reference_material=None, fact_check="off",
+            raw,
+            brief="Test brief about David Chen narrating Elena's first contact story",
+            reference_material=None,
+            fact_check="off",
         )
 
         assert config.title == "The Distant Shore"
@@ -583,6 +631,25 @@ class TestBootstrapParsing:
         assert len(config.chapters[0].key_points) == 2
         assert len(config.characters) == 1
         assert config.characters[0].name == "Elena"
+
+    def test_parse_architect_curates_names_and_chapter_refs(self):
+        bootstrap = self._get_bootstrap()
+        raw = json.dumps({
+            "title": "The Distant Shore",
+            "narrator": {"name": "David Chen", "style": "Warm, measured"},
+            "characters": [
+                {"name": "Elena", "role": "protagonist", "voice_gender": "female"},
+            ],
+            "chapters": [
+                {"title": "Chapter 1", "characters": ["Elena"]},
+            ],
+        })
+
+        config = bootstrap._parse_architect_response(raw, brief="A first-contact novella")
+
+        assert config.narrator.name != "David Chen"
+        assert config.characters[0].name != "Elena"
+        assert config.chapters[0].characters == [config.characters[0].name]
 
     def test_parse_architect_with_markdown_fences(self):
         bootstrap = self._get_bootstrap()

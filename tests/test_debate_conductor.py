@@ -34,6 +34,7 @@ from vox_romana import (
     ModeratorConfig,
     ParticipantProfile,
 )
+from vox_romana.core.editing.models import FactCheckResult
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,6 +151,16 @@ SUMMARY_RESPONSE = "Alice argued pro with data. Bob countered with methodology c
 class TestPromptBuilding:
     """Tests that system prompts are correctly assembled from config."""
 
+    def test_build_agents_registers_named_sessions(self):
+        config = make_test_config()
+        conductor = DebateConductor(config, client=Mock())
+
+        conductor._build_agents()
+
+        for participant in config.participants:
+            assert f"participant:{participant.name}" in conductor._session_registry
+        assert f"moderator:{config.moderator.name}" in conductor._session_registry
+
     def test_participant_prompt_includes_personality(self):
         """Participant system prompts should contain voice fingerprint and claims."""
         config = make_test_config()
@@ -222,6 +233,25 @@ class TestTurnParsing:
         preambled = f"Here's my response:\n{make_turn_json('After preamble.')}"
         result = self.conductor._parse_turn_response(preambled)
         assert result["text"] == "After preamble."
+
+    def test_parse_issue_flag_queues_report_and_strips_field(self):
+        data = json.dumps({
+            "text": "Hello world.",
+            "issue_flag": {
+                "summary": "I cannot support this claim with verified facts.",
+                "proposed_remediation": "Narrow to sourced claims only.",
+            },
+        })
+
+        result = self.conductor._parse_turn_response(
+            data,
+            from_agent="participant:Alice",
+        )
+
+        assert "issue_flag" not in result
+        rendered = self.conductor._consume_pending_issue_reports()
+        assert "FROM: participant:Alice" in rendered
+        assert '"summary": "I cannot support this claim with verified facts."' in rendered
 
     def test_parse_garbage_falls_back(self):
         """Totally unparseable text should fall back to raw text."""
@@ -415,6 +445,50 @@ class TestTurnLoop:
         total = result.total_llm_calls
         assert total > turn_calls  # Extra calls = director + possibly compression
 
+    def test_unresolved_fact_check_directs_moderator(self):
+        config = make_test_config(target_turns=4, with_director=False)
+        config.fact_check = "strict"
+        config.max_retries = 1
+        conductor = DebateConductor(config, client=Mock())
+        conductor._build_agents()
+
+        participant_session = Mock()
+        participant_session.send.return_value = make_turn_json("Unsupported claim.")
+        moderator_session = Mock()
+        conductor._agent_sessions["Alice"] = participant_session
+        conductor._session_registry["participant:Alice"] = participant_session
+        conductor._session_registry["moderator:Charlie"] = moderator_session
+
+        fabricated = FactCheckResult(
+            claim="Unsupported claim",
+            verdict="fabricated",
+            explanation="No supporting source found.",
+            source="reference_material",
+        )
+        report = Mock()
+        report.has_fabrications = True
+        report.has_contradictions = False
+        report.fabricated_claims = [fabricated]
+        report.contradicted_claims = []
+
+        conductor._fact_checker = Mock()
+        conductor._fact_checker.check_content.return_value = report
+        conductor._challenge_fabrications = Mock(return_value=report)
+
+        conductor._generate_turn(
+            speaker_name="Alice",
+            speaker_role="participant",
+            turn_number=2,
+            wrapping_up=False,
+            remaining_turns=3,
+        )
+
+        moderator_session.inject_context.assert_called_once()
+        rendered = moderator_session.inject_context.call_args.args[0]
+        assert "MESSAGE TYPE: directive" in rendered
+        assert "Unsupported claim" in rendered
+        assert "fact-check objections" in rendered
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 5: MergedDebate Output
@@ -563,6 +637,19 @@ class TestPreflightCheckBootstrap:
         conductor._preflight_check_bootstrap()
         # topic-only surface — still calls fact-checker (topic is non-empty)
         mock_fc.check_content.assert_called_once()
+
+    def test_preflight_forwards_config_perspective(self):
+        """Bootstrap preflight passes config.perspective to the fact-checker."""
+        conductor, mock_fc = self._make_conductor_with_fact_checker(
+            dramatic_arc="Act 1: posturing."
+        )
+        conductor.config.perspective = "from Guatemala's geographic perspective"
+
+        conductor._preflight_check_bootstrap()
+
+        assert mock_fc.check_content.call_args.kwargs["perspective"] == (
+            "from Guatemala's geographic perspective"
+        )
 
     def test_dramatic_arc_included_in_surfaces_when_non_empty(self):
         """dramatic_arc text is passed to fact-checker when present."""

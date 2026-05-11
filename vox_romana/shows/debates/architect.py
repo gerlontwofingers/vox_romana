@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 
 from ...core.client import DeepSeekClient
+from ...core.names import build_curated_name_map, remap_name
 from .config import (
     AudienceConfig,
     DebateConfig,
@@ -155,6 +156,7 @@ class DebateArchitect:
         *,
         reference_material: str | None = None,
         fact_check: str = "off",
+        target_words: int | None = None,
     ) -> DebateConfig:
         """Call the LLM and return a skeleton DebateConfig.
 
@@ -162,6 +164,8 @@ class DebateArchitect:
             brief:              Natural language description of the debate.
             reference_material: Optional factual source text to ground the output.
             fact_check:         Fact-check mode to set on the resulting config.
+            target_words:       Optional target word count for the full debate.
+                                Injected as a planning hint in the user message.
 
         Returns:
             A DebateConfig with cast, format, and ground rules filled in.
@@ -177,6 +181,13 @@ class DebateArchitect:
         user_parts = [f"BRIEF:\n{brief}"]
         if reference_material:
             user_parts.append(f"\nREFERENCE MATERIAL:\n{reference_material}")
+        if target_words:
+            user_parts.append(
+                f"\nTARGET LENGTH: {target_words:,} words. "
+                f"Plan enough turns and participants to fill this — a typical "
+                f"turn produces ~50-150 words. For a {target_words:,}-word "
+                f"debate, plan roughly {max(10, target_words // 100)} turns."
+            )
 
         user_message = "\n".join(user_parts)
 
@@ -241,6 +252,16 @@ class DebateArchitect:
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
+        moderator_data = data.get("moderator") or {}
+        host_data = data.get("show_host") or {}
+        name_specs = [
+            (p.get("name", ""), None, f"debate.participant.{idx}")
+            for idx, p in enumerate(data.get("participants", []))
+        ]
+        name_specs.append((moderator_data.get("name", ""), None, "debate.moderator"))
+        name_specs.append((host_data.get("name", ""), None, "debate.show_host"))
+        name_map = build_curated_name_map(name_specs, brief=brief)
+
         # ── Step 2: Build ParticipantProfile stubs ────────────────────
         # At this stage, participants are just names + sides. The Profile
         # Builder will flesh them out with personalities later.
@@ -248,7 +269,7 @@ class DebateArchitect:
         for p in data.get("participants", []):
             participants.append(
                 ParticipantProfile(
-                    name=p.get("name", ""),
+                    name=remap_name(p.get("name", ""), name_map) or "",
                     side=p.get("side"),
                     role=p.get("role", "participant"),
                 )
@@ -259,7 +280,7 @@ class DebateArchitect:
         moderator = None
         if mod_data:
             moderator = ModeratorConfig(
-                name=mod_data.get("name", ""),
+                name=remap_name(mod_data.get("name", ""), name_map) or "",
                 mode=mod_data.get("mode", "active"),
                 style=mod_data.get("style"),
             )
@@ -282,7 +303,7 @@ class DebateArchitect:
         show_host = None
         if host_data:
             show_host = ShowHostConfig(
-                name=host_data.get("name", ""),
+                name=remap_name(host_data.get("name", ""), name_map) or "",
                 role=host_data.get("role", "narrator"),
                 style=host_data.get("style"),
             )

@@ -412,6 +412,22 @@ def _build_output_path(args: argparse.Namespace, content_type: str) -> Path:
     return args.output / filename
 
 
+def _write_production_log(output_path: str | Path, result: Any) -> None:
+    """Persist the conductor's structured production log next to the JSON output."""
+    entries = getattr(result, "production_log", None)
+    if not entries:
+        return
+    output = Path(output_path)
+    log_path = output.with_name(f"{output.stem}_production_log.jsonl")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True))
+            handle.write("\n")
+    if hasattr(result, "production_log_path"):
+        result.production_log_path = str(log_path)
+
+
 def _apply_character_langs(participants: list, args: argparse.Namespace) -> None:
     """Stamp per-character language overrides onto participant profiles.
 
@@ -469,6 +485,8 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
@@ -556,6 +574,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     output_path = _build_output_path(args, "debate")
 
     serializer.save_merged(merged, output_path)
+    _write_production_log(output_path, result)
     return output_path
 
 
@@ -592,6 +611,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
@@ -674,6 +695,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     output_path = _build_output_path(args, "news")
 
     serializer.save(merged, output_path)
+    _write_production_log(output_path, result)
     return output_path
 
 
@@ -714,6 +736,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
@@ -782,6 +806,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     output_path = _build_output_path(args, "podcast")
 
     serializer.save(merged, output_path)
+    _write_production_log(output_path, result)
     return output_path
 
 
@@ -822,6 +847,8 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (planning chapters, profiling narrator, directing)...", quiet=args.quiet)
@@ -884,6 +911,7 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     output_path = _build_output_path(args, "audiobook")
 
     serializer.save(merged, output_path)
+    _write_production_log(output_path, result)
     return output_path
 
 
@@ -916,6 +944,8 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ──────────────────────────────────────────────────
     log("Bootstrap (planning sections, profiling professor, directing)...", quiet=args.quiet)
@@ -978,6 +1008,7 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     output_path = _build_output_path(args, "lecture")
 
     serializer.save(merged, output_path)
+    _write_production_log(output_path, result)
     return output_path
 
 
@@ -1074,7 +1105,11 @@ def run_generate(args: argparse.Namespace) -> Path:
     if args.fact_check != "off":
         _preflight_checker = FactChecker.build_default(client)
         _preflight_report = _preflight_checker.check_content(
-            brief, content_id="brief", mode="quick", content_mode="factual"
+            brief,
+            content_id="brief",
+            mode="quick",
+            content_mode="factual",
+            perspective=getattr(args, "perspective", None),
         )
         if _preflight_report.has_fabrications:
             print("\n\u26a0  PRE-FLIGHT WARNING: Your brief may contain incorrect claims.")

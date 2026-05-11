@@ -297,7 +297,9 @@ class PodcastConductor(BaseConductor):
 
         # Create a single AgentSession for all segment generation.
         self._session = self._create_session(
-            self._system_prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            self._system_prompt,
+            recent_window=DEFAULT_RECENT_WINDOW,
+            session_name="podcast_hosts",
         )
 
         # Build FactChecker if fact-checking is enabled.
@@ -358,6 +360,7 @@ class PodcastConductor(BaseConductor):
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode=self._content_mode,
+                perspective=config.perspective,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("PodcastConductor: bootstrap preflight raised: %r", exc)
@@ -587,6 +590,7 @@ class PodcastConductor(BaseConductor):
                             reference_material=config.reference_material,
                             mode=config.fact_check,
                             content_mode=self._content_mode,
+                            perspective=config.perspective,
                             prior_context=self._build_prior_context(),
                         )
                     except Exception as exc:
@@ -595,6 +599,13 @@ class PodcastConductor(BaseConductor):
                             seg_id, exc,
                         )
                         break
+
+                    if fc_report.has_fabrications:
+                        fc_report = self._challenge_fabrications(
+                            fc_report,
+                            generator_agent="podcast_hosts",
+                            perspective=config.perspective,
+                        )
 
                     if not (fc_report.has_fabrications or fc_report.has_contradictions):
                         break  # Segment passed — move on.
@@ -641,6 +652,17 @@ class PodcastConductor(BaseConductor):
                             )
                             break
                     else:
+                        self._report_issue_to_director(
+                            from_agent="podcast_hosts",
+                            summary=(
+                                f"Could not resolve fact-check objections for {seg_id} "
+                                f"after {config.max_retries} attempts."
+                            ),
+                            proposed_remediation=(
+                                "Refocus the next segment on firmly sourced points and "
+                                "drop disputed details."
+                            ),
+                        )
                         # Retries exhausted — publish with warnings attached.
                         for r in blocking:
                             self._length_warnings.append(
@@ -968,8 +990,18 @@ class PodcastConductor(BaseConductor):
             if not isinstance(item, dict):
                 continue
 
+            speaker_name = item.get("speaker_name", lead_host)
+            item = self._capture_issue_flag(
+                item,
+                from_agent=(
+                    f"host:{speaker_name}"
+                    if speaker_name
+                    else "podcast_hosts"
+                ),
+            )
+
             events.append({
-                "speaker_name": item.get("speaker_name", lead_host),
+                "speaker_name": speaker_name,
                 "text": item.get("text", ""),
                 "tone": item.get("tone", "neutral"),
                 "volume": item.get("volume", "moderate"),
@@ -1146,6 +1178,8 @@ class PodcastConductor(BaseConductor):
             closing_strategy=director.closing_strategy or "(not specified)",
             recent_content=recent_text,
         )
+        if pending_issues := self._consume_pending_issue_reports():
+            prompt = f"PENDING ISSUE REPORTS FROM CAST:\n{pending_issues}\n\n{prompt}"
 
         raw = self._client.chat(
             messages=[
@@ -1173,11 +1207,21 @@ class PodcastConductor(BaseConductor):
             return {}
 
         # Apply the director's note.
+        previous_note = self._director_note
         mood_note = data.get("mood_note", "")
         nudge = data.get("nudge")
         if mood_note:
             self._director_note = mood_note
             if nudge:
                 self._director_note += f" | {nudge}"
+        elif nudge:
+            self._director_note = str(nudge)
+        else:
+            self._director_note = ""
+        if self._director_note != previous_note:
+            self._broadcast_director_note(
+                self._director_note,
+                summary="Director updated segment guidance.",
+            )
 
         return data

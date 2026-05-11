@@ -71,6 +71,14 @@ EXAMPLE:
     output = backend.render(plan, audio_path=Path("show.wav"),
                             output_path=Path("out/video.mp4"))
     print("Video written to:", output)
+
+TYPE SUPPRESSION NOTE:
+
+    moviepy and Pillow ship no type stubs. Every ``mpy.SomeClass(...)`` call
+    and every clip method (``resize``, ``crop``, ``fl``, etc.) triggers a
+    mypy ``[attr-defined]`` error because mypy can't see the attributes.
+    These ``# type: ignore[attr-defined]`` comments throughout this file are
+    intentional — they silence false positives, not real bugs.
 """
 
 from __future__ import annotations

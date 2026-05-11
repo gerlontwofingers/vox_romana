@@ -55,11 +55,10 @@ from ...core.conductor import BaseConductor, ConductorResult
 from ...core.content_mode import ContentModeClassifier
 from ...core.fact_checker import FactChecker
 from ...core.session import AgentSession
-from .config import AudiobookConfig, ChapterConfig, NarratorConfig
+from .config import AudiobookConfig, ChapterConfig
 from .models import AudiobookChapter, AudiobookEvent, MergedAudiobook
 from .prompts import (
     CHAPTER_DELIVERY_PROMPT,
-    CONTEXT_SUMMARY_PROMPT,
     DIRECTOR_CHECK_PROMPT,
     NARRATOR_SYSTEM_PROMPT,
 )
@@ -217,7 +216,9 @@ class AudiobookConductor(BaseConductor):
 
         # Create an AgentSession for the narrator with sliding-window memory.
         self._narrator_session = self._create_session(
-            self._narrator_prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            self._narrator_prompt,
+            recent_window=DEFAULT_RECENT_WINDOW,
+            session_name="narrator",
         )
 
         # Classify content mode and build FactChecker (only when needed).
@@ -270,6 +271,7 @@ class AudiobookConductor(BaseConductor):
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode=self._content_mode,
+                perspective=config.perspective,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("AudiobookConductor: bootstrap preflight raised: %r", exc)
@@ -424,7 +426,7 @@ class AudiobookConductor(BaseConductor):
             )
             return []
 
-        event_dict = self._parse_response(raw_response)
+        event_dict = self._parse_response(raw_response, from_agent="narrator")
         narrator_name = (
             config.narrator.name if config.narrator else "Narrator"
         )
@@ -591,8 +593,9 @@ class AudiobookConductor(BaseConductor):
         #
         # The body indices start at 1 (not 0) and stop at `num_beats - 1`
         # (exclusive upper bound) so we leave the final slot for "closing".
-        # The labels are passed to the prompt so the LLM knows whether
-        # it's opening, sustaining, or wrapping a chapter.
+        # The labels stay internal to the conductor. They choose which
+        # natural-language instruction block to send, but the raw labels
+        # themselves should not leak into the narrator prompt.
         if num_beats == 1:
             beat_labels = ["full"]
         elif num_beats == 2:
@@ -649,20 +652,20 @@ class AudiobookConductor(BaseConductor):
                 )
             elif beat_label == "opening":
                 beat_instruction = (
-                    f"Narrate the OPENING of this chapter — set the scene, "
-                    f"establish the mood, and draw the listener in. "
+                    f"Begin this chapter by setting the scene, establishing "
+                    f"the mood, and drawing the listener in. "
                     f"{points_hint}{duration_instruction}"
                 )
             elif beat_label == "closing":
                 beat_instruction = (
-                    f"Narrate the CLOSING of this chapter — bring this section "
-                    f"to a satisfying pause point, with a hook or reflection "
+                    f"Land this chapter at a satisfying pause point, with a "
+                    f"hook or reflection "
                     f"for what comes next. "
                     f"{points_hint}{duration_instruction}"
                 )
             else:
                 beat_instruction = (
-                    f"Continue the BODY of this chapter — develop the narrative, "
+                    f"Continue this chapter by developing the narrative, "
                     f"deepen the story or argument. Do NOT repeat what you "
                     f"already covered in earlier beats. "
                     f"{points_hint}{duration_instruction}"
@@ -695,7 +698,7 @@ class AudiobookConductor(BaseConductor):
                 )
                 self._llm_calls += 1
 
-            event_dict = self._parse_response(raw_response)
+            event_dict = self._parse_response(raw_response, from_agent="narrator")
             event_dict["speaker"] = narrator.name if narrator else "Narrator"
             event_dict["role"] = "narrator"
             event_dict["event_kind"] = "narration"
@@ -755,6 +758,7 @@ class AudiobookConductor(BaseConductor):
                         reference_material=config.reference_material,
                         mode=config.fact_check,
                         content_mode=self._content_mode,
+                        perspective=config.perspective,
                         prior_context=self._build_prior_context(),
                     )
                 except Exception as exc:
@@ -763,6 +767,13 @@ class AudiobookConductor(BaseConductor):
                         ch_id, exc,
                     )
                     break
+
+                if fc_report.has_fabrications:
+                    fc_report = self._challenge_fabrications(
+                        fc_report,
+                        generator_agent="narrator",
+                        perspective=config.perspective,
+                    )
 
                 if not (fc_report.has_fabrications or fc_report.has_contradictions):
                     break  # Chapter passed.
@@ -792,7 +803,10 @@ class AudiobookConductor(BaseConductor):
                     )
                     try:
                         retry_raw = self._narrator_session.send(rejection_msg)
-                        retry_event = self._parse_response(retry_raw)
+                        retry_event = self._parse_response(
+                            retry_raw,
+                            from_agent="narrator",
+                        )
                         retry_event["speaker"] = (
                             narrator.name if narrator else "Narrator"
                         )
@@ -812,6 +826,17 @@ class AudiobookConductor(BaseConductor):
                         )
                         break
                 else:
+                    self._report_issue_to_director(
+                        from_agent="narrator",
+                        summary=(
+                            f"Could not resolve fact-check objections for {ch_id} "
+                            f"after {config.max_retries} attempts."
+                        ),
+                        proposed_remediation=(
+                            "Shift the next chapter toward reference-backed narration "
+                            "and reduce disputed specifics."
+                        ),
+                    )
                     for r in blocking:
                         self._length_warnings.append(
                             f"[{ch_id}] FACT_CHECK_WARN: Published with "
@@ -851,7 +876,7 @@ class AudiobookConductor(BaseConductor):
     # RESPONSE PARSING
     # ═══════════════════════════════════════════════════════════════════
 
-    def _parse_response(self, raw: str) -> dict:
+    def _parse_response(self, raw: str, *, from_agent: str | None = None) -> dict:
         """Parse the narrator's JSON response into an event dict."""
         cleaned = raw.strip()
 
@@ -868,7 +893,7 @@ class AudiobookConductor(BaseConductor):
 
         try:
             data = json.loads(cleaned)
-            return data
+            return self._capture_issue_flag(data, from_agent=from_agent)
         except (json.JSONDecodeError, TypeError):
             return {
                 "text": raw.strip()[:500],
@@ -918,6 +943,8 @@ class AudiobookConductor(BaseConductor):
             closing_strategy=director.closing_strategy or "(natural ending)",
             recent_content=recent_text or "(narration just started)",
         )
+        if pending_issues := self._consume_pending_issue_reports():
+            prompt = f"PENDING ISSUE REPORTS FROM CAST:\n{pending_issues}\n\n{prompt}"
 
         raw = self._client.chat(
             messages=[
@@ -929,8 +956,14 @@ class AudiobookConductor(BaseConductor):
         self._llm_calls += 1
 
         result = self._parse_response(raw)
+        previous_note = self._director_note
         mood = result.get("mood_note", "")
         nudge = result.get("nudge", "")
         self._director_note = f"{mood} {nudge}".strip() if (mood or nudge) else ""
+        if self._director_note != previous_note:
+            self._broadcast_director_note(
+                self._director_note,
+                summary="Director updated narrative guidance.",
+            )
 
         return result

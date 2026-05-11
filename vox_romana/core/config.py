@@ -118,6 +118,12 @@ class ContentConfig:
         fact_check:    How aggressively to verify claims after generation.
                        See FactCheckMode above for the three options.
 
+        perspective:   Optional framing string that tells downstream agents
+                   which geographic, cultural, political, or narrative
+                   point of view to assume when interpreting relational
+                   language. Example: "from Guatemala's geographic
+                   perspective".
+
         title:         Human-readable title. Usually filled in by the Architect
                        agent during bootstrap, but you can set it manually.
 
@@ -151,6 +157,7 @@ class ContentConfig:
     reference_material: str | None = None
     fact_check: FactCheckMode = "off"
     content_mode: ContentMode = "factual"
+    perspective: str | None = None
     title: str | None = None
     language: str = "en"
     estimated_duration_minutes: int | None = None

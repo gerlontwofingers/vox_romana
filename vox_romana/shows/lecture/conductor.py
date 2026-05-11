@@ -43,6 +43,10 @@ DURATION_SENTENCES = {
     "long": (12, 20),
 }
 
+# Per-beat hard word cap (Q-5). Overnight battery showed lecture avg
+# 171w/event was too dense for TTS pacing. Applied unconditionally.
+MAX_BEAT_WORDS = 140
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LectureConductorResult
@@ -159,7 +163,9 @@ class LectureConductor(BaseConductor):
 
         self._professor_prompt = self._build_professor_prompt()
         self._professor_session = self._create_session(
-            self._professor_prompt, recent_window=DEFAULT_RECENT_WINDOW,
+            self._professor_prompt,
+            recent_window=DEFAULT_RECENT_WINDOW,
+            session_name="professor",
         )
 
     def _run_turn_loop(self) -> list[dict]:
@@ -270,7 +276,7 @@ class LectureConductor(BaseConductor):
             )
             return []
 
-        event_dict = self._parse_response(raw_response)
+        event_dict = self._parse_response(raw_response, from_agent="professor")
         prof_name = config.professor.name if config.professor else "Professor"
         event_dict["speaker"] = prof_name
         event_dict["role"] = "professor"
@@ -453,9 +459,16 @@ class LectureConductor(BaseConductor):
                 words_per_section = config.target_words // total_sections
                 words_per_beat = words_per_section // num_beats
                 words_per_beat = self._rebalanced_target(words_per_beat, remaining_beats)
+                # Q-5: clamp to per-beat hard cap.
+                words_per_beat = min(words_per_beat, MAX_BEAT_WORDS)
                 duration_instruction += "\n" + self._length_contract_block(
                     words_per_beat, tolerance_pct=10.0,
                 )
+
+            # Q-5: unconditional per-beat cap, even without target_words.
+            duration_instruction += (
+                f"\nHARD CAP: this beat must not exceed {MAX_BEAT_WORDS} words."
+            )
 
             budget_status = self._budget_status_for_prompt(
                 remaining_beats, total_steps=total_sections * num_beats,
@@ -523,7 +536,7 @@ class LectureConductor(BaseConductor):
                 )
                 self._llm_calls += 1
 
-            event_dict = self._parse_response(raw_response)
+            event_dict = self._parse_response(raw_response, from_agent="professor")
             event_dict["speaker"] = professor.name if professor else "Professor"
             event_dict["role"] = "professor"
             event_dict["event_kind"] = "narration"
@@ -579,7 +592,7 @@ class LectureConductor(BaseConductor):
     # RESPONSE PARSING
     # ═══════════════════════════════════════════════════════════════════
 
-    def _parse_response(self, raw: str) -> dict:
+    def _parse_response(self, raw: str, *, from_agent: str | None = None) -> dict:
         """Parse the professor's JSON response into an event dict."""
         cleaned = raw.strip()
         if cleaned.startswith("```"):
@@ -592,7 +605,8 @@ class LectureConductor(BaseConductor):
             cleaned = cleaned[start:end + 1]
 
         try:
-            return json.loads(cleaned)
+            data = json.loads(cleaned)
+            return self._capture_issue_flag(data, from_agent=from_agent)
         except (json.JSONDecodeError, TypeError):
             return {
                 "text": raw.strip()[:500],
@@ -647,8 +661,14 @@ class LectureConductor(BaseConductor):
         self._llm_calls += 1
 
         result = self._parse_response(raw)
+        previous_note = self._director_note
         mood = result.get("mood_note", "")
         nudge = result.get("nudge", "")
         self._director_note = f"{mood} {nudge}".strip() if (mood or nudge) else ""
+        if self._director_note != previous_note:
+            self._broadcast_director_note(
+                self._director_note,
+                summary="Director updated lecture guidance.",
+            )
 
         return result

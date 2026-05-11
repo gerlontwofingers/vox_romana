@@ -165,6 +165,8 @@ summary in 2-4 sentences. This will be used to brief content producers.
 RULES:
 - State findings plainly. No jargon.
 - Include key numbers with context.
+- If a PERSPECTIVE CONTEXT block is provided, keep place naming and
+    observer-relative framing consistent with that vantage point.
 - Note whether this confirms, contradicts, or extends prior research.
 - Do NOT speculate beyond what the data shows.
 """
@@ -174,7 +176,15 @@ You are a research assistant. Given a data analysis brief, generate 2-3
 search queries to find background context (definitions, prior studies,
 methodology references) that will help interpret the results.
 
+If a PERSPECTIVE CONTEXT block is provided, prefer queries that surface
+background material relevant to that vantage point.
+
 Respond with a JSON array of query strings ONLY.
+"""
+
+_PERSPECTIVE_CONTEXT_TEMPLATE = """\
+PERSPECTIVE CONTEXT:
+{perspective}
 """
 
 
@@ -218,6 +228,7 @@ class DataResearcher:
         content_type: str = "",
         kind: str = "research",
         run_id: str | None = None,
+        perspective: str | None = None,
     ) -> StudyResult:
         """Run a data research study.
 
@@ -227,6 +238,7 @@ class DataResearcher:
             content_type: Show type this research supports ("debate", "news").
             kind:         Study category (default "research").
             run_id:       Optional link to a content run in the catalog.
+            perspective:  Optional explicit vantage point for the show.
 
         Returns:
             StudyResult with findings, FactCards, and report path.
@@ -271,7 +283,7 @@ class DataResearcher:
         # ── Step 2: Optional web research for context ─────────────────
         web_context = ""
         if self._search:
-            web_context = self._gather_web_context(brief)
+            web_context = self._gather_web_context(brief, perspective=perspective)
 
         # ── Step 3: Load dataset (if provided and pandas available) ───
         df = None
@@ -295,7 +307,13 @@ class DataResearcher:
 
         # ── Step 4: Plan — LLM picks recipe + params ─────────────────
         if recipes and df is not None:
-            plan = self._plan_analysis(brief, dataset_desc, recipes, prior_context)
+            plan = self._plan_analysis(
+                brief,
+                dataset_desc,
+                recipes,
+                prior_context,
+                perspective=perspective,
+            )
         else:
             plan = None
 
@@ -304,10 +322,20 @@ class DataResearcher:
             result = self._execute_recipe(df, plan, recipes)
         else:
             # No DS packages or no dataset — LLM-only analysis.
-            result = self._llm_only_analysis(brief, prior_context, web_context)
+            result = self._llm_only_analysis(
+                brief,
+                prior_context,
+                web_context,
+                perspective=perspective,
+            )
 
         # ── Step 6: Generate findings summary via LLM ─────────────────
-        findings = self._summarize_findings(brief, result, prior_context)
+        findings = self._summarize_findings(
+            brief,
+            result,
+            prior_context,
+            perspective=perspective,
+        )
 
         # ── Step 7: Generate HTML report ──────────────────────────────
         report_path = ""
@@ -356,12 +384,23 @@ class DataResearcher:
     # Internal methods (each testable in isolation)
     # ─────────────────────────────────────────────────────────────────
 
-    def _gather_web_context(self, brief: str) -> str:
+    def _gather_web_context(
+        self,
+        brief: str,
+        *,
+        perspective: str | None = None,
+    ) -> str:
         """Search the web for background context on the research topic."""
+        user_msg = brief
+        if perspective and perspective.strip():
+            user_msg = (
+                f"BRIEF: {brief}\n\n"
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}"
+            )
         raw = self._client.chat(
             messages=[
                 {"role": "system", "content": WEB_RESEARCH_PROMPT},
-                {"role": "user", "content": brief},
+                {"role": "user", "content": user_msg},
             ]
         )
 
@@ -386,6 +425,8 @@ class DataResearcher:
         dataset_desc: str,
         recipes: dict[str, Any],
         prior_context: str,
+        *,
+        perspective: str | None = None,
     ) -> dict[str, Any] | None:
         """Have the LLM pick a recipe and parameters."""
         menu_lines = []
@@ -402,6 +443,11 @@ class DataResearcher:
         )
 
         user_prompt = f"BRIEF: {brief}\n\nDATASET:\n{dataset_desc}"
+        if perspective and perspective.strip():
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}"
+            )
 
         raw = self._client.chat(
             messages=[
@@ -471,6 +517,8 @@ class DataResearcher:
         brief: str,
         prior_context: str,
         web_context: str,
+        *,
+        perspective: str | None = None,
     ) -> dict[str, Any]:
         """Fall back to pure LLM analysis when DS packages aren't available."""
         context_parts = []
@@ -481,6 +529,12 @@ class DataResearcher:
 
         context = "\n\n".join(context_parts) if context_parts else "(no additional context)"
 
+        user_prompt = f"BRIEF: {brief}\n\n{context}"
+        if perspective and perspective.strip():
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}"
+            )
         raw = self._client.chat(
             messages=[
                 {"role": "system", "content": (
@@ -489,7 +543,7 @@ class DataResearcher:
                     '{"findings": "...", "fact_cards": [{"claim": "...", '
                     '"source": "...", "confidence": "estimated"}]}'
                 )},
-                {"role": "user", "content": f"BRIEF: {brief}\n\n{context}"},
+                {"role": "user", "content": user_prompt},
             ]
         )
 
@@ -514,6 +568,8 @@ class DataResearcher:
         brief: str,
         result: dict[str, Any],
         prior_context: str,
+        *,
+        perspective: str | None = None,
     ) -> str:
         """Have the LLM write a concise findings summary."""
         stats_summary = result.get("summary", "")
@@ -527,6 +583,11 @@ class DataResearcher:
             f"RESULTS:\n{stats_summary}\n\n"
             f"PRIOR RESEARCH:\n{prior_context}"
         )
+        if perspective and perspective.strip():
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}"
+            )
 
         return self._client.chat(
             messages=[

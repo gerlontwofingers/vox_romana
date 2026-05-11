@@ -340,7 +340,9 @@ class TestBootstrapArchitect:
             ],
         })
         config = bootstrap._parse_architect_response(
-            raw, brief="test brief", fact_check="off",
+            raw,
+            brief="test brief with The Maven and The Rookie on the mic",
+            fact_check="off",
         )
         assert isinstance(config, PodcastConfig)
         assert config.title == "Soccer Rivalries"
@@ -351,6 +353,31 @@ class TestBootstrapArchitect:
         assert config.hosts[1].gender == "female"
         assert len(config.segments) == 2
         assert config.segments[0].segment_type == "intro"
+
+    def test_curates_names_and_updates_lead_host_refs(self):
+        bootstrap = self._make_bootstrap()
+        raw = json.dumps({
+            "title": "Soccer Rivalries",
+            "show_name": "Trash Pandas",
+            "topic": "Greatest rivalries in women's soccer",
+            "tone": "playful",
+            "hosts": [
+                {"name": "The Maven", "gender": "female", "role": "lead host"},
+                {"name": "The Rookie", "gender": "female", "role": "co-host"},
+            ],
+            "segments": [
+                {"segment_type": "intro", "topic": "Welcome", "lead_host": "The Maven"},
+                {"segment_type": "outro", "topic": "Wrap-up", "lead_host": "The Rookie"},
+            ],
+        })
+
+        config = bootstrap._parse_architect_response(raw, brief="Three women discuss soccer rivalries")
+
+        assert config.hosts[0].name != "The Maven"
+        assert config.hosts[1].name != "The Rookie"
+        assert config.hosts[0].name != config.hosts[1].name
+        assert config.segments[0].lead_host == config.hosts[0].name
+        assert config.segments[1].lead_host == config.hosts[1].name
 
     def test_parses_markdown_fenced_json(self):
         bootstrap = self._make_bootstrap()
@@ -517,6 +544,29 @@ class TestResponseParsing:
         )
         assert len(events) == 1
         assert events[0]["speaker_name"] == "A"
+
+    def test_issue_flag_queues_report_and_strips_field(self):
+        conductor = self._make_conductor()
+        raw = json.dumps([
+            {
+                "speaker_name": "The Maven",
+                "text": "Hello!",
+                "issue_flag": {
+                    "summary": "We need a source before making this claim.",
+                    "proposed_remediation": "Stay with the sourced framing.",
+                },
+            },
+        ])
+
+        events = conductor._parse_segment_response(
+            raw, segment_id="seg_000", segment_type="intro",
+            lead_host="The Maven", global_order_start=0,
+        )
+
+        assert "issue_flag" not in events[0]
+        rendered = conductor._consume_pending_issue_reports()
+        assert "FROM: host:The Maven" in rendered
+        assert '"summary": "We need a source before making this claim."' in rendered
 
     def test_fallback_on_bad_json(self):
         """If JSON parsing fails, return a single event with raw text."""

@@ -131,6 +131,10 @@ WHAT NOT TO FLAG — do not flag these:
   - Qualitative descriptions ("the tone was collegial")
   - Direct questions asked by hosts
   - Claims explicitly marked as uncertain by the speaker ("we don't know...")
+    - Observer-relative geographic or relational labels whose wording depends
+        on point of view alone (for example, "the northern border",
+        "the western region", or "the other side of the river") when the
+        underlying place or entity is otherwise clear
 
 OUTPUT FORMAT:
 Respond with ONLY a JSON array. Each item:
@@ -170,6 +174,11 @@ CRITICAL RULES:
     material explicitly says something different.
   - If reference material is empty or "(none provided)", ALL claims must be
     "unverifiable". You cannot fabricate a "fabricated" verdict.
+    - Treat observer-relative geographic wording with care. A phrase like
+        "the northern border" from one country's perspective and
+        "the southern border" from a neighboring country's perspective may
+        describe the same border. Do NOT mark perspectival naming differences as
+        fabricated unless the underlying place or entity is itself wrong.
   - Your explanation must be specific: quote the relevant part of the
     reference material, or note exactly what is absent.
 
@@ -191,6 +200,12 @@ REFERENCE MATERIAL:
 
 CLAIMS TO VERIFY:
 {claims_json}
+"""
+
+_PERSPECTIVE_CONTEXT_TEMPLATE = """\
+PERSPECTIVE CONTEXT:
+{perspective}
+
 """
 
 
@@ -233,6 +248,11 @@ CRITICAL RULES:
     training data (e.g. a private company's internal revenue figure, a
     claim about an event after your training cutoff, a highly contested
     fact with no clear consensus).
+    - Treat observer-relative geographic wording with care. A phrase like
+        "the northern border" from one country's perspective and
+        "the southern border" from a neighboring country's perspective may
+        describe the same border. Do NOT mark perspectival naming differences as
+        fabricated unless the underlying place or entity is itself wrong.
   - Do NOT use "fabricated" for claims you merely can't confirm. Absence of
     knowledge is "unverifiable", not "fabricated".
   - Your explanation must state specifically what your training knowledge
@@ -329,6 +349,11 @@ CRITICAL RULES:
     KNOWN canon facts.
   - If reference material is empty or "(none provided)", ALL claims are
     "unverifiable". You cannot fabricate a "fabricated" verdict.
+    - Treat observer-relative geographic wording with care. A phrase like
+        "the northern border" from one faction's perspective and
+        "the southern border" from another perspective may describe the same
+        place. Do NOT mark perspectival naming differences as fabricated unless
+        the underlying place or entity is itself wrong.
   - Your explanation must cite the specific canon detail that is contradicted.
 
 OUTPUT FORMAT:
@@ -405,6 +430,78 @@ NEW CLAIMS (from the latest segment, to check for contradictions):
 """
 
 
+# ── Justification adjudicator ──────────────────────────────────────────────
+# Used by the conductor's challenge loop. After a claim is marked
+# "fabricated", the generator agent is asked to justify or correct it.
+# This prompt evaluates whether the justification is convincing enough
+# to downgrade the verdict (to "verified" or "unverifiable") or whether
+# the claim is still fabricated and the segment must be regenerated.
+
+JUSTIFICATION_ADJUDICATOR_PROMPT = """\
+You are a fact-check adjudicator. A factual claim was previously marked
+"fabricated" by the verifier. The agent that produced the claim has now
+provided a justification or correction. Your job is to decide whether the
+justification overturns the original verdict.
+
+You will receive:
+  1. CLAIM            — the claim as originally written.
+  2. ORIGINAL VERDICT — always "fabricated" (with the verifier's explanation).
+  3. JUSTIFICATION    — what the generating agent says in defence of, or
+                        as a correction to, the claim.
+  4. PERSPECTIVE      — optional vantage-point context for the show.
+                        Observer-relative phrasing ("the northern border",
+                        "our country", "the empire to the east") that is
+                        consistent with this perspective is NOT fabrication.
+
+VERDICTS:
+  "verified"     — The justification convincingly shows the claim is
+                   correct (or the agent has produced a corrected, accurate
+                   version). The original "fabricated" verdict is overturned.
+  "unverifiable" — The justification raises reasonable doubt about the
+                   verifier's confidence, but does not positively confirm
+                   the claim. Treat as inconclusive — the claim is not
+                   blocking, but it is not confirmed either.
+  "fabricated"   — The justification fails to overturn the verdict.
+                   The claim remains fabricated and the segment should be
+                   regenerated.
+
+CRITICAL RULES:
+  - Be conservative when downgrading to "verified". Require the justification
+    to provide concrete grounding (a citation, a quote from canon, an
+    explicit perspective alignment).
+  - Observer-relative phrasing that aligns with PERSPECTIVE is "verified".
+  - Vague defences ("this is creative licence", "it's commonly believed")
+    leave the claim "fabricated".
+  - If the agent has produced a clearly corrected version of the claim that
+    is plausible and not contradicted by the original verdict, return
+    "verified" with an explanation pointing to the correction.
+
+OUTPUT FORMAT:
+Respond with ONLY a JSON object:
+{{
+  "verdict": "verified" | "unverifiable" | "fabricated",
+  "explanation": "one sentence explaining the adjudication"
+}}
+
+ALWAYS respond with valid JSON only. No other text.
+"""
+
+_ADJUDICATOR_USER_TEMPLATE = """\
+CLAIM:
+{claim}
+
+ORIGINAL VERDICT: fabricated
+ORIGINAL EXPLANATION:
+{original_explanation}
+
+JUSTIFICATION (from the generating agent):
+{justification}
+
+PERSPECTIVE:
+{perspective}
+"""
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -458,6 +555,7 @@ class FactChecker:
         reference_material: str | None = None,
         mode: str = "quick",
         content_mode: ContentMode = "factual",
+        perspective: str | None = None,
         prior_context: str | None = None,
     ) -> FactCheckReport:
         """Check generated content for fabricated factual claims.
@@ -474,6 +572,9 @@ class FactChecker:
                                 world. "fictional-universe" verifies against
                                 established canon (Star Wars, etc.). "pure-fiction"
                                 skips fact-checking entirely (zero LLM calls).
+            perspective:        Optional framing string that helps the verifier
+                                interpret observer-relative language from the
+                                intended point of view.
             prior_context:      Optional concatenation of earlier approved
                                 segments/turns/chapters from the SAME show.
                                 When provided (and content_mode is not
@@ -513,6 +614,7 @@ class FactChecker:
             flagged,
             reference_material=reference_material,
             content_mode=content_mode,
+            perspective=perspective,
         )
 
         # \u2500\u2500 Step 2b: Thorough \u2014 search for unverifiable claims \u2500\u2500\u2500\u2500\u2500\u2500
@@ -624,6 +726,7 @@ class FactChecker:
         *,
         reference_material: str | None = None,
         content_mode: ContentMode = "factual",
+        perspective: str | None = None,
     ) -> list[FactCheckResult]:
         """Verify claims against reference material (quick mode core step).
 
@@ -637,6 +740,9 @@ class FactChecker:
                                 truth); "fictional-universe" uses
                                 CANON_VERIFIER_PROMPT (canon truth). Anything
                                 else defaults to factual.
+            perspective:        Optional framing string that helps the verifier
+                                interpret observer-relative language from the
+                                intended point of view.
 
         Returns:
             List of FactCheckResult objects (one per claim).
@@ -669,6 +775,11 @@ class FactChecker:
                 if content_mode == "fictional-universe"
                 else CLAIM_VERIFIER_PROMPT
             )
+
+        if perspective and perspective.strip():
+            user_msg = _PERSPECTIVE_CONTEXT_TEMPLATE.format(
+                perspective=perspective.strip(),
+            ) + user_msg
 
         try:
             raw = self._client.chat(
@@ -757,6 +868,87 @@ class FactChecker:
                     source=str(source),
                 ))
         return results
+
+    # ── Challenge-loop adjudication ─────────────────────────────────────
+
+    def adjudicate_justification(
+        self,
+        result: FactCheckResult,
+        justification: str,
+        *,
+        perspective: str | None = None,
+    ) -> FactCheckResult:
+        """Re-evaluate a "fabricated" verdict given a justification.
+
+        Used by the conductor's challenge loop. After a generator agent
+        provides a justification (or a corrected version of the claim),
+        this method runs one LLM call to decide whether the original
+        "fabricated" verdict should be downgraded.
+
+        Args:
+            result:        The original FactCheckResult (verdict must be
+                           "fabricated"). Returned unchanged for any other
+                           verdict — only fabricated claims are challenged.
+            justification: The generator agent's response to the challenge.
+                           Empty / whitespace input leaves the verdict
+                           unchanged (no LLM call made).
+            perspective:   Optional show vantage-point string. Helps the
+                           adjudicator accept observer-relative phrasing.
+
+        Returns:
+            A new FactCheckResult with the (possibly downgraded) verdict.
+            ``source`` is updated to "challenge_loop" when a new verdict
+            is produced.
+        """
+        if result.verdict != "fabricated":
+            return result
+        if not justification or not justification.strip():
+            return result
+
+        user_msg = _ADJUDICATOR_USER_TEMPLATE.format(
+            claim=result.claim,
+            original_explanation=result.explanation or "(no explanation provided)",
+            justification=justification.strip(),
+            perspective=perspective.strip() if perspective else "(none)",
+        )
+        try:
+            raw = self._client.chat(
+                messages=[
+                    {"role": "system", "content": JUSTIFICATION_ADJUDICATOR_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "FactChecker.adjudicate_justification: LLM call failed: %r", exc
+            )
+            return result
+
+        cleaned = _strip_fences(raw)
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "FactChecker.adjudicate_justification: unparseable JSON (%r). "
+                "First 200 chars: %r",
+                exc, raw[:200],
+            )
+            return result
+        if not isinstance(data, dict):
+            return result
+
+        new_verdict = str(data.get("verdict", "")).strip().lower()
+        if new_verdict not in ("verified", "unverifiable", "fabricated"):
+            return result
+
+        new_explanation = str(data.get("explanation", "")).strip()
+        return FactCheckResult(
+            claim=result.claim,
+            verdict=new_verdict,  # type: ignore[arg-type]
+            explanation=new_explanation or result.explanation,
+            source="challenge_loop",
+        )
 
     # ── Thorough: web-search upgrade ────────────────────────────────────
 

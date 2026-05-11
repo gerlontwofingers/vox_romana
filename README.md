@@ -207,6 +207,7 @@ python run.py prompts/ubi_debate.txt --out-lang en,es,fr --publish
 ```bash
 python run.py prompts/ubi_debate.txt --mode generate
 python run.py prompts/tech_news.txt --mode generate --segments 8 --tone urgent
+python run.py prompts/ai_ethics.txt --type lecture --mode generate
 ```
 
 ### Render only

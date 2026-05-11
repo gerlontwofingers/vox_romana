@@ -115,6 +115,7 @@ class DebateBootstrap(BaseShowBootstrap):
         search_provider: BaseSearchProvider | None = None,
         memory: Any | None = None,
         series_context: str | None = None,
+        target_words: int | None = None,
     ) -> DebateConfig:
         """Run the full bootstrap chain: brief → fully populated DebateConfig.
 
@@ -181,7 +182,10 @@ class DebateBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 1: ARCHITECT
@@ -193,6 +197,7 @@ class DebateBootstrap(BaseShowBootstrap):
             brief,
             reference_material=reference_material,
             fact_check=fact_check,
+            target_words=target_words,
         )
 
         # ══════════════════════════════════════════════════════════════

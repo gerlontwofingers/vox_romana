@@ -666,6 +666,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     gen_group.add_argument(
+        "--perspective",
+        type=str,
+        default=None,
+        dest="perspective",
+        help=(
+            "Optional framing string for observer-relative language, for example "
+            "\"from Guatemala's geographic perspective\". Passed through to "
+            "the config and fact-checker as-is."
+        ),
+    )
+
+    gen_group.add_argument(
         "--allow-bootstrap-fabrications",
         action="store_true",
         default=False,

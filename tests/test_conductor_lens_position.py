@@ -6,6 +6,7 @@ All tests use lightweight fakes — no real LLM calls are made.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
@@ -348,3 +349,78 @@ def test_run_debate_passes_lens_rack_to_conductor() -> None:
         runners._run_debate("Is the sky blue?", _make_mock_client(), args)
 
     assert captured_kwargs.get("lens_rack") is fake_rack
+
+
+def test_write_production_log_persists_jsonl(tmp_path) -> None:
+    from vox_romana.cli import runners
+
+    output_path = tmp_path / "episode.json"
+    result = MagicMock()
+    result.production_log = [
+        {"event_type": "agent_message", "channel": "broadcast"},
+        {"event_type": "issue_report", "status": "queued"},
+    ]
+    result.production_log_path = None
+
+    runners._write_production_log(output_path, result)
+
+    log_path = tmp_path / "episode_production_log.jsonl"
+    assert log_path.exists()
+    assert result.production_log_path == str(log_path)
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == result.production_log
+
+
+def test_run_debate_writes_production_log() -> None:
+    """_run_debate should persist the result production log next to the JSON."""
+    import argparse
+    from unittest.mock import patch, MagicMock
+    from vox_romana.cli import runners
+
+    args = argparse.Namespace(
+        turns=None, tone=None, debate_format=None, max_retries=None,
+        allow_bootstrap_fabrications=False, duration=None, tolerance=None,
+        checkpoint=None, content_mode="auto", reference_material=None,
+        fact_check="off", series_id=None, tag=None, name=None,
+        output=None, script_output=None, quiet=True, engine="kokoro",
+        tts_workers=1, llm_lens=None, llm_backend="auto",
+        root_lang="en", out_lang=None, keep_translated=False,
+        translation_model=None, university_session=None,
+        publish=False, lens_rack=None,
+    )
+
+    fake_config = _make_config(turns=2)
+    fake_result = MagicMock()
+    fake_result.debate_events = []
+    fake_result.total_llm_calls = 0
+    fake_result.production_log = [{"event_type": "agent_message"}]
+
+    class CapturingConductor:
+        def __init__(self, config, *, client=None, lens_rack=None, **kw):
+            self._length_warnings = []
+
+        def run(self):
+            return fake_result
+
+    class FakeBootstrap:
+        def __init__(self, **kw):
+            pass
+
+        def from_brief(self, brief, **kw):
+            return fake_config
+
+    with patch("vox_romana.shows.debates.bootstrap.DebateBootstrap", FakeBootstrap), \
+         patch("vox_romana.shows.debates.conductor.DebateConductor", CapturingConductor), \
+         patch.object(runners, "_build_output_path", return_value="/tmp/x.json"), \
+         patch.object(runners, "_build_bootstrap_kwargs", return_value={}), \
+         patch.object(runners, "_build_checkpoint_kwargs", return_value={}), \
+         patch.object(runners, "_read_reference_material", return_value=None), \
+         patch.object(runners, "_resolve_duration", return_value={}), \
+         patch.object(runners, "_count_words_in_events", return_value=0), \
+         patch.object(runners, "_log_length_summary"), \
+         patch.object(runners, "_write_production_log") as mock_write_log, \
+         patch.object(runners, "estimate_total_words", return_value=1000), \
+         patch("vox_romana.shows.debates.serializer.DebateSerializer"):
+        runners._run_debate("Is the sky blue?", _make_mock_client(), args)
+
+    mock_write_log.assert_called_once_with("/tmp/x.json", fake_result)
