@@ -225,6 +225,15 @@ class BaseTTSEngine(ABC):
             List of voice ID strings.
         """
 
+    def teardown(self) -> None:
+        """Release any cached model weights or runtime state.
+
+        Called by the renderer after rendering is complete so that model
+        weights are freed before the next pipeline phase (e.g. animation).
+        The default implementation is a no-op; engines with resident models
+        should override this.
+        """
+
     @property
     def name(self) -> str:
         """Human-readable name of this engine.

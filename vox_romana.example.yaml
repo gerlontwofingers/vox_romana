@@ -34,6 +34,15 @@
 # data_dir: ~/vox_romana_data
 
 
+# PRODUCTION ID (longitudinal data store)
+# ──────────────────────────────────────────────────────────────────────────────
+# Short stable slug that identifies this installation in longitudinal.db.
+# Used by `python tools/studio.py ingest` and `tools/study_battery.py`.
+# Change this if you run multiple studios and want to track them separately.
+
+production_id: default
+
+
 # PIPER VOICE MODELS (optional override)
 # ──────────────────────────────────────────────────────────────────────────────
 # Where your downloaded Piper TTS voice .onnx files live.
@@ -118,6 +127,7 @@ university:
   colloquium_interval: 25             # articles per Scholar between colloquium rounds
   colloquium_max_leads_per_peer: 3    # search hits enqueued per peer-suggested query
   colloquium_snippet_chars: 1500      # synthesis chars shared with each peer
+  colloquium_extra_secs: 600          # extra deadline seconds reserved for colloquium phase
   base_url: http://localhost:11434/v1
   temperature: 0.6
   timeout_secs: 300          # seconds per LLM call (long articles need more)

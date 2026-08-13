@@ -96,20 +96,26 @@ class TestEnsureMusicBumpers:
     def test_no_cues_both_added(self):
         events = [_utterance(), _utterance()]
         _ensure_music_bumpers(events)
-        assert "intro music" in events[0]["nonverbal"]
-        assert "outro music" in events[-1]["nonverbal"]
+        # Bumper dicts inserted at both boundaries; original events shift inward
+        assert len(events) == 4
+        assert events[0]["event_kind"] == "bumper"
+        assert events[-1]["event_kind"] == "bumper"
 
     def test_intro_already_present_not_duplicated(self):
         events = [_utterance(["intro music"]), _utterance()]
         _ensure_music_bumpers(events)
-        assert events[0]["nonverbal"].count("intro music") == 1
-        assert "outro music" in events[-1]["nonverbal"]
+        # First event already has a music cue; only end bumper inserted
+        assert len(events) == 3
+        assert events[0]["nonverbal"] == ["intro music"]  # unchanged
+        assert events[-1]["event_kind"] == "bumper"
 
     def test_outro_already_present_not_duplicated(self):
         events = [_utterance(), _utterance(["outro music"])]
         _ensure_music_bumpers(events)
-        assert "intro music" in events[0]["nonverbal"]
-        assert events[-1]["nonverbal"].count("outro music") == 1
+        # Last event already has a music cue; only start bumper inserted
+        assert len(events) == 3
+        assert events[0]["event_kind"] == "bumper"
+        assert events[-1]["nonverbal"] == ["outro music"]  # unchanged
 
     def test_both_already_present_no_change(self):
         events = [_utterance(["intro music"]), _utterance(["outro music"])]
@@ -125,9 +131,10 @@ class TestEnsureMusicBumpers:
     def test_single_event_both_cues_added(self):
         events = [_utterance()]
         _ensure_music_bumpers(events)
-        # First and last are the same event — both cues go on it
-        assert "intro music" in events[0]["nonverbal"]
-        assert "outro music" in events[0]["nonverbal"]
+        # Single non-music event gets bumpers on both sides
+        assert len(events) == 3
+        assert events[0]["event_kind"] == "bumper"
+        assert events[-1]["event_kind"] == "bumper"
 
     def test_last_event_is_bumper_kind_outro_not_added(self):
         """event_kind == 'bumper' counts as having the cue already."""
@@ -141,21 +148,23 @@ class TestEnsureMusicBumpers:
         assert "intro music" not in events[0]["nonverbal"]
 
     def test_existing_nonverbal_items_preserved(self):
-        """Other nonverbal cues on the first/last event must survive."""
+        """Other nonverbal cues on the original events must survive."""
         events = [_utterance(["laugh"]), _utterance(["sigh"])]
         _ensure_music_bumpers(events)
-        assert "laugh" in events[0]["nonverbal"]
-        assert "sigh" in events[-1]["nonverbal"]
+        # Bumpers inserted at both ends; original events are now at index 1 and 2
+        assert "laugh" in events[1]["nonverbal"]
+        assert "sigh" in events[2]["nonverbal"]
 
     def test_none_nonverbal_handled(self):
-        """Events with nonverbal=None must not raise."""
+        """Events with nonverbal=None must not raise; bumpers inserted."""
         events = [
             {**_utterance(), "nonverbal": None},
             {**_utterance(), "nonverbal": None},
         ]
         _ensure_music_bumpers(events)
-        assert "intro music" in events[0]["nonverbal"]
-        assert "outro music" in events[-1]["nonverbal"]
+        assert len(events) == 4
+        assert events[0]["event_kind"] == "bumper"
+        assert events[-1]["event_kind"] == "bumper"
 
     def test_case_insensitive_match(self):
         """'Intro Music' (title-case) should count as the cue already present."""

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,7 @@ class ChromaVectorIndex:
         self._injected_client = _client
         self._client: Any = None
         self._collection: Any = None
+        self._search_lock = threading.Lock()
 
     # ── Availability ────────────────────────────────────────────────────────
 
@@ -446,7 +448,8 @@ class ChromaVectorIndex:
         if source_type_filter:
             kwargs["where"] = {"source_type": source_type_filter}
         try:
-            results = col.query(**kwargs)
+            with self._search_lock:
+                results = col.query(**kwargs)
         except Exception as exc:
             logger.warning("Chroma query failed: %s", exc)
             return []

@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from .archive import AgentNote, AgentNoteStore
 from .client import DeepSeekClient
 from .config import ContentConfig
+from .crew import CrewMember
 from .duration import (
     SpeechRateAdvisor,
     estimate_total_words,
@@ -130,6 +131,11 @@ class BaseConductor(AgentRouter, ABC):
     # Subclasses may override.
     OVERSHOOT_COMPENSATION: float = 0.92
 
+    # Fraction of target_words at which _should_wrap_up() fires.
+    # Leaves headroom for closing statements (+25–40% empirically).
+    # Subclasses may override.
+    WRAP_UP_THRESHOLD: float = 0.70
+
     def __init__(
         self,
         config: ContentConfig,
@@ -139,6 +145,7 @@ class BaseConductor(AgentRouter, ABC):
         recent_window: int = 10,
         checkpoint_renderer: "CheckpointRenderer | None" = None,
         budget_tracker: "BudgetTracker | None" = None,
+        crew_members: list[CrewMember] | None = None,
     ) -> None:
         self.config = config
         self._client = client
@@ -147,6 +154,17 @@ class BaseConductor(AgentRouter, ABC):
         self._session_registry: dict[str, AgentSession] = {}
         self._pending_issue_reports: list[AgentMessage] = []
         self._production_log: list[dict[str, Any]] = []
+
+        # ── Crew profiles (role → formatted profile text) ────────────
+        # Built from the optional crew_members list.  Subclasses call
+        # ``_augmented_director_system_prompt(base)`` to prepend the
+        # director's profile to any per-call director system prompt.
+        self._crew_profiles: dict[str, str] = {}
+        if crew_members:
+            for member in crew_members:
+                text = member.profile_text()
+                if text:
+                    self._crew_profiles[member.role] = text
 
         # ── Adaptive duration tracking ───────────────────────────────
         self._wpm: int = get_wpm(config.content_type)
@@ -189,6 +207,32 @@ class BaseConductor(AgentRouter, ABC):
         stamped = dict(entry)
         stamped.setdefault("logged_at", datetime.now(timezone.utc).isoformat())
         self._production_log.append(stamped)
+
+    def _augmented_director_system_prompt(self, base_prompt: str) -> str:
+        """Return *base_prompt* prepended with the director's crew profile.
+
+        When no director crew member was supplied (the common case), returns
+        *base_prompt* unchanged so callers need no conditional logic.
+
+        The crew profile block is separated from the base prompt by a blank
+        line so the LLM sees them as distinct sections::
+
+            CREW IDENTITY: Marcus Webb
+            Aesthetic philosophy: ...
+            Pacing approach: ...
+
+            You are a debate director. Respond with JSON only.
+
+        Args:
+            base_prompt: The show-specific director system prompt string.
+
+        Returns:
+            Augmented prompt string, or *base_prompt* if no profile exists.
+        """
+        profile_text = self._crew_profiles.get("director", "")
+        if not profile_text:
+            return base_prompt
+        return f"{profile_text}\n\n{base_prompt}"
 
     @staticmethod
     def _outline_label(item: Any) -> str:
@@ -685,7 +729,7 @@ class BaseConductor(AgentRouter, ABC):
         """
         if self._target_words is None:
             return False
-        return self._words_generated >= self._target_words * 0.70
+        return self._words_generated >= self._target_words * self.WRAP_UP_THRESHOLD
 
     def _over_budget(self) -> bool:
         """True when the word count has exceeded the upper tolerance bound."""

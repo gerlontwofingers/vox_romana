@@ -1183,7 +1183,12 @@ class PodcastConductor(BaseConductor):
 
         raw = self._client.chat(
             messages=[
-                {"role": "system", "content": "You are a podcast Director. Respond with JSON only."},
+                {
+                    "role": "system",
+                    "content": self._augmented_director_system_prompt(
+                        "You are a podcast Director. Respond with JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0,

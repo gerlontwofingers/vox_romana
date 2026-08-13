@@ -77,9 +77,8 @@ tone, pace, and pause_before.
 # ═══════════════════════════════════════════════════════════════════════════
 
 SECTION_DELIVERY_PROMPT = """\
-SECTION {section_number} of {total_sections}: {title}
+{title}
 
-SECTION TYPE: {section_type}
 LEARNING OBJECTIVE: {learning_objective}
 
 KEY POINTS TO TEACH (in this order):
@@ -284,6 +283,7 @@ a distinct person.
 You produce a JSON object:
 {{
   "voice_fingerprint": "string — 3-5 sentences describing HOW this professor speaks. Cadence, rhetorical habits, characteristic phrases. NOT what they teach — how they teach it. E.g., 'Speaks in measured, deliberate sentences. Loves the construction \\"now, here's the key thing\\" before any pivotal point. Often pauses to let an idea land. Uses self-deprecating humor when introducing complications.'",
+  "voice_hint": "string — a short TTS casting note describing the ideal SOUND of this professor's voice. Focus on vocal qualities: accent, age range, energy, warmth, authority, texture. E.g., 'warm British baritone, late 50s, professorial and unhurried', 'sharp Chicago tenor, 40s, rapid-fire with sudden slow-downs for effect'. This is NOT about what they say — it's about how they SOUND.",
   "verbal_tics": ["array of 2-4 short phrases this professor habitually uses, e.g., 'so, what are we to make of this?', 'and here's where it gets interesting'"],
   "behavioral_triggers": "string — 1-2 sentences describing what excites this professor or makes them slow down for emphasis"
 }}

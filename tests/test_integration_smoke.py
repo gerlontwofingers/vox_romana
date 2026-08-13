@@ -195,6 +195,9 @@ class _FakeTTSEngine:
         # logic has candidates to work with.
         return ["af_heart", "af_alloy", "am_adam", "am_echo"]
 
+    def teardown(self):
+        pass
+
 
 def test_render_debate_mocked_tts(tmp_path, monkeypatch):
     """render mode with mocked TTS engine creates a non-empty WAV file."""

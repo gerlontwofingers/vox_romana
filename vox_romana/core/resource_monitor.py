@@ -252,13 +252,43 @@ class ResourceMonitor:
         return self._latest_snapshot
 
     def checkpoint(self, label: str = "") -> ResourceSnapshot:
-        """Raise if a previously sampled abort threshold has been crossed."""
+        """Raise if a previously sampled abort threshold has been crossed.
+
+        When RAM appears low on the first sample, a single confirmation
+        re-sample is taken after a short delay before deciding to warn or
+        abort.  This prevents false positives immediately after a child
+        process exits with a signal (e.g. MLX SIGBUS on teardown), where
+        the OS may not have finished returning wired pages to the free pool
+        yet.  The 1-second wait is only incurred when RAM is in the
+        warning/abort zone, so normal runs pay nothing.
+
+        Note: the background thread's ``_warn_event`` and ``_abort_event``
+        are sticky (set once, never cleared), so the confirmation re-sample
+        evaluates the fresh snapshot directly rather than trusting those
+        flags.
+        """
         snapshot = self.snapshot()
-        if self._warn_event.is_set() and not self._warning_emitted and self._warning_message:
-            logger.warning(self._prefix(label, self._warning_message))
+
+        # If RAM looks borderline, wait 1 s and re-sample once to confirm.
+        # Guards against transient dips right after a subprocess signal exit.
+        if (
+            snapshot.available_ram_gb is not None
+            and self.budget.ram_warn_gb is not None
+            and snapshot.available_ram_gb <= self.budget.ram_warn_gb
+        ):
+            time.sleep(1.0)
+            snapshot = self._sample_fresh()
+
+        # Re-evaluate warn/abort against the (possibly updated) snapshot.
+        warn_message = self._build_warning(snapshot)
+        abort_message = self._build_abort(snapshot)
+
+        if warn_message and not self._warning_emitted:
+            logger.warning(self._prefix(label, warn_message))
             self._warning_emitted = True
-        if self._abort_event.is_set():
-            raise ResourceError(self._prefix(label, self._abort_message or "resource budget exceeded"))
+        if abort_message:
+            raise ResourceError(self._prefix(label, abort_message))
+
         ram_str = f"{snapshot.available_ram_gb:.1f} GB" if snapshot.available_ram_gb is not None else "N/A"
         logger.info(
             "ResourceMonitor: checkpoint %r \u2014 disk %.1f GB free (%s) | RAM %s",
@@ -271,14 +301,7 @@ class ResourceMonitor:
             self._sample()
 
     def _sample(self) -> None:
-        disk_path, free_gb = self._most_constrained_disk()
-        ram_gb = available_ram_gb()
-        snapshot = ResourceSnapshot(
-            disk_path=disk_path,
-            free_disk_gb=free_gb,
-            available_ram_gb=ram_gb,
-        )
-
+        snapshot = self._sample_fresh()
         warning_message = self._build_warning(snapshot)
         abort_message = self._build_abort(snapshot)
 
@@ -290,6 +313,25 @@ class ResourceMonitor:
             if abort_message and self._abort_message is None:
                 self._abort_message = abort_message
                 self._abort_event.set()
+
+    def _sample_fresh(self) -> ResourceSnapshot:
+        """Take an immediate resource sample without updating sticky state.
+
+        Used by ``checkpoint()`` for the confirmation re-sample so that a
+        transient low reading from the background thread cannot permanently
+        arm the sticky abort/warn events before the OS finishes reclaiming
+        subprocess memory.
+        """
+        disk_path, free_gb = self._most_constrained_disk()
+        ram_gb = available_ram_gb()
+        snapshot = ResourceSnapshot(
+            disk_path=disk_path,
+            free_disk_gb=free_gb,
+            available_ram_gb=ram_gb,
+        )
+        with self._lock:
+            self._latest_snapshot = snapshot
+        return snapshot
 
     def _most_constrained_disk(self) -> tuple[Path, float]:
         probe_paths = self.budget.disk_paths
@@ -441,8 +483,13 @@ def _estimate_video_ram_abort_gb(
     with_music: bool,
 ) -> float:
     width, height = resolution
+    # RAM needed by the animation stack (diffusion model + moviepy).
+    # MusicGen has already finished by the time animation runs, so
+    # with_music does NOT add overhead here — it was relevant during
+    # TTS render, not during diffusion.
+    # fast = SD 1.5 @ 512x512, 4 steps (~2 GB peak).
     platform_floor = {
-        "fast": 6.0,
+        "fast": 3.0,
         "youtube": 10.0,
         "tiktok": 10.0,
         "both": 12.0,
@@ -450,8 +497,6 @@ def _estimate_video_ram_abort_gb(
     resolution_scale = max(1.0, (width * height) / (1920 * 1080))
     fps_scale = max(1.0, fps / 30.0)
     estimate = platform_floor * resolution_scale * fps_scale
-    if with_music:
-        estimate += 1.0
     return max(platform_floor, estimate)
 
 

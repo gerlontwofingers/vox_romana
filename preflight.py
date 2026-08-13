@@ -125,6 +125,57 @@ def check_piper_voices() -> Result:
     return Result("piper voices (.onnx)", True, f"{len(voices)} voice(s) in {PIPER_VOICES_DIR}")
 
 
+def check_chroma_onnx_model() -> Result:
+    """ChromaDB's default embedding model (all-MiniLM-L6-v2 ONNX) must be cached.
+
+    The model is downloaded automatically on first use, but that download
+    happens inside tests and can take >30s — causing apparent hangs.
+    Run ``python preflight.py --fix`` once to pre-cache it.
+    """
+    try:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+            ONNXMiniLM_L6_V2,
+        )
+        from pathlib import Path as _Path
+        ef = ONNXMiniLM_L6_V2()
+        model_dir = _Path(ef.DOWNLOAD_PATH) / ef.EXTRACTED_FOLDER_NAME
+        model_file = model_dir / "model.onnx"
+        if model_file.exists():
+            return Result(
+                "chroma ONNX model",
+                True,
+                str(model_file),
+                required=False,
+            )
+        return Result(
+            "chroma ONNX model",
+            False,
+            f"not cached at {model_dir} — run: python preflight.py --fix",
+            required=False,
+        )
+    except Exception as exc:
+        return Result(
+            "chroma ONNX model",
+            False,
+            f"could not check: {exc}",
+            required=False,
+        )
+
+
+def fix_chroma_onnx_model() -> None:
+    """Download and warm-up the ChromaDB ONNX embedding model."""
+    try:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+            ONNXMiniLM_L6_V2,
+        )
+        print("Warming up ChromaDB ONNX embedding model (first-time download)…")
+        ef = ONNXMiniLM_L6_V2()
+        ef(["warm-up"])  # triggers download + onnxruntime session init
+        print("  ✓ chroma ONNX model cached.")
+    except Exception as exc:
+        print(f"  ✗ Failed to cache chroma ONNX model: {exc}", file=sys.stderr)
+
+
 def check_hf_cache() -> Result:
     """Informational: show where the HuggingFace model cache lives."""
     try:
@@ -286,6 +337,7 @@ def _run_all() -> list[Result]:
         check_import("pydub",            required=True),
         check_import("numpy",            required=True),
         check_import("chromadb",         required=True),
+        check_chroma_onnx_model(),
 
         # ── Optional but strongly recommended ─────────────────────────
         check_import("mlx",              required=False),
@@ -317,6 +369,7 @@ def do_fix() -> None:
         sys.exit(1)
     print(f"Running: pip install -r {req}")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req)])
+    fix_chroma_onnx_model()
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────

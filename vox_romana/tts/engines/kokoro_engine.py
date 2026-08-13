@@ -105,6 +105,10 @@ def _lazy_generate_audio(**kwargs):
     return generate_audio(**kwargs)
 
 
+# Saved reference to the original stub so teardown() can reset the global.
+_LAZY_GENERATE_AUDIO_STUB = _lazy_generate_audio
+
+
 # Default Kokoro model on HuggingFace. Auto-downloaded on first use.
 # NOTE: The original prince-canuma repo went private/offline. The
 # mlx-community fork is the canonical source (834K+ downloads).
@@ -322,3 +326,19 @@ class KokoroEngine(BaseTTSEngine):
             List of voice ID strings (e.g. ["af_heart", "am_adam", ...]).
         """
         return list(KOKORO_VOICES)
+
+    def teardown(self) -> None:
+        """Release Kokoro model state to free RAM.
+
+        Resets the module-level generate_audio reference back to the lazy
+        stub so that the real mlx_audio function (which keeps model weights
+        resident in MLX unified memory) can be garbage-collected.  Also
+        attempts to clear the MLX metal heap cache.
+        """
+        import vox_romana.tts.engines.kokoro_engine as _m
+        _m._lazy_generate_audio = _m._LAZY_GENERATE_AUDIO_STUB
+        try:
+            import mlx.core as mx
+            mx.metal.clear_cache()
+        except Exception:
+            pass

@@ -432,8 +432,23 @@ class TestChromaVectorIndexDeletion:
 # 3. MemoryRecall + Chroma integration
 # ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.xdist_group("chroma_onnx")
 class TestMemoryRecallChroma:
     """MemoryRecall using an injected EphemeralClient."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_document_dir(self, tmp_path, monkeypatch):
+        """Redirect DEFAULT_DOCUMENT_DIR to an empty tmp dir for every test.
+
+        Prevents _ensure_index() from embedding the entire real corpus on each
+        call.  Tests that need specific documents (e.g.
+        test_ingested_documents_searchable) patch
+        vox_romana.memory.ingest.DEFAULT_DOCUMENT_DIR themselves inside a
+        ``with patch(...)`` block, which overrides this monkeypatch for the
+        duration of that block.
+        """
+        import vox_romana.memory.ingest as _ingest_mod
+        monkeypatch.setattr(_ingest_mod, "DEFAULT_DOCUMENT_DIR", tmp_path)
 
     def test_chroma_method_used_when_available(self, seeded_catalog, ephemeral_chroma):
         from vox_romana.memory.recall import MemoryRecall

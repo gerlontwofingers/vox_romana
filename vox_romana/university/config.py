@@ -83,6 +83,7 @@ class UniversityConfig:
     colloquium_interval: int = 25
     colloquium_max_leads_per_peer: int = 3
     colloquium_snippet_chars: int = 1500
+    colloquium_extra_secs: float = 600.0  # extra deadline budget reserved for colloquium
     # Per-model latency hints (seconds) used by SeminarPlan.suggest().
     # Keys are Ollama model tags; 'default' is the fallback.
     # Example entry: {"deepseek-r1:14b": {"article": 25, "synth": 60, "exchange": 90}}

@@ -251,6 +251,7 @@ class DebateBootstrap(BaseShowBootstrap):
             config.show_host.voice_fingerprint = host_profile.voice_fingerprint
             config.show_host.voice_hint = host_profile.voice_hint
             config.show_host.voice_gender = host_profile.voice_gender
+            config.show_host.tts_style = host_profile.tts_style
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 3: DIRECTOR BRIEF

@@ -307,6 +307,68 @@ def _cmd_extend(args: argparse.Namespace) -> None:
     print()
 
 
+def _verify_seminar_result(sessions, save_dir) -> None:
+    """Print a pass/fail checklist for the seminar result.
+
+    Checks four diagnostic conditions and prints a structured table.
+    Diagnostic only — never raises.
+    """
+    from vox_romana.university.university import _seminar_log_path
+
+    checks = []
+
+    # 1. No interrupted sessions
+    n_interrupted = sum(1 for s in sessions if s.status == "interrupted")
+    checks.append((
+        "No interrupted sessions",
+        n_interrupted == 0,
+        f"{n_interrupted} interrupted" if n_interrupted else "OK",
+    ))
+
+    # 2. At least one colloquium round fired
+    max_rounds = max((len(s.colloquium_rounds) for s in sessions), default=0)
+    checks.append((
+        "At least 1 colloquium round",
+        max_rounds >= 1,
+        f"{max_rounds} round(s)" if max_rounds else "0 — colloquium may have been skipped",
+    ))
+
+    # 3. At least one note has a real source_url
+    has_url = any(
+        n.source_url and not n.source_url.startswith("memory://")
+        for s in sessions
+        for n in s.notes
+    )
+    checks.append((
+        "At least 1 note with source URL",
+        has_url,
+        "OK" if has_url else "all notes have empty or memory:// URLs",
+    ))
+
+    # 4. All sessions have non-empty synthesis
+    without_synth = [s.session_id[:8] for s in sessions if not (s.synthesis or "").strip()]
+    checks.append((
+        "All sessions have synthesis",
+        not without_synth,
+        "OK" if not without_synth else f"missing: {', '.join(without_synth)}",
+    ))
+
+    log_path = _seminar_log_path(save_dir)
+    checks.append((
+        "seminar_log.jsonl written",
+        log_path is not None and log_path.exists(),
+        str(log_path) if log_path is not None else "no save_dir configured",
+    ))
+
+    print(f"\n{'─' * 60}")
+    print("Seminar verification")
+    print(f"{'─' * 60}")
+    for label, passed, detail in checks:
+        icon = "PASS" if passed else "FAIL"
+        print(f"  [{icon}] {label}: {detail}")
+    print(f"{'─' * 60}\n")
+
+
 def _cmd_seminar(args: argparse.Namespace) -> None:
     """Run a multi-Scholar seminar with peer colloquia."""
     uni = _build_university()
@@ -334,27 +396,38 @@ def _cmd_seminar(args: argparse.Namespace) -> None:
           + (f" (every {interval} articles)" if colloquium_enabled and interval else ""))
     print()
 
-    # Watchdog covers the seminar loop.  When --merge is also requested,
-    # add a fixed extra so cross_synthesize() is not killed mid-run.
+    # Watchdog is spawned inside University.seminar() using the extended
+    # deadline (seed budget + colloquium_extra_secs from config).  No second
+    # watchdog is needed here.  _CROSS_SYNTH_EXTRA_SECS is kept for the
+    # --merge guard further down.
     _CROSS_SYNTH_EXTRA_SECS = 180.0  # one 14b cross-synthesis call
     import time as _time
     from vox_romana.university.university import University as _Uni
-    if hours:
-        _watchdog_deadline = (
-            _time.monotonic()
-            + hours * 3600.0
-            + (_CROSS_SYNTH_EXTRA_SECS if args.merge else 0.0)
-        )
-        _Uni._start_deadline_watchdog(_watchdog_deadline, grace_secs=90.0)
+    from vox_romana.core.paths import UNIVERSITY_ROOT as _UNI_ROOT
+    from vox_romana.university.university import _log_seminar_event, _seminar_log_path
+    import traceback as _traceback
 
-    sessions = uni.seminar(
-        topics,
-        budget_hours_each=hours,
-        colloquium_enabled=colloquium_enabled,
-        colloquium_interval=interval,
-        notes_per_synthesis=args.notes_per_synth,
-        colloquium_max_rounds=args.max_collo_rounds,
-    )
+    _save_dir = _UNI_ROOT
+    _log_path = _seminar_log_path(_save_dir)
+
+    try:
+        sessions = uni.seminar(
+            topics,
+            budget_hours_each=hours,
+            colloquium_enabled=colloquium_enabled,
+            colloquium_interval=interval,
+            notes_per_synthesis=args.notes_per_synth,
+            colloquium_max_rounds=args.max_collo_rounds,
+            save_dir=_save_dir,
+        )
+    except Exception as _exc:
+        _log_seminar_event(
+            _log_path, "seminar_failed",
+            exception_type=type(_exc).__name__,
+            message=str(_exc),
+            traceback=_traceback.format_exc(),
+        )
+        raise
 
     print(f"\n{'═' * 60}")
     print(f"Seminar complete — {len(sessions)} session(s)")
@@ -372,6 +445,7 @@ def _cmd_seminar(args: argparse.Namespace) -> None:
         )
         print(f"      topic: {s.topic}")
     print()
+    _verify_seminar_result(sessions, _save_dir)
     if args.merge and sessions:
         print("Cross-synthesising into one document…")
         merged = uni.cross_synthesize(sessions, directive=args.merge_directive or "")

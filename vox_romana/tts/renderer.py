@@ -1467,3 +1467,14 @@ class TTSRenderer:
             return self._music_style
 
         return "podcast background music"
+
+    def teardown(self) -> None:
+        """Release all resident TTS and music model weights.
+
+        Delegates to the wrapped speech engine and the music engine (if any)
+        so that model weights are freed before the next pipeline phase.
+        Call this after render() returns and before starting animation.
+        """
+        self._engine.teardown()
+        if self._music_engine is not None:
+            self._music_engine.teardown()

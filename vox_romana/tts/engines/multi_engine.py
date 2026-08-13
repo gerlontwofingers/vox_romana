@@ -154,6 +154,11 @@ class MultiEngine(BaseTTSEngine):
             text, voice=voice, emotion=emotion, speed=speed, language=language, **kwargs,
         )
 
+    def teardown(self) -> None:
+        """Release model state in all wrapped engines."""
+        for engine in self._engines:
+            engine.teardown()
+
     # ── Dispatch ─────────────────────────────────────────────────────
 
     def _engine_for_voice(self, voice_id: str) -> BaseTTSEngine:

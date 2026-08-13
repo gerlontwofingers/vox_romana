@@ -50,10 +50,12 @@ own checkpointed session, and ``study_many`` returns a list).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,6 +81,39 @@ if TYPE_CHECKING:
     from vox_romana.university.sources import KnowledgeSource
 
 logger = logging.getLogger(__name__)
+
+
+# ── Seminar telemetry helpers ─────────────────────────────────────────────────
+
+def _seminar_log_path(save_dir: Path | None) -> Path | None:
+    """Return the seminar event-log path, or None when no save_dir is set."""
+    if save_dir is None:
+        return None
+    return save_dir / "seminar_log.jsonl"
+
+
+def _log_seminar_event(
+    path: Path | None,
+    event_type: str,
+    **data,
+) -> None:
+    """Append one structured event to the seminar JSONL log.
+
+    Each entry is ``{"logged_at": ISO, "event_type": ..., ...data}``.
+    Uses append-mode + immediate flush so partial runs are still readable.
+    No-ops when *path* is None (no save_dir configured).
+    """
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"logged_at": _now_iso(), "event_type": event_type, **data}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=True, default=str))
+            fh.write("\n")
+            fh.flush()
+    except Exception:
+        logger.debug("_log_seminar_event: could not write to %s", path, exc_info=True)
 
 
 class University:
@@ -313,7 +348,7 @@ class University:
             logger.exception("cross_synthesize: LLM call failed")
             return ""
 
-        return _strip_think(raw or "")
+        return strip_think(raw or "")
 
     # ── seminar / colloquium ────────────────────────────────────────────
 
@@ -321,6 +356,7 @@ class University:
     def _start_deadline_watchdog(
         deadline_monotonic: float,
         grace_secs: float = 90.0,
+        log_path: "Path | None" = None,
     ) -> None:
         """Spawn a daemon thread that hard-exits the process if still running
         after ``deadline_monotonic + grace_secs``.
@@ -342,6 +378,11 @@ class University:
                     f"\n[Seminar/WATCHDOG] deadline + {grace_secs:.0f}s grace exceeded "
                     f"(~{elapsed:.0f}s over budget) — forcing exit",
                     flush=True,
+                )
+                _log_seminar_event(
+                    log_path, "seminar_watchdog_kill",
+                    grace_secs=grace_secs,
+                    elapsed_over_budget_secs=round(elapsed, 1),
                 )
                 os._exit(1)
 
@@ -418,6 +459,15 @@ class University:
         scholars: list[Scholar] = [self.spawn_scholar() for _ in clean_topics]
         sessions: list[ScholarSession] = []
 
+        log_path = _seminar_log_path(save_dir)
+        _log_seminar_event(
+            log_path, "seminar_started",
+            topics=clean_topics,
+            n_scholars=len(clean_topics),
+            budget_hours_each=budget_hours_each,
+            colloquium_enabled=enabled,
+        )
+
         # Build a budget-aware plan.  CLI overrides take priority; math fills
         # in everything else so the user never has to tune the yaml manually.
         plan: SeminarPlan | None = None
@@ -450,8 +500,11 @@ class University:
         # Compute a single shared deadline anchored to NOW so that the total
         # seminar wall-clock matches --hours regardless of how many scholars
         # are interleaved or whether Ollama serialises their LLM calls.
+        # colloquium_extra_secs reserves additional wall-clock time for the
+        # cross-pollination phase so the seed budget is not shared with it.
+        _collo_extra = self.config.colloquium_extra_secs if enabled else 0.0
         seminar_deadline: float | None = (
-            time.monotonic() + budget_hours_each * 3600.0
+            time.monotonic() + budget_hours_each * 3600.0 + _collo_extra
             if budget_hours_each is not None else None
         )
 
@@ -459,7 +512,7 @@ class University:
         # deadline, something is stuck in an LLM call and can't self-stop.
         # The daemon thread forces os._exit() so the user is never left hanging.
         if seminar_deadline is not None:
-            self._start_deadline_watchdog(seminar_deadline)
+            self._start_deadline_watchdog(seminar_deadline, log_path=log_path)
 
         def _seed(args: tuple) -> ScholarSession:
             scholar, topic = args
@@ -481,6 +534,12 @@ class University:
             f"{sum(s.status == 'paused' for s in sessions)} paused",
             flush=True,
         )
+        _log_seminar_event(
+            log_path, "seed_phase_complete",
+            n_active=sum(s.status == 'active' for s in sessions),
+            n_paused=sum(s.status == 'paused' for s in sessions),
+            session_ids=[s.session_id for s in sessions],
+        )
 
         # Always attempt at least one colloquium round after the seed,
         # regardless of session status.  With tight budgets the seed phase
@@ -489,7 +548,8 @@ class University:
         with_synthesis = sum(1 for s in sessions if (s.synthesis or "").strip())
         if with_synthesis >= 2:
             self._run_colloquium_round(
-                sessions, round_n=1, deadline_monotonic=seminar_deadline
+                sessions, round_n=1, deadline_monotonic=seminar_deadline,
+                log_path=log_path,
             )
             for s in sessions:
                 s.save(save_dir)
@@ -506,6 +566,7 @@ class University:
             # Hard deadline: stop before starting another expensive round.
             if seminar_deadline is not None and time.monotonic() >= seminar_deadline:
                 logger.info("Seminar: wall-clock budget exhausted — stopping before round %d.", round_n)
+                _log_seminar_event(log_path, "seminar_budget_exhausted", round_n=round_n)
                 for s in sessions:
                     if s.status == "active":
                         s.status = "paused"
@@ -524,7 +585,8 @@ class University:
                 len(sessions),
             )
             self._run_colloquium_round(
-                sessions, round_n=round_n, deadline_monotonic=seminar_deadline
+                sessions, round_n=round_n, deadline_monotonic=seminar_deadline,
+                log_path=log_path,
             )
 
             # All still-active Scholars read their next bounded slice in
@@ -559,6 +621,20 @@ class University:
         for session in sessions:
             self._catalog_log(session, save_dir=save_dir)
 
+        _log_seminar_event(
+            log_path, "seminar_complete",
+            sessions=[
+                {
+                    "session_id": s.session_id,
+                    "status": s.status,
+                    "n_notes": len(s.notes),
+                    "n_articles": len(s.articles_read),
+                    "has_synthesis": bool((s.synthesis or "").strip()),
+                    "n_colloquium_rounds": len(s.colloquium_rounds),
+                }
+                for s in sessions
+            ],
+        )
         return sessions
 
     @staticmethod
@@ -571,6 +647,7 @@ class University:
         *,
         round_n: int,
         deadline_monotonic: float | None = None,
+        log_path: Path | None = None,
     ) -> int:
         """Have each Scholar suggest leads to its peers based on findings.
 
@@ -601,6 +678,12 @@ class University:
             f"[Seminar/COLLOQUIUM] round {round_n} starting — "
             f"{n_with_synthesis}/{len(sessions)} scholars have synthesis",
             flush=True,
+        )
+        _log_seminar_event(
+            log_path, "colloquium_round_started",
+            round_n=round_n,
+            n_scholars_with_synthesis=n_with_synthesis,
+            n_pairs=len(sessions) * (len(sessions) - 1),
         )
 
         # Build sender snippets up-front so each receiver sees a stable view.
@@ -641,6 +724,11 @@ class University:
                         f"[Seminar/COLLOQUIUM] round {round_n} aborted — deadline reached",
                         flush=True,
                     )
+                    _log_seminar_event(
+                        log_path, "colloquium_round_aborted",
+                        round_n=round_n,
+                        reason="deadline_reached",
+                    )
                     break
                 pairs.append((sender_sess, receiver, snippet))
             else:
@@ -676,6 +764,15 @@ class University:
                 snippet=snip,
                 max_leads=max_leads,
             )
+            # Log the LLM exchange result before source fetching so the entry
+            # survives a watchdog kill during _safe_search_to_qids.
+            _log_seminar_event(
+                log_path, "colloquium_exchange_result",
+                round_n=round_n,
+                sender_id=sender_s.session_id[:8],
+                receiver_id=recv_s.session_id[:8],
+                n_suggested_queries=len(exc.suggested_queries) if exc is not None else 0,
+            )
             qids: list[str] = []
             if exc is not None and exc.suggested_queries:
                 qids = self._safe_search_to_qids(
@@ -708,6 +805,11 @@ class University:
         print(
             f"[Seminar/COLLOQUIUM] round {round_n} done — added {total_added} qids across peers",
             flush=True,
+        )
+        _log_seminar_event(
+            log_path, "colloquium_round_complete",
+            round_n=round_n,
+            total_qids_added=total_added,
         )
         return total_added
 

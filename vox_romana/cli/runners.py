@@ -20,9 +20,20 @@ from pathlib import Path
 from typing import Any
 
 from vox_romana.core.client import DeepSeekClient
+from vox_romana.core.crew import (
+    CrewMember,
+    EpisodicEntry,
+    compute_salience,
+    consolidate_if_needed,
+    load_crew_member,
+    write_episodic_entry,
+)
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
 from vox_romana.core.fact_checker import FactChecker
 from vox_romana.core.router import ShowRouter
+
+
+logger = logging.getLogger(__name__)
 
 
 def log(msg: str, *, quiet: bool = False) -> None:
@@ -34,6 +45,13 @@ _PRONUNCIATION_BLOCK_RE = re.compile(
     r"(?:^|\n)Pronunciations:\s*\n((?:[ \t]*[^\n]+\n?)*)",
     re.IGNORECASE,
 )
+
+# Tunable constants used in word-budget formulas. Exposed at module level
+# so tools/studio.py can snapshot the values that were in effect at run time.
+_DEBATE_AVG_WORDS_PER_TURN: int = 40
+_DEBATE_HOST_OVERHEAD_WORDS: int = 280  # intro + outro + closing spillover
+_NEWS_AVG_WORDS_PER_SEGMENT: int = 180
+_NEWS_HOST_OVERHEAD_WORDS: int = 120    # intro + outro
 
 
 def _parse_pronunciations(brief: str) -> tuple[str, dict[str, Any]]:
@@ -428,6 +446,130 @@ def _write_production_log(output_path: str | Path, result: Any) -> None:
         result.production_log_path = str(log_path)
 
 
+def _prepend_run_context(result: Any, show_type: str, args: argparse.Namespace) -> None:
+    """Insert a run_context entry at position 0 of the production_log.
+
+    Records the CLI context that produced this run so that the
+    production_log is self-describing when read from disk.
+    No-ops when the result has no production_log attribute.
+    """
+    log = getattr(result, "production_log", None)
+    if log is None:
+        return
+    cli_flags = {
+        k: getattr(args, k, None)
+        for k in ("brief", "type", "duration", "research", "fact_check", "verbose", "tag")
+        if getattr(args, k, None) is not None
+    }
+    entry = {
+        "logged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event_type": "run_context",
+        "show_type": show_type,
+        "target_words": getattr(result, "target_words", None),
+        "title": getattr(result, "title", None),
+        "cli_flags": cli_flags,
+    }
+    log.insert(0, entry)
+
+
+def _load_crew_members_from_args(args: argparse.Namespace) -> list[CrewMember]:
+    """Build a :class:`CrewMember` list from CLI args.
+
+    Reads ``args.crew_director`` and ``args.crew_factchecker``.  Missing
+    attributes (pre-crew CLI invocations) are treated as ``None``.
+    """
+    crew_dir_raw = getattr(args, "crew_dir", None)
+    crew_dir = Path(crew_dir_raw) if crew_dir_raw else None
+    members: list[CrewMember] = []
+    director_id = getattr(args, "crew_director", None)
+    if director_id:
+        members.append(load_crew_member(director_id, "director", crew_dir=crew_dir))
+    factchecker_id = getattr(args, "crew_factchecker", None)
+    if factchecker_id:
+        members.append(
+            load_crew_member(factchecker_id, "factchecker", crew_dir=crew_dir)
+        )
+    return members
+
+
+def _write_crew_episodic(
+    result: Any,
+    config: Any,
+    crew_members: list[CrewMember],
+    client: DeepSeekClient,
+    args: argparse.Namespace,
+) -> None:
+    """Write end-of-run episodic entries for all assigned crew members.
+
+    Computes salience from the production log, builds an
+    :class:`EpisodicEntry`, appends it to each crew member's
+    ``short_term.jsonl``, and triggers consolidation if the entry count
+    has crossed the threshold.
+
+    Failures are logged as warnings so a crew write error never aborts a
+    successful show run.
+    """
+    if not crew_members:
+        return
+
+    production_log: list[dict] = getattr(result, "production_log", []) or []
+    salience = compute_salience(production_log)
+    show_type = getattr(config, "content_type", "unknown") or "unknown"
+    title = getattr(config, "title", "") or ""
+
+    # Count events via show-type-specific attribute names
+    n_events = 0
+    for attr in (
+        "debate_events", "news_events", "podcast_events",
+        "audiobook_events", "lecture_events", "events",
+    ):
+        events = getattr(result, attr, None)
+        if events is not None:
+            n_events = len(events)
+            break
+
+    n_llm_calls = int(getattr(result, "total_llm_calls", 0) or 0)
+    n_issues = sum(
+        1 for e in production_log if e.get("event_type") == "issue_report"
+    )
+    summary = (
+        f"{show_type} '{title}' — {n_events} events, {n_llm_calls} LLM calls."
+    )
+    if n_issues:
+        summary += f" {n_issues} issue report(s) raised during the run."
+
+    # Use production_log_path as run_id when available (already unique)
+    run_id = getattr(result, "production_log_path", None) or ""
+    if not run_id:
+        run_id = f"{show_type}_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    crew_dir_raw = getattr(args, "crew_dir", None)
+    crew_dir = Path(crew_dir_raw) if crew_dir_raw else None
+
+    entry = EpisodicEntry(
+        run_id=run_id,
+        show_type=show_type,
+        title=title,
+        date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        salience_score=round(salience, 2),
+        summary=summary,
+        production_log_stats={
+            "event_count": n_events,
+            "llm_calls": n_llm_calls,
+            "issue_count": n_issues,
+        },
+    )
+
+    for member in crew_members:
+        try:
+            write_episodic_entry(member.crew_id, entry, crew_dir=crew_dir)
+            consolidate_if_needed(member.crew_id, client=client, crew_dir=crew_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "crew: failed to write episodic entry for %r: %s", member.crew_id, exc
+            )
+
+
 def _apply_character_langs(participants: list, args: argparse.Namespace) -> None:
     """Stamp per-character language overrides onto participant profiles.
 
@@ -508,10 +650,8 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     # Reserve some words for the host intro+outro narration, then
     # divide the remainder by an average per-turn word count.
     if config.target_words and config.target_turns:
-        AVG_WORDS_PER_TURN = 40
-        HOST_OVERHEAD_WORDS = 280  # intro + outro + closing turns spillover
-        budget_for_turns = max(80, config.target_words - HOST_OVERHEAD_WORDS)
-        max_turns = max(4, budget_for_turns // AVG_WORDS_PER_TURN)
+        budget_for_turns = max(80, config.target_words - _DEBATE_HOST_OVERHEAD_WORDS)
+        max_turns = max(4, budget_for_turns // _DEBATE_AVG_WORDS_PER_TURN)
         if config.target_turns > max_turns:
             log(
                 f"  Clamping target_turns: {config.target_turns} -> {max_turns} "
@@ -540,10 +680,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         num_segments=config.target_turns or 0,
         quiet=args.quiet,
     )
+    crew_members = _load_crew_members_from_args(args)
     conductor = DebateConductor(
         config,
         client=client,
         lens_rack=getattr(args, "lens_rack", None),
+        crew_members=crew_members,
         **checkpoint_kwargs,
     )
     result = conductor.run()
@@ -574,7 +716,9 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     output_path = _build_output_path(args, "debate")
 
     serializer.save_merged(merged, output_path)
+    _prepend_run_context(result, "debate", args)
     _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -633,10 +777,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     # target_segments, so for short broadcasts it routinely overshoots.
     # Each segment costs ~150 anchor words + ~30 transition words.
     if config.target_words and config.segments:
-        AVG_WORDS_PER_SEGMENT = 180
-        HOST_OVERHEAD_WORDS = 120  # intro + outro
-        budget_for_segments = max(120, config.target_words - HOST_OVERHEAD_WORDS)
-        max_segments = max(1, budget_for_segments // AVG_WORDS_PER_SEGMENT)
+        budget_for_segments = max(120, config.target_words - _NEWS_HOST_OVERHEAD_WORDS)
+        max_segments = max(1, budget_for_segments // _NEWS_AVG_WORDS_PER_SEGMENT)
         if len(config.segments) > max_segments:
             log(
                 f"  Trimming segments: {len(config.segments)} -> {max_segments} "
@@ -666,7 +808,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         num_segments=len(config.segments),
         quiet=args.quiet,
     )
-    conductor = NewsConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = NewsConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -695,7 +838,9 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     output_path = _build_output_path(args, "news")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "news", args)
     _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -777,7 +922,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         num_segments=len(config.segments),
         quiet=args.quiet,
     )
-    conductor = PodcastConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = PodcastConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -806,7 +952,9 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     output_path = _build_output_path(args, "podcast")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "podcast", args)
     _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -882,7 +1030,8 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         num_segments=len(config.chapters),
         quiet=args.quiet,
     )
-    conductor = AudiobookConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = AudiobookConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -911,7 +1060,9 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     output_path = _build_output_path(args, "audiobook")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "audiobook", args)
     _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -979,7 +1130,8 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         num_segments=len(config.sections),
         quiet=args.quiet,
     )
-    conductor = LectureConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = LectureConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -1008,7 +1160,9 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     output_path = _build_output_path(args, "lecture")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "lecture", args)
     _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -1631,6 +1785,13 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         normalize=not args.no_normalize,
         quiet=args.quiet,
     )
+
+    # Release TTS model weights now that audio is on disk.  This frees RAM
+    # before the resource monitor's pre-animate checkpoint fires so the
+    # animation phase (SD, AnimateDiff, etc.) can claim its full budget.
+    renderer.teardown()
+    import gc as _gc
+    _gc.collect()
 
     elapsed = time.time() - start_time
 

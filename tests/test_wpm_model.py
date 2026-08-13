@@ -109,19 +109,19 @@ class TestEncoding:
     """Verify the one-hot + word_count feature encoding."""
 
     def test_debate_encoding(self, model):
-        """Debate should have [1, 0, 0, 0, word_count]."""
+        """Debate should have [1, 0, 0, 0, 0, word_count]."""
         features = model._encode("debate", 4500)
-        assert features == [1.0, 0.0, 0.0, 0.0, 4500.0]
+        assert features == [1.0, 0.0, 0.0, 0.0, 0.0, 4500.0]
 
     def test_news_encoding(self, model):
-        """News should have [0, 1, 0, 0, word_count]."""
+        """News should have [0, 1, 0, 0, 0, word_count]."""
         features = model._encode("news", 3000)
-        assert features == [0.0, 1.0, 0.0, 0.0, 3000.0]
+        assert features == [0.0, 1.0, 0.0, 0.0, 0.0, 3000.0]
 
     def test_unknown_type_encoding(self, model):
         """Unknown content types get all-zero one-hot."""
         features = model._encode("mystery_genre", 2000)
-        assert features == [0.0, 0.0, 0.0, 0.0, 2000.0]
+        assert features == [0.0, 0.0, 0.0, 0.0, 0.0, 2000.0]
 
     def test_encoding_length(self, model):
         """Feature vector should be len(KNOWN_CONTENT_TYPES) + 1."""

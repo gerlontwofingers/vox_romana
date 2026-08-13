@@ -30,6 +30,110 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _read_production_id() -> str:
+    """Read production_id from vox_romana.yaml; fall back to 'default'."""
+    import yaml  # lazy import — already in requirements.txt
+    for cfg_path in [
+        REPO_ROOT / "vox_romana.yaml",
+        Path.home() / ".vox_romana" / "config.yaml",
+    ]:
+        if cfg_path.exists():
+            try:
+                cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                val = cfg.get("production_id")
+                if val:
+                    return str(val)
+            except Exception:
+                pass
+    return "default"
+
+
+def _snapshot_params(study_dir: Path) -> None:
+    """Capture all tunable parameter values at run start.
+
+    Imports live constants from the vox_romana package so the snapshot
+    reflects the values actually in effect for this battery run, not
+    whatever values happen to be current at ingest time later.
+
+    Writes ``study_dir/params_snapshot.json``.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(REPO_ROOT))
+
+    try:
+        from vox_romana.core.conductor import BaseConductor
+        from vox_romana.core.duration import WPM_DEFAULTS
+        from vox_romana.tts.renderer import _LEAD_IN_MS
+        from vox_romana.shows.news.conductor import MAX_BEAT_WORDS as _NEWS_MAX_BEAT
+        from vox_romana.shows.lecture.conductor import MAX_BEAT_WORDS as _LECTURE_MAX_BEAT
+        from vox_romana.shows.debates.conductor import DebateConductor
+        from vox_romana.cli.runners import (
+            _DEBATE_AVG_WORDS_PER_TURN,
+            _DEBATE_HOST_OVERHEAD_WORDS,
+            _NEWS_AVG_WORDS_PER_SEGMENT,
+            _NEWS_HOST_OVERHEAD_WORDS,
+        )
+    except ImportError as exc:
+        print(f"  [snapshot] WARNING: could not import vox_romana constants: {exc}", flush=True)
+        return
+
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(REPO_ROOT),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        git_sha = None
+
+    snapshot = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": git_sha,
+        "universal": {
+            "overshoot_compensation": BaseConductor.OVERSHOOT_COMPENSATION,
+            "wrap_up_threshold": BaseConductor.WRAP_UP_THRESHOLD,
+        },
+        "by_show": {
+            "debate": {
+                "wpm_default": WPM_DEFAULTS.get("debate"),
+                "lead_in_ms": _LEAD_IN_MS.get("debate"),
+                "max_beat_words": None,
+                "avg_words_per_turn": _DEBATE_AVG_WORDS_PER_TURN,
+                "host_overhead_words": _DEBATE_HOST_OVERHEAD_WORDS,
+                "closing_window_extra": DebateConductor.CLOSING_WINDOW_EXTRA,
+            },
+            "news": {
+                "wpm_default": WPM_DEFAULTS.get("news"),
+                "lead_in_ms": _LEAD_IN_MS.get("news"),
+                "max_beat_words": _NEWS_MAX_BEAT,
+                "avg_words_per_segment": _NEWS_AVG_WORDS_PER_SEGMENT,
+                "host_overhead_words": _NEWS_HOST_OVERHEAD_WORDS,
+            },
+            "podcast": {
+                "wpm_default": WPM_DEFAULTS.get("podcast"),
+                "lead_in_ms": _LEAD_IN_MS.get("podcast"),
+                "max_beat_words": None,
+            },
+            "audiobook": {
+                "wpm_default": WPM_DEFAULTS.get("audiobook"),
+                "lead_in_ms": _LEAD_IN_MS.get("audiobook"),
+                "max_beat_words": None,
+            },
+            "lecture": {
+                "wpm_default": WPM_DEFAULTS.get("lecture"),
+                "lead_in_ms": _LEAD_IN_MS.get("lecture"),
+                "max_beat_words": _LECTURE_MAX_BEAT,
+            },
+        },
+    }
+
+    (study_dir / "params_snapshot.json").write_text(
+        json.dumps(snapshot, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
 # ─────────────────────────────────────────────────────────────────────
 # Topic battery — 10 per show type, deliberately diverse so we surface
 # different conductor behaviours (factual vs fictional, technical vs
@@ -360,7 +464,7 @@ def _run_one(
     return telemetry
 
 
-def _build_index(study_dir: Path, results: list[dict]) -> None:
+def _build_index(study_dir: Path, results: list[dict], duration: float | None = None) -> None:
     """Aggregate index + per-show stats."""
     by_show: dict[str, list[dict]] = {}
     for r in results:
@@ -368,6 +472,7 @@ def _build_index(study_dir: Path, results: list[dict]) -> None:
 
     aggregate = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "target_duration_mins": duration,
         "total_pieces": len(results),
         "total_ok": sum(1 for r in results if r["ok"]),
         "total_failed": sum(1 for r in results if not r["ok"]),
@@ -454,6 +559,24 @@ def main(argv: list[str] | None = None) -> int:
             "concurrent LLM calls are in flight. Recommended on M1 Max: 2–3."
         ),
     )
+    parser.add_argument(
+        "--production-id",
+        default=None,
+        metavar="ID",
+        help=(
+            "Production identifier written into longitudinal.db when "
+            "--auto-ingest is set (default: production_id from vox_romana.yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-ingest",
+        action="store_true",
+        default=False,
+        help=(
+            "After the battery completes, automatically ingest the results "
+            "into study_results/longitudinal.db via ingest_run()."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.workers < 1:
@@ -463,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     study_dir = args.out or (REPO_ROOT / "study_results" / ts)
     study_dir.mkdir(parents=True, exist_ok=True)
+    _snapshot_params(study_dir)
 
     pieces: list[tuple[str, str]] = []
     for show in args.shows:
@@ -527,7 +651,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
         results = [slots[i] for i in range(len(pieces))]
 
-    _build_index(study_dir, results)
+    _build_index(study_dir, results, duration=args.duration)
+
+    if args.auto_ingest:
+        production_id = args.production_id or _read_production_id()
+        print(f"\nAuto-ingesting into longitudinal.db (production_id={production_id!r})...")
+        try:
+            sys.path.insert(0, str(REPO_ROOT))
+            from vox_romana.analysis.longitudinal import ingest_run
+            inserted = ingest_run(
+                db_path=REPO_ROOT / "study_results" / "longitudinal.db",
+                study_dir=study_dir,
+                production_id=production_id,
+            )
+            total = sum(inserted.values())
+            print(f"  Ingested {total} pieces: {dict(sorted(inserted.items()))}")
+        except Exception as exc:
+            print(f"  [auto-ingest] WARNING: {exc}", file=sys.stderr)
 
     # Failure summary — surface which pieces failed without digging into subdirs.
     failed = [r for r in results if not r["ok"]]

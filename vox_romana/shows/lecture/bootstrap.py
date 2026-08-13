@@ -283,6 +283,8 @@ class LectureBootstrap(BaseShowBootstrap):
         try:
             data = json.loads(cleaned)
             professor.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_hint"):
+                professor.voice_hint = data["voice_hint"]
         except (json.JSONDecodeError, TypeError):
             professor.voice_fingerprint = (
                 f"(measured, methodical lecturer; {professor.style or 'warm and clear'})"

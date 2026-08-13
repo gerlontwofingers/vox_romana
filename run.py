@@ -342,10 +342,14 @@ NAMING (--name / -n STEM):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -527,6 +531,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--production-id",
+        type=str,
+        default=None,
+        metavar="ID",
+        help=(
+            "Production identifier for longitudinal tracking. Stored in "
+            "run metadata and used by the single-run ingest path."
+        ),
+    )
+
     # ── Generation flags (forwarded to run_show.py) ──────────────────
     gen_group = parser.add_argument_group("generation (forwarded to run_show.py)")
 
@@ -686,6 +701,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Skip the bootstrap preflight abort when fabricated facts are detected "
             "in the generated outline/rundown. Prints a warning and continues. "
             "Not recommended."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-director",
+        type=str,
+        default=None,
+        dest="crew_director",
+        metavar="CREW_ID",
+        help=(
+            "Assign a crew director to this run. CREW_ID is a directory name "
+            "under the crew root (--crew-dir). The director's profile.yaml is "
+            "injected into every director check-in prompt, and an episodic "
+            "memory entry is written to the director's short_term.jsonl at run end."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-factchecker",
+        type=str,
+        default=None,
+        dest="crew_factchecker",
+        metavar="CREW_ID",
+        help=(
+            "Assign a crew fact-checker to this run. CREW_ID is a directory name "
+            "under the crew root. The fact-checker's profile is available for "
+            "injection and an episodic memory entry is written at run end."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-dir",
+        type=str,
+        default=None,
+        dest="crew_dir",
+        metavar="PATH",
+        help=(
+            "Base directory for crew data (profile.yaml, short_term.jsonl, "
+            "long_term.jsonl). Defaults to ~/.vox_romana/crew/."
         ),
     )
 
@@ -1745,6 +1799,68 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace):
     return run_render(argv)
 
 
+def _mode_render_isolated(json_path: str | Path, args: argparse.Namespace):
+    """Run render mode in a child process and return lightweight metadata.
+
+    This is used by ``--mode video`` so the TTS / MusicGen process can exit
+    before animation begins. Some ML runtimes (MLX, torch, ONNX Runtime)
+    keep large caches resident even after Python references are dropped; a
+    process boundary is the only reliable way to return that memory to the OS.
+
+    Returns:
+        A namespace exposing ``event_durations`` for animation timing.
+    """
+    argv = _build_render_argv(json_path, args)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as meta_file:
+        meta_path = Path(meta_file.name)
+
+    script = (
+        "from pathlib import Path; "
+        "import json, sys; "
+        "from vox_romana.cli.runners import run_render; "
+        "result = run_render(sys.argv[1:-1]); "
+        "payload = {'event_durations': result.event_durations if result is not None else None}; "
+        "Path(sys.argv[-1]).write_text(json.dumps(payload), encoding='utf-8')"
+    )
+
+    audio_suffix = f".{args.format}"
+    audio_path = Path(args.audio_output) if args.audio_output else Path(json_path).with_suffix(audio_suffix)
+
+    try:
+        completed = subprocess.run([sys.executable, "-c", script, *argv, str(meta_path)])
+
+        payload = None
+        if meta_path.exists():
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        late_render_crash = (
+            completed.returncode < 0
+            and payload is not None
+            and audio_path.exists()
+        )
+        if completed.returncode != 0 and not late_render_crash:
+            sys.exit(completed.returncode)
+        if late_render_crash:
+            print(
+                f"Warning: render subprocess exited with signal {-completed.returncode} "
+                "after writing audio; continuing into animation.",
+                file=sys.stderr,
+            )
+
+        if payload is None:
+            raise RuntimeError("render subprocess produced no timing metadata")
+
+        event_durations = payload.get("event_durations")
+        if isinstance(event_durations, dict):
+            event_durations = {
+                int(event_index): duration
+                for event_index, duration in event_durations.items()
+            }
+        return SimpleNamespace(event_durations=event_durations)
+    finally:
+        meta_path.unlink(missing_ok=True)
+
+
 def _mode_video(args: argparse.Namespace) -> None:
     """Run video mode: generate → render → animate.
 
@@ -1800,9 +1916,16 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    render_result = _mode_render(json_path, args)
+    render_result = _mode_render_isolated(json_path, args)
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
+
+    # Belt-and-suspenders GC after render: the renderer already called
+    # teardown() on all TTS engines, but an explicit collect() here ensures
+    # any remaining Python-managed model references are freed before the
+    # resource monitor's pre-animate RAM check.
+    import gc as _gc
+    _gc.collect()
 
     audio_suffix = f".{args.format}"
     audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)

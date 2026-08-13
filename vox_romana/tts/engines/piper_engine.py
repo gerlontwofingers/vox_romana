@@ -258,6 +258,14 @@ class PiperEngine(BaseTTSEngine):
         )
         return voices
 
+    def teardown(self) -> None:
+        """Release loaded ONNX voice models to free RAM.
+
+        Clears the internal voice cache so that ONNX runtime sessions
+        can be garbage-collected before the next pipeline phase.
+        """
+        self._voices.clear()
+
     def available_voices_for_language(self, language: str) -> list[str]:
         """List voices whose voice id encodes the given language code.
 

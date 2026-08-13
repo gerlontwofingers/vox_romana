@@ -653,7 +653,12 @@ class LectureConductor(BaseConductor):
 
         raw = self._client.chat(
             messages=[
-                {"role": "system", "content": "You are a pedagogical director. Respond with JSON only."},
+                {
+                    "role": "system",
+                    "content": self._augmented_director_system_prompt(
+                        "You are a pedagogical director. Respond with JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0,

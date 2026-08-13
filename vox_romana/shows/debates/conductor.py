@@ -318,6 +318,10 @@ class DebateConductor(BaseConductor):
 
     _bootstrap_cls = DebateBootstrap
 
+    # Extra turns allowed beyond target_turns for closing statements.
+    # Subclasses may override.
+    CLOSING_WINDOW_EXTRA: int = 3
+
     def __init__(
         self,
         config: DebateConfig,
@@ -624,7 +628,7 @@ class DebateConductor(BaseConductor):
                 wrapping_up = True
             if not wrapping_up and self._should_wrap_up():
                 wrapping_up = True
-            if turn_number > target_turns + 3:
+            if turn_number > target_turns + self.CLOSING_WINDOW_EXTRA:
                 break  # Hard cap: don't let closing statements go on forever.
             if self._over_budget():
                 break  # Hard cap: word budget exceeded.
@@ -1725,7 +1729,12 @@ class DebateConductor(BaseConductor):
 
         raw = self._client.chat(
             messages=[
-                {"role": "system", "content": "You are a debate director. Respond with JSON only."},
+                {
+                    "role": "system",
+                    "content": self._augmented_director_system_prompt(
+                        "You are a debate director. Respond with JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
