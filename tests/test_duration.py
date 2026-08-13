@@ -71,6 +71,16 @@ class TestEstimateTotalWords:
     def test_custom_wpm(self):
         assert estimate_total_words(10, wpm=200) == 2000
 
+    def test_kokoro_engine_overrides_content_type_default(self):
+        # WPM_BY_ENGINE["kokoro"] = 140, overriding podcast's own default (135).
+        assert estimate_total_words(10, "podcast", engine="kokoro") == 1400
+
+    def test_explicit_wpm_overrides_engine(self):
+        assert estimate_total_words(10, "podcast", wpm=200, engine="kokoro") == 2000
+
+    def test_unknown_engine_falls_back_to_content_type(self):
+        assert estimate_total_words(10, "podcast", engine="piper_unknown") == 1350
+
 
 # ── tolerance_window ─────────────────────────────────────────────────────
 
