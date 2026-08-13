@@ -2086,6 +2086,83 @@ class TestRendererMusicRouting:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 9b. COLD-START LEAD-IN SILENCE TESTS (A.3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRendererLeadIn:
+    """Tests for the per-content-type cold-start lead-in silence.
+
+    ``_LEAD_IN_MS`` prepends a brief silence before the first spoken clip
+    for podcast/news/debate/audiobook content so audio doesn't jump in with
+    zero margin. It's skipped when the first event already carries an
+    intro-music-style nonverbal cue.
+    """
+
+    def _plain_utterance_event(self, text="Hello there."):
+        return {
+            "event_kind": "utterance",
+            "speaker_name": "Alice",
+            "text": text,
+            "nonverbal": [],
+            "tone": [],
+            "pace": None,
+            "volume": None,
+            "interruption": False,
+            "overlap_with_previous": False,
+            "pause_before": None,
+            "pause_after": None,
+        }
+
+    def _render_and_measure(self, data, output_path):
+        tts_engine = FakeEngine()
+        renderer = TTSRenderer(tts_engine)
+        renderer.render(data, output_path, format="wav", quiet=True)
+        with wave.open(output_path, "rb") as wf:
+            return wf.getnframes() / wf.getframerate()
+
+    def test_podcast_gets_lead_in_silence(self):
+        """A podcast-shaped show (has podcast_id) gets ~1.5s of lead-in silence."""
+        events = [self._plain_utterance_event()]
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            podcast_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            generic_path = f.name
+
+        podcast_data = {"podcast_id": "p1", "events": events, "participants": []}
+        generic_data = {"events": events, "participants": []}
+
+        podcast_secs = self._render_and_measure(podcast_data, podcast_path)
+        generic_secs = self._render_and_measure(generic_data, generic_path)
+
+        # Podcast lead-in is 1500ms; generic content_type has no entry (0ms).
+        # Allow slack for mixer padding/normalization overhead beyond the raw silence.
+        assert podcast_secs > generic_secs
+        assert podcast_secs - generic_secs == pytest.approx(1.5, abs=0.5)
+
+    def test_lead_in_skipped_when_intro_music_cue_present(self):
+        """No extra silence is added if the first event already has an intro-music cue."""
+        event_with_cue = self._plain_utterance_event()
+        event_with_cue["nonverbal"] = ["intro music"]
+        events_with_cue = [event_with_cue, self._plain_utterance_event("Second line.")]
+        events_without_cue = [self._plain_utterance_event(), self._plain_utterance_event("Second line.")]
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            with_cue_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            without_cue_path = f.name
+
+        with_cue_data = {"podcast_id": "p1", "events": events_with_cue, "participants": []}
+        without_cue_data = {"podcast_id": "p1", "events": events_without_cue, "participants": []}
+
+        with_cue_secs = self._render_and_measure(with_cue_data, with_cue_path)
+        without_cue_secs = self._render_and_measure(without_cue_data, without_cue_path)
+
+        # The intro-music-cue render should be shorter (no lead-in added).
+        assert without_cue_secs > with_cue_secs
+        assert without_cue_secs - with_cue_secs == pytest.approx(1.5, abs=0.5)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 10. MIXER add_music_clip TESTS
 # ═══════════════════════════════════════════════════════════════════════════
 
