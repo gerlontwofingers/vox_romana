@@ -118,6 +118,19 @@ class TestParseArgs:
         ])
         assert args.video_output == tmp_path
 
+    def test_perspective_default_none(self, tmp_prompt):
+        """--perspective should default to None."""
+        args = parse_args([str(tmp_prompt)])
+        assert args.perspective is None
+
+    def test_perspective_parses(self, tmp_prompt):
+        """--perspective should capture the provided framing string."""
+        args = parse_args([
+            str(tmp_prompt),
+            "--perspective", "from Guatemala's geographic perspective",
+        ])
+        assert args.perspective == "from Guatemala's geographic perspective"
+
     def test_render_mode_with_script_input(self, tmp_json):
         """--mode render with --script-input should parse correctly."""
         args = parse_args([
@@ -644,24 +657,21 @@ class TestModeVideoPipelineWiring:
     """_mode_video correctly threads RenderResult.event_durations to run_animation."""
 
     @patch("vox_romana.cli.animation_runner.run_animation")
-    @patch("vox_romana.cli.runners.run_render")
+    @patch("run._mode_render_isolated")
     @patch("vox_romana.cli.runners.run_generate")
     def test_event_durations_threaded_to_animation(
         self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
     ):
         """event_durations from RenderResult reaches run_animation as a kwarg."""
         from pathlib import Path
-        from vox_romana.tts.renderer import RenderResult
+        from types import SimpleNamespace
 
         fake_json = tmp_path / "show.json"
         fake_json.write_text("{}")
         mock_gen.return_value = fake_json
 
         fake_durations = {0: 2.5, 1: 3.1, 2: 1.8}
-        mock_render.return_value = RenderResult(
-            output_path=fake_json.with_suffix(".mp3"),
-            event_durations=fake_durations,
-        )
+        mock_render.return_value = SimpleNamespace(event_durations=fake_durations)
         mock_anim.return_value = Path("/fake/video.mp4")
 
         import run as run_module
@@ -671,18 +681,19 @@ class TestModeVideoPipelineWiring:
         assert kwargs.get("event_durations") == fake_durations
 
     @patch("vox_romana.cli.animation_runner.run_animation")
-    @patch("vox_romana.cli.runners.run_render")
+    @patch("run._mode_render_isolated")
     @patch("vox_romana.cli.runners.run_generate")
     def test_event_durations_none_when_render_returns_none(
         self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
     ):
-        """When run_render returns None, event_durations=None is passed."""
+        """When _mode_render_isolated returns None, event_durations=None is passed."""
         from pathlib import Path
+        from types import SimpleNamespace
 
         fake_json = tmp_path / "show.json"
         fake_json.write_text("{}")
         mock_gen.return_value = fake_json
-        mock_render.return_value = None
+        mock_render.return_value = SimpleNamespace(event_durations=None)
         mock_anim.return_value = Path("/fake/video.mp4")
 
         import run as run_module
@@ -719,18 +730,19 @@ class TestModeVideoPipelineWiring:
         assert forwarded_args.face_animation_model == "sadtalker"
 
     @patch("vox_romana.cli.animation_runner.run_animation")
-    @patch("vox_romana.cli.runners.run_render")
+    @patch("run._mode_render_isolated")
     @patch("vox_romana.cli.runners.run_generate")
     def test_three_phases_called_in_order(
         self, mock_gen, mock_render, mock_anim, tmp_prompt, tmp_path
     ):
-        """generate → render → animate are each called exactly once."""
+        """generate → render_isolated → animate are each called exactly once."""
         from pathlib import Path
+        from types import SimpleNamespace
 
         fake_json = tmp_path / "show.json"
         fake_json.write_text("{}")
         mock_gen.return_value = fake_json
-        mock_render.return_value = None
+        mock_render.return_value = SimpleNamespace(event_durations=None)
         mock_anim.return_value = Path("/fake/video.mp4")
 
         import run as run_module

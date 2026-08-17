@@ -25,11 +25,14 @@ USAGE:
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .editor import ContentEditor
 from .models import ContentResult, EditorVerdict
 from .outline import DirectorOutline
+
+if TYPE_CHECKING:
+    from ..conductor import BaseConductor
 
 
 class RetryLoop:
@@ -39,9 +42,18 @@ class RetryLoop:
     attempt) and returns a tuple of (chunk_content_text, raw_events_list).
     """
 
-    def __init__(self, editor: ContentEditor, *, max_retries: int = 3) -> None:
+    def __init__(
+        self,
+        editor: ContentEditor,
+        *,
+        max_retries: int = 3,
+        router: "BaseConductor | None" = None,
+        target_agents: list[str] | None = None,
+    ) -> None:
         self._editor = editor
         self._max_retries = max_retries
+        self._router = router
+        self._target_agents = target_agents
 
     @property
     def max_retries(self) -> int:
@@ -109,6 +121,12 @@ class RetryLoop:
                 f"Please regenerate this chunk from scratch addressing "
                 f"ALL issues above."
             )
+            if self._router is not None:
+                self._router._route_editor_rejection(
+                    verdict,
+                    chunk_id=chunk_id,
+                    target_agents=self._target_agents,
+                )
 
         # All retries exhausted — return best attempt with warning
         assert best_result is not None

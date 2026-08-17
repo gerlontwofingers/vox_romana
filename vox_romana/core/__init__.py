@@ -58,6 +58,7 @@ from .editing import (
 )
 from .json_retry import JsonParseError, json_retry, parse_json_array_response, parse_json_response
 from .librarian import Librarian, LibrarianResult
+from .messages import AgentMessage, AgentRouter, MessageType
 from .models import AgentResponse, AudioEvent, FactCard
 from .router import RouterResult, ShowRouter, parse_router_response
 from .search import BaseSearchProvider, GoogleSearchProvider, SearchResult, build_fact_check_provider
@@ -67,6 +68,8 @@ __all__ = [
     "AgentNote",
     "AgentNoteStore",
     "AgentResponse",
+    "AgentMessage",
+    "AgentRouter",
     "AgentSession",
     "AudioEvent",
     "BaseConductor",
@@ -91,6 +94,7 @@ __all__ = [
     "JsonParseError",
     "Librarian",
     "LibrarianResult",
+    "MessageType",
     "NoteArchive",
     "OutlineArchive",
     "OutlineRecord",

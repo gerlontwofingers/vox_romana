@@ -80,14 +80,17 @@ class MergedNewsShow:
     voice_casting: dict[str, str] = field(default_factory=dict)
     voice_hints: dict[str, str] = field(default_factory=dict)
     tts_styles: dict[str, str] = field(default_factory=dict)
+    pronunciation_overrides: dict[str, Any] = field(default_factory=dict)
     language: str = "en"
     series_id: str | None = None
+    music_style: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "show_id": self.show_id,
             "title": self.title,
             "language": self.language,
+            "music_style": self.music_style,
             "segments": [s.to_dict() for s in self.segments],
             "events": [e.to_dict() for e in self.events],
             "anchors": list(self.anchors),
@@ -99,5 +102,6 @@ class MergedNewsShow:
             "voice_casting": self.voice_casting,
             "voice_hints": self.voice_hints,
             "tts_styles": self.tts_styles,
+            "pronunciation_overrides": dict(self.pronunciation_overrides),
             "series_id": self.series_id,
         }

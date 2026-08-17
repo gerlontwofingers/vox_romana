@@ -369,3 +369,24 @@ class MusicGenEngine:
     def is_loaded(self) -> bool:
         """True once the model has been loaded (i.e. after the first generate() call)."""
         return self._model is not None
+
+    def teardown(self) -> None:
+        """Release the MusicGen model and processor to free RAM.
+
+        Drops the Python references to the HuggingFace model and processor
+        objects, then runs gc.collect() and optionally empties the torch
+        device cache so that the freed memory is available before the next
+        pipeline phase (e.g. animation/diffusion).
+        """
+        import gc
+        self._model = None
+        self._processor = None
+        gc.collect()
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

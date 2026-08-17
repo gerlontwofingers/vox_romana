@@ -59,6 +59,60 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "integration: mark test as requiring external resources (skipped by default).",
     )
+    config.addinivalue_line(
+        "markers",
+        "timeout: per-test timeout override (seconds).",
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _stub_chroma_onnx_forward():
+    """Replace ONNXMiniLM_L6_V2 in sys.modules with a fast bag-of-words stub.
+
+    DefaultEmbeddingFunction.__call__ (chromadb's default) does:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+        return ONNXMiniLM_L6_V2()(input)
+
+    That import is a dynamic attribute lookup on sys.modules[...].  Replacing
+    the class there intercepts ALL calls, including both the Python and Rust
+    chromadb backends, without fighting __init_subclass__ wrapper closures.
+
+    Each worker process re-runs conftest, so the patch is active in every
+    xdist worker.
+    """
+    import importlib
+    import sys
+
+    import numpy as np  # always available — project dependency
+
+    class _FastHashEmbedding:
+        """Bag-of-words hash embedding — 384-dim, no onnxruntime."""
+
+        def __call__(self, documents):  # noqa: ANN001
+            out = []
+            for doc in documents:
+                vec = np.zeros(384, dtype=np.float32)
+                for word in str(doc).lower().split():
+                    vec[hash(word) % 384] += 1.0
+                norm = float(np.linalg.norm(vec))
+                if norm > 0.0:
+                    vec /= norm
+                out.append(vec.tolist())
+            return out
+
+    _ONNX_MOD = "chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2"
+    try:
+        mod = sys.modules.get(_ONNX_MOD) or importlib.import_module(_ONNX_MOD)
+        original_cls = mod.ONNXMiniLM_L6_V2
+        mod.ONNXMiniLM_L6_V2 = _FastHashEmbedding
+    except Exception:
+        mod = None
+        original_cls = None
+
+    yield
+
+    if mod is not None and original_cls is not None:
+        mod.ONNXMiniLM_L6_V2 = original_cls
 
 
 def pytest_collection_modifyitems(

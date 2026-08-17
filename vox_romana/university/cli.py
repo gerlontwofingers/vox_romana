@@ -36,26 +36,81 @@ def _load_session(session_id: str):
         sys.exit(1)
 
 
+def _build_catalog_and_recall():
+    """Construct a Catalog + MemoryRecall pair, or (None, None) on failure.
+
+    Failures here (missing DB, missing memory store) must never block
+    a university run — Wikipedia/OpenAlex remain usable on their own.
+    """
+    try:
+        from vox_romana.core.catalog import Catalog
+        from vox_romana.memory.recall import MemoryRecall
+
+        catalog = Catalog()
+        recall = MemoryRecall(catalog=catalog)
+        return catalog, recall
+    except Exception as exc:  # pragma: no cover — defensive
+        print(
+            f"Warning: could not initialize local memory ({exc}). "
+            "Continuing without LocalSource.",
+            file=sys.stderr,
+        )
+        return None, None
+
+
+def _build_sources(cfg, recall):
+    """Assemble the standard source list: Wikipedia + (optional) OpenAlex + Local."""
+    from vox_romana.university.sources import (
+        LocalSource,
+        OpenAlexSource,
+        WikipediaSource,
+    )
+
+    sources = [WikipediaSource()]
+    if cfg.openalex_enabled:
+        sources.append(OpenAlexSource(language=cfg.language))
+    if recall is not None:
+        sources.append(LocalSource(recall))
+    return sources
+
+
 def _build_university():
-    """Build a University with OllamaClient + WikipediaSource defaults."""
+    """Build a University with two-speed OllamaClients + Wikipedia/OpenAlex/Local sources."""
     from vox_romana.local.ollama import OllamaClient
-    from vox_romana.university.sources import WikipediaSource
+    from vox_romana.university.config import UniversityConfig
     from vox_romana.university.university import University
 
-    client = OllamaClient.from_config()
-    sources = [WikipediaSource()]
-    return University(client=client, sources=sources)
+    cfg = UniversityConfig.from_project_yaml()
+    reading_client = OllamaClient(model=cfg.reading_model, base_url=cfg.base_url)
+    synthesis_client = OllamaClient(model=cfg.synthesis_model, base_url=cfg.base_url)
+    catalog, recall = _build_catalog_and_recall()
+    sources = _build_sources(cfg, recall)
+    return University(
+        client=reading_client,
+        synthesis_client=synthesis_client,
+        sources=sources,
+        config=cfg,
+        catalog=catalog,
+    )
 
 
 def _build_scholar():
-    """Build a bare Scholar (no catalog wiring) for ask/chat/extend."""
+    """Build a Scholar with Wikipedia/OpenAlex/Local sources for ask/chat/extend."""
     from vox_romana.local.ollama import OllamaClient
+    from vox_romana.university.config import UniversityConfig
     from vox_romana.university.scholar import Scholar
-    from vox_romana.university.sources import WikipediaSource
 
-    client = OllamaClient.from_config()
-    sources = [WikipediaSource()]
-    return Scholar(client=client, sources=sources)
+    cfg = UniversityConfig.from_project_yaml()
+    reading_client = OllamaClient(model=cfg.reading_model, base_url=cfg.base_url)
+    synthesis_client = OllamaClient(model=cfg.synthesis_model, base_url=cfg.base_url)
+    _, recall = _build_catalog_and_recall()
+    sources = _build_sources(cfg, recall)
+    return Scholar(
+        client=reading_client,
+        sources=sources,
+        config=cfg,
+        synthesis_client=synthesis_client,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,6 +304,159 @@ def _cmd_extend(args: argparse.Namespace) -> None:
     if session.synthesis:
         print("Updated synthesis:")
         print(f"  {session.synthesis[:400]}{'…' if len(session.synthesis) > 400 else ''}")
+    print()
+
+
+def _verify_seminar_result(sessions, save_dir) -> None:
+    """Print a pass/fail checklist for the seminar result.
+
+    Checks four diagnostic conditions and prints a structured table.
+    Diagnostic only — never raises.
+    """
+    from vox_romana.university.university import _seminar_log_path
+
+    checks = []
+
+    # 1. No interrupted sessions
+    n_interrupted = sum(1 for s in sessions if s.status == "interrupted")
+    checks.append((
+        "No interrupted sessions",
+        n_interrupted == 0,
+        f"{n_interrupted} interrupted" if n_interrupted else "OK",
+    ))
+
+    # 2. At least one colloquium round fired
+    max_rounds = max((len(s.colloquium_rounds) for s in sessions), default=0)
+    checks.append((
+        "At least 1 colloquium round",
+        max_rounds >= 1,
+        f"{max_rounds} round(s)" if max_rounds else "0 — colloquium may have been skipped",
+    ))
+
+    # 3. At least one note has a real source_url
+    has_url = any(
+        n.source_url and not n.source_url.startswith("memory://")
+        for s in sessions
+        for n in s.notes
+    )
+    checks.append((
+        "At least 1 note with source URL",
+        has_url,
+        "OK" if has_url else "all notes have empty or memory:// URLs",
+    ))
+
+    # 4. All sessions have non-empty synthesis
+    without_synth = [s.session_id[:8] for s in sessions if not (s.synthesis or "").strip()]
+    checks.append((
+        "All sessions have synthesis",
+        not without_synth,
+        "OK" if not without_synth else f"missing: {', '.join(without_synth)}",
+    ))
+
+    log_path = _seminar_log_path(save_dir)
+    checks.append((
+        "seminar_log.jsonl written",
+        log_path is not None and log_path.exists(),
+        str(log_path) if log_path is not None else "no save_dir configured",
+    ))
+
+    print(f"\n{'─' * 60}")
+    print("Seminar verification")
+    print(f"{'─' * 60}")
+    for label, passed, detail in checks:
+        icon = "PASS" if passed else "FAIL"
+        print(f"  [{icon}] {label}: {detail}")
+    print(f"{'─' * 60}\n")
+
+
+def _cmd_seminar(args: argparse.Namespace) -> None:
+    """Run a multi-Scholar seminar with peer colloquia."""
+    uni = _build_university()
+    topics = [t.strip() for t in args.topics if t and t.strip()]
+    if len(topics) < 1:
+        print("Error: seminar needs at least one TOPIC.", file=sys.stderr)
+        sys.exit(1)
+
+    hours = args.hours
+    if hours is not None and hours <= 0:
+        print("Error: --hours must be positive.", file=sys.stderr)
+        sys.exit(1)
+
+    colloquium_enabled = not args.no_colloquium
+    interval = args.colloquium_every
+
+    print(f"\nUniversity: starting seminar — {len(topics)} Scholars")
+    for i, t in enumerate(topics, 1):
+        print(f"  Scholar {i}: {t!r}")
+    if hours:
+        print(f"  budget per Scholar : {hours:.1f}h")
+    else:
+        print("  budget per Scholar : self-determined")
+    print(f"  colloquium         : {'ON' if colloquium_enabled else 'off'}"
+          + (f" (every {interval} articles)" if colloquium_enabled and interval else ""))
+    print()
+
+    # Watchdog is spawned inside University.seminar() using the extended
+    # deadline (seed budget + colloquium_extra_secs from config).  No second
+    # watchdog is needed here.  _CROSS_SYNTH_EXTRA_SECS is kept for the
+    # --merge guard further down.
+    _CROSS_SYNTH_EXTRA_SECS = 180.0  # one 14b cross-synthesis call
+    import time as _time
+    from vox_romana.university.university import University as _Uni
+    from vox_romana.core.paths import UNIVERSITY_ROOT as _UNI_ROOT
+    from vox_romana.university.university import _log_seminar_event, _seminar_log_path
+    import traceback as _traceback
+
+    _save_dir = _UNI_ROOT
+    _log_path = _seminar_log_path(_save_dir)
+
+    try:
+        sessions = uni.seminar(
+            topics,
+            budget_hours_each=hours,
+            colloquium_enabled=colloquium_enabled,
+            colloquium_interval=interval,
+            notes_per_synthesis=args.notes_per_synth,
+            colloquium_max_rounds=args.max_collo_rounds,
+            save_dir=_save_dir,
+        )
+    except Exception as _exc:
+        _log_seminar_event(
+            _log_path, "seminar_failed",
+            exception_type=type(_exc).__name__,
+            message=str(_exc),
+            traceback=_traceback.format_exc(),
+        )
+        raise
+
+    print(f"\n{'═' * 60}")
+    print(f"Seminar complete — {len(sessions)} session(s)")
+    print(f"{'═' * 60}")
+    for i, s in enumerate(sessions, 1):
+        rounds = len(s.colloquium_rounds)
+        leads = sum(
+            len(e.suggested_queries)
+            for r in s.colloquium_rounds for e in r.exchanges
+        )
+        print(
+            f"  [{i}] {s.session_id}  status={s.status}  "
+            f"notes={len(s.notes)}  articles={len(s.articles_read)}  "
+            f"colloquium_rounds={rounds}  peer_leads={leads}"
+        )
+        print(f"      topic: {s.topic}")
+    print()
+    _verify_seminar_result(sessions, _save_dir)
+    if args.merge and sessions:
+        print("Cross-synthesising into one document…")
+        merged = uni.cross_synthesize(sessions, directive=args.merge_directive or "")
+        if args.merge_output:
+            Path(args.merge_output).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.merge_output).write_text(merged, encoding="utf-8")
+            print(f"Merged synthesis → {args.merge_output} ({len(merged):,} chars)")
+        else:
+            print("\nMERGED SYNTHESIS")
+            print("─" * 60)
+            print(merged)
     print()
 
 
@@ -456,6 +664,82 @@ def build_parser() -> argparse.ArgumentParser:
         help="Additional time budget in hours. Omit for Scholar self-estimate.",
     )
     sp_extend.set_defaults(func=_cmd_extend)
+
+    # ── seminar ──────────────────────────────────────────────────────────
+    sp_seminar = sub.add_parser(
+        "seminar",
+        help="Run several Scholars in interleaved rounds with peer colloquia.",
+        description=(
+            "Multi-Scholar deep research with cross-pollination.  Between "
+            "rounds of bounded reading, every Scholar shares a synthesis "
+            "snippet with every peer; each peer's LLM proposes follow-up "
+            "queries that get injected into its own queue.  Use --no-colloquium "
+            "to fall back to study_many semantics (no exchanges)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp_seminar.add_argument(
+        "topics",
+        nargs="+",
+        type=str,
+        help="One topic per Scholar (quote multi-word topics).",
+    )
+    sp_seminar.add_argument(
+        "--hours",
+        type=float,
+        default=None,
+        help="Per-Scholar time budget in hours. Omit for self-estimate.",
+    )
+    sp_seminar.add_argument(
+        "--no-colloquium",
+        action="store_true",
+        help="Disable peer exchanges (equivalent to study_many).",
+    )
+    sp_seminar.add_argument(
+        "--colloquium-every",
+        type=int,
+        default=None,
+        dest="colloquium_every",
+        help="Articles per Scholar between colloquium rounds "
+             "(default: university.colloquium_interval from config).",
+    )
+    sp_seminar.add_argument(
+        "--notes-per-synth",
+        type=int,
+        default=None,
+        dest="notes_per_synth",
+        help="Articles each Scholar reads before triggering a synthesis pass "
+             "(default: derived from --hours by SeminarPlan).",
+    )
+    sp_seminar.add_argument(
+        "--max-collo-rounds",
+        type=int,
+        default=None,
+        dest="max_collo_rounds",
+        help="Hard cap on colloquium rounds (default: derived from --hours by "
+             "SeminarPlan; the seed always fires round 1 regardless).",
+    )
+    sp_seminar.add_argument(
+        "--merge",
+        action="store_true",
+        help="Run cross_synthesize on the completed sessions.",
+    )
+    sp_seminar.add_argument(
+        "--merge-directive",
+        type=str,
+        default="",
+        dest="merge_directive",
+        help="Optional framing for the merged synthesis "
+             "(e.g. 'Frame as a balanced debate brief').",
+    )
+    sp_seminar.add_argument(
+        "--merge-output",
+        type=str,
+        default=None,
+        dest="merge_output",
+        help="If --merge, write merged synthesis here instead of stdout.",
+    )
+    sp_seminar.set_defaults(func=_cmd_seminar)
 
     # ── export ───────────────────────────────────────────────────────────
     sp_export = sub.add_parser(

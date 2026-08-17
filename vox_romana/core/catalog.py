@@ -910,6 +910,61 @@ class Catalog:
                 (asset_pk,),
             )
 
+    # ═══════════════════════════════════════════════════════════════════
+    # VOICE CLONE SHORTCUTS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def register_cloned_asset(
+        self,
+        *,
+        series_id: str,
+        voice_id: str,
+        character_name: str | None = None,
+        profile_dir: str = "",
+        notes: str = "",
+    ) -> int:
+        """Record a cloned voice profile as a series asset.
+
+        Thin wrapper around :meth:`approve_asset` that sets
+        ``asset_type="voice_clone"`` and uses ``profile_dir`` as
+        ``source_path`` for discoverability.
+
+        Args:
+            series_id:      Series this voice belongs to.
+            voice_id:       The ``vc_*`` voice ID (e.g. ``"vc_marcus_deep"``).
+            character_name: Optional — the character this voice portrays.
+            profile_dir:    Filesystem path to the ``vc_*`` profile directory.
+            notes:          Free-form notes (e.g. "cloned from interview.mp3").
+
+        Returns:
+            The ``id`` (auto-increment PK) of the inserted ``series_assets`` row.
+        """
+        return self.approve_asset(
+            series_id=series_id,
+            asset_type="voice_clone",
+            asset_id=voice_id,
+            character_name=character_name,
+            source_path=profile_dir,
+            notes=notes,
+        )
+
+    def list_voice_profiles(
+        self,
+        series_id: str,
+    ) -> list[AssetRecord]:
+        """Return all cloned voice assets registered for a series.
+
+        Equivalent to ``list_assets(series_id, asset_type="voice_clone")``.
+
+        Args:
+            series_id: Series to query.
+
+        Returns:
+            List of :class:`AssetRecord` with ``asset_type == "voice_clone"``,
+            oldest-approved first.
+        """
+        return self.list_assets(series_id, asset_type="voice_clone")
+
     def _row_to_asset(self, row: sqlite3.Row) -> AssetRecord:
         """Convert a database row to an AssetRecord."""
         return AssetRecord(

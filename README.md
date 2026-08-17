@@ -1,13 +1,13 @@
 # vox_romana
 
-LLM-driven audio content generation. Feed it a brief, get a structured script and audio in any language.
+LLM-driven show generation. Feed it a brief, get a structured script plus audio, video, and publishable docs.
 
 ## What this does
 
-vox_romana uses LLM agents (currently DeepSeek) to generate scripted audio content — debates, news shows, podcasts, audiobooks — as structured JSON documents, then feeds those documents through a local text-to-speech pipeline to produce audio. The entire pipeline runs from a single CLI entry point.
+vox_romana uses LLM agents (currently DeepSeek) to generate scripted shows — debates, news shows, podcasts, audiobooks, and lectures — as structured JSON documents, then feeds those documents through local text-to-speech, publishing, music, and animation pipelines. The entire workflow runs from a single CLI entry point.
 
 ```
-prompt → classify → bootstrap → conduct → edit → JSON → translate → TTS → audio
+prompt → classify → bootstrap → conduct → edit → JSON → translate → TTS → audio → publish / video / package
 ```
 
 ## Architecture
@@ -27,7 +27,13 @@ vox_romana/
 │   ├── debates/            #   Debate generation pipeline
 │   ├── news/               #   News show pipeline
 │   ├── podcast/            #   Podcast / interview pipeline
-│   └── audiobooks/         #   Long-form chapter narration pipeline
+│   ├── audiobooks/         #   Long-form chapter narration pipeline
+│   └── lecture/            #   Lecture / professor pipeline
+├── animation/              # Video generation + compositing
+│   ├── director.py         #   Scene planning and prompt expansion
+│   ├── renderer.py         #   Animation pipeline orchestration
+│   ├── sync.py             #   Maps rendered audio timing onto scene timing
+│   └── backends/           #   MoviePy compositor backend(s)
 ├── translate/              # Multi-language translation
 │   ├── __init__.py         #   Translator ABC, TranslationError, re-exports
 │   ├── llm_translator.py   #   LLMTranslator — JSON-array batch protocol
@@ -62,15 +68,15 @@ docs/
 ```
 
 `run.py` is the recommended entry point — it chains script generation, TTS
-render, and (optionally) document publishing. Use `run_show.py` /
-`render_show.py` directly when you want to inspect or edit the JSON
-between the two stages.
+render, and optional publishing, music, packaging, and video generation.
+Use `run_show.py` / `render_show.py` directly when you want to inspect or
+edit the JSON between the two stages.
 
 ## Modes
 
 | Mode | What it does |
 |------|-------------|
-| `full` (default) | Generate script → translate → render audio → publish document |
+| `full` (default) | Generate script → translate → render audio (`--publish` adds a document pass) |
 | `generate` | Text generation only — produces a JSON script |
 | `render` | Audio rendering only from an existing JSON |
 | `video` | Full pipeline + Stable Diffusion animation → MP4 |
@@ -201,6 +207,7 @@ python run.py prompts/ubi_debate.txt --out-lang en,es,fr --publish
 ```bash
 python run.py prompts/ubi_debate.txt --mode generate
 python run.py prompts/tech_news.txt --mode generate --segments 8 --tone urgent
+python run.py prompts/ai_ethics.txt --type lecture --mode generate
 ```
 
 ### Render only
@@ -262,6 +269,75 @@ python run.py prompts/tech_news.txt --mode video \
 
 See [docs/SETUP_VIDEO.md](docs/SETUP_VIDEO.md) for the full setup guide
 (Python packages, Apple Silicon notes, and known limitations).
+
+### Music bumpers and standalone music
+
+MusicGen can be used in two ways:
+
+- Inside `full`, `render`, or `video` runs when `--music` is enabled and the
+  script contains bumper or `[music: ...]` cues
+- As a standalone generator via `--mode music`
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--music` | `full`, `render`, `video` | Enable generative music for bumper/theme cues in the script |
+| `--music-style TEXT` | `full`, `render`, `video` | Default prompt used when a music cue has no explicit inline description |
+| `--music-duration SECONDS` | all music modes | Length of each generated music clip |
+| `--music-model {small,medium,large}` | all music modes | MusicGen model size |
+| `--music-volume DB` | `full`, `render`, `video` | Trim music relative to speech. Negative values push it further back |
+
+```bash
+# Add MusicGen bumpers to a video run
+python run.py prompts/bridgerton_brief.txt --mode video \
+  --music \
+  --music-style "subtle harpsichord music" \
+  --music-duration 12 \
+  --music-model large
+
+# Render an existing JSON with quieter theme music under the bumper events
+python run.py --mode render --script-input output/text/podcasts/episode.json \
+  --music \
+  --music-style "warm chamber orchestra intro" \
+  --music-volume -6
+
+# Standalone MusicGen clip
+python run.py --mode music \
+  --music-prompt "subtle harpsichord music, elegant Regency atmosphere" \
+  --music-duration 30 \
+  --music-model large
+```
+
+### Pronunciation guidance
+
+Add a `Pronunciations:` block anywhere in your brief to tell the TTS engines
+how to say unusual words, names, or acronyms. The block is stripped before the
+LLM sees the brief, so it never influences the generated script.
+
+**Syntax**
+
+```
+Pronunciations:
+Okonkwo  = oh-KOHN-kwoh | /oʊˈkɒŋkwoʊ/
+Nguyen   = nwin          | /ŋwɪn/
+AI       = ay-eye
+```
+
+- One entry per line: `word or phrase = spoken form`
+- Optionally append ` | /IPA/` after a pipe — stored as reference metadata
+  for future engine support; not used in rendering today
+- The block header is case-insensitive (`Pronunciations:` / `pronunciations:`)
+- Lines without `=` are ignored
+
+**How it works per engine**
+
+| Engine | Behaviour |
+|--------|-----------|
+| Kokoro (MLX/MPS) | In Chunk 2, spoken form is appended to the per-utterance instruct hint: *"pronounce Okonkwo as oh-KOHN-kwoh"* |
+| Piper (ONNX/CPU) | In Chunk 2, the source phrase is rewritten in the TTS input text before synthesis |
+
+The `pronunciation_overrides` dict is persisted in the generated JSON under
+every show type, so re-running `--mode render` on an existing file applies
+the same overrides without re-parsing the brief.
 
 ### Ingest a knowledge base
 
@@ -359,6 +435,7 @@ Unknown language codes fall back to English labels.
 | `GOOGLE_API_KEY` | No | Enables Google web search for `--research` |
 | `GOOGLE_CSE_ID` | No | Custom Search Engine ID for `--research` |
 | `PIPER_VOICES_DIR` | No | Override the directory scanned for Piper ONNX voice models |
+| `HF_TOKEN` | No | HuggingFace read token — enables higher download rate limits for SDXL/MusicGen models. Free at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Works without one; add it to remove the unauthenticated warning. |
 
 Set these in a `.env` file at the project root (loaded automatically by `python-dotenv`).
 
@@ -395,6 +472,7 @@ wired to roles.  Roles include `default`, `director`, `conductor`, `editor`,
 | Lens name | Backend | Model | Cost tier | Personality hint |
 |-----------|---------|-------|-----------|------------------|
 | `cloud-deepseek` | DeepSeek Cloud | `deepseek-chat` | paid | Smart, even, neutral. Default workhorse. |
+| `local-r1-14b` | Ollama | `deepseek-r1:14b` | free | University synthesis model. Higher-quality reasoning than 7B. |
 | `local-r1-distill` | Ollama | `deepseek-r1:7b` | free | Strong reasoning for a 7B; reflective and verbose. |
 | `local-qwen-polyglot` | Ollama | `qwen2.5:7b` | free | Best multilingual coverage of the locals. Translator candidate. |
 | `local-llama-dim` | Ollama | `llama3.2:3b` | free | Small, brittle, code-switching. The Salvatore lens. |
@@ -405,7 +483,8 @@ wired to roles.  Roles include `default`, `director`, `conductor`, `editor`,
 brew install ollama
 brew services start ollama
 
-ollama pull deepseek-r1:7b          # 4.7 GB — reasoning lens
+ollama pull deepseek-r1:14b         # 9.0 GB — university synthesis model
+ollama pull deepseek-r1:7b          # 4.7 GB — reasoning lens / university reading
 ollama pull qwen2.5:7b              # 4.7 GB — polyglot lens
 ollama pull llama3.2:3b             # 2.0 GB — Salvatore lens
 ```
@@ -452,6 +531,91 @@ See [docs/local_lens_rack.md](docs/local_lens_rack.md) for the full guide.
 
 ---
 
+## University & Colloquium
+
+The `university` mode runs one or more **Scholar** agents that read articles
+from Wikipedia and OpenAlex (200 M academic works, free, no key needed),
+take structured notes, and periodically synthesise findings into a running
+research document — entirely on-device using Ollama.
+
+### Two-speed model architecture
+
+University uses two models to balance cost against quality:
+
+| Role | Config key | Default | What it does |
+|------|------------|---------|---------------|
+| Reading | `reading_model` | `deepseek-r1:7b` | Per-article note extraction (fast, runs on every article) |
+| Synthesis | `synthesis_model` | `deepseek-r1:14b` | Synthesis passes, finalise, colloquium exchanges (quality) |
+
+Set both under `university:` in `vox_romana.yaml`:
+
+```yaml
+university:
+  reading_model: deepseek-r1:7b
+  synthesis_model: deepseek-r1:14b
+```
+
+### Study vs. seminar
+
+| Command | Scholars | Colloquium | Use when |
+|---------|----------|-----------|----------|
+| `study TOPIC` | 1 | — | Deep dive on a single topic |
+| `seminar TOPIC1 TOPIC2 …` | N (one per topic) | ✓ | Parallel research + cross-pollination |
+
+### Colloquium
+
+In `seminar` mode, every `colloquium_interval` articles (default: 25) each
+Scholar shares a snippet of its current synthesis with every peer Scholar.
+The receiving Scholar's synthesis model reads the snippet and proposes follow-up
+queries, which are injected into that Scholar's reading queue.  This lets
+distant topics cross-pollinate — Roman engineering and Greek philosophy might
+both end up reading about the Hellenistic arch.
+
+Each exchange is recorded in the session as a `ColloquiumRound` with the
+full comment and suggested queries, visible via `university export`.
+
+### CLI examples
+
+```bash
+# Deep-dive on a single topic (study):
+python run.py --mode university study "Roman aqueducts"
+
+# Save the session for later:
+python run.py --mode university study "Roman aqueducts" --save-dir output/university/
+
+# Resume / extend an existing session:
+python run.py --mode university extend SESSION_ID --hours 2
+
+# Seminar — two scholars, cross-pollination enabled:
+python run.py --mode university seminar "Roman aqueducts" "Greek philosophy" --hours 4
+
+# Seminar without colloquium (equivalent to two parallel study sessions):
+python run.py --mode university seminar "Topic A" "Topic B" --no-colloquium
+
+# Cross-synthesise the seminar results into one document:
+python run.py --mode university seminar "Roman aqueducts" "Greek philosophy" \
+    --merge --merge-output output/university/merged.md
+
+# Export a finished session:
+python run.py --mode university export SESSION_ID --format markdown
+```
+
+### Key config options (`vox_romana.yaml`)
+
+```yaml
+university:
+  reading_model: deepseek-r1:7b
+  synthesis_model: deepseek-r1:14b
+  openalex_enabled: true          # query OpenAlex academic index
+  colloquium_enabled: true        # enable cross-Scholar exchanges in seminar
+  colloquium_interval: 25         # articles between colloquium rounds
+  colloquium_max_leads_per_peer: 3  # search hits per peer-suggested query
+  notes_per_synthesis: 10         # notes that trigger an incremental synthesis
+  relevance_threshold: 4.0        # drop articles scoring below this (0-10)
+```
+
+---
+
 ## MCP server
 
 vox_romana ships a [Model Context Protocol](https://modelcontextprotocol.io)
@@ -484,18 +648,30 @@ python -m vox_romana.mcp
 
 ### IDE setup example (VS Code / Copilot)
 
-Add to `.vscode/mcp.json`:
+The easiest way is to copy the bundled example and reload VS Code:
+
+```bash
+cp .vscode/mcp.json.example .vscode/mcp.json
+# Then: Cmd+Shift+P → Developer: Reload Window
+```
+
+Or add manually to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
     "vox_romana": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "vox_romana.mcp"]
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "vox_romana.mcp"],
+      "cwd": "${workspaceFolder}"
     }
   }
 }
 ```
+
+> **Important:** use `.venv/bin/python` (not bare `python`) so the MCP
+> server finds the vox_romana packages and the `mcp` SDK.  On Windows
+> use `.venv\Scripts\python.exe`.
 
 See [docs/local_stack.md](docs/local_stack.md) for the full setup guide, job registry design, and security notes.
 

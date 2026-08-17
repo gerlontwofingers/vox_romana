@@ -51,6 +51,7 @@ RULES:
 - RESPOND to what was just said. Don't just recite talking points.
 - Keep responses to 2-5 sentences. This is a debate, not a monologue.
 - If interrupted, you may respond with frustration per your behavioral triggers.
+{language_instruction}
 
 SPEAKER IDENTIFICATION (critical for audio listeners):
 - This is AUDIO-ONLY. The listener cannot see who is talking.
@@ -89,6 +90,13 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "interruption": false,
   "nonverbal": []
 }}
+
+NONVERBAL FIELD — AUDIBLE cues only. NEVER use visual gestures like
+"gestures", "nods", "leans forward", "makes eye contact" — the listener
+CANNOT see them. Use only sounds the audience can hear: ["laughs"],
+["chuckles"], ["sighs"], ["scoffs"], ["deep breath"], ["groans"],
+["clears throat"]. Most turns leave this empty ([]); use roughly 1 in
+5-8 turns when the cue genuinely punctuates a moment.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -129,6 +137,10 @@ When it's your turn, respond with ONLY a JSON object:
   "nonverbal": [],
   "next_speaker": "name of who should speak next"
 }}
+
+NONVERBAL FIELD — AUDIBLE cues only (e.g. ["chuckles"], ["clears throat"]).
+NEVER use visual gestures — listeners cannot see them. Most moderator turns
+leave this empty ([]).
 """
 
 # ═══════════════════════════════════════════════════════════════════════════

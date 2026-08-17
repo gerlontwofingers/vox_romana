@@ -35,14 +35,17 @@ WHY AN ABSTRACT BASE?
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .archive import AgentNote, AgentNoteStore
 from .client import DeepSeekClient
 from .config import ContentConfig
+from .crew import CrewMember
 from .duration import (
     SpeechRateAdvisor,
     estimate_total_words,
@@ -51,11 +54,18 @@ from .duration import (
     tolerance_window,
     words_to_seconds,
 )
+from .messages import AgentMessage, AgentRouter, MessageType
 from .session import AgentSession
 
 if TYPE_CHECKING:
     from .budget_tracker import BudgetTracker
+    from .editing.models import EditorVerdict
+    from .editing.models import FactCheckReport
+    from .fact_checker import FactChecker
     from ..tts.checkpoint import CheckpointRenderer
+
+
+logger = logging.getLogger(__name__)
 
 
 # Maximum number of expansion passes BaseConductor.run() will attempt
@@ -89,9 +99,11 @@ class ConductorResult:
     transcript: list[str] = field(default_factory=list)
     total_llm_calls: int = 0
     director_notes: list[str] = field(default_factory=list)
+    production_log: list[dict[str, Any]] = field(default_factory=list)
+    production_log_path: str | None = None
 
 
-class BaseConductor(ABC):
+class BaseConductor(AgentRouter, ABC):
     """Abstract base class for reactive multi-agent content generation.
 
     Subclasses must implement:
@@ -110,6 +122,20 @@ class BaseConductor(ABC):
         _write_note()       — Convenience for appending an AgentNote.
     """
 
+    # Empirical correction for systematic per-turn overshoot. Battery
+    # studies (Apr 2026) showed conductors landing ~8–15% over their
+    # target word counts because LLMs treat soft per-turn targets as
+    # floors rather than midpoints. Multiplying the rebalanced fair
+    # share by this factor instructs each turn to aim slightly low so
+    # the cumulative output lands near the contracted target.
+    # Subclasses may override.
+    OVERSHOOT_COMPENSATION: float = 0.92
+
+    # Fraction of target_words at which _should_wrap_up() fires.
+    # Leaves headroom for closing statements (+25–40% empirically).
+    # Subclasses may override.
+    WRAP_UP_THRESHOLD: float = 0.70
+
     def __init__(
         self,
         config: ContentConfig,
@@ -119,11 +145,26 @@ class BaseConductor(ABC):
         recent_window: int = 10,
         checkpoint_renderer: "CheckpointRenderer | None" = None,
         budget_tracker: "BudgetTracker | None" = None,
+        crew_members: list[CrewMember] | None = None,
     ) -> None:
         self.config = config
         self._client = client
         self._recent_window = recent_window
         self._sessions: list[AgentSession] = []
+        self._session_registry: dict[str, AgentSession] = {}
+        self._pending_issue_reports: list[AgentMessage] = []
+        self._production_log: list[dict[str, Any]] = []
+
+        # ── Crew profiles (role → formatted profile text) ────────────
+        # Built from the optional crew_members list.  Subclasses call
+        # ``_augmented_director_system_prompt(base)`` to prepend the
+        # director's profile to any per-call director system prompt.
+        self._crew_profiles: dict[str, str] = {}
+        if crew_members:
+            for member in crew_members:
+                text = member.profile_text()
+                if text:
+                    self._crew_profiles[member.role] = text
 
         # ── Adaptive duration tracking ───────────────────────────────
         self._wpm: int = get_wpm(config.content_type)
@@ -161,17 +202,178 @@ class BaseConductor(ABC):
     # Session helpers
     # ------------------------------------------------------------------
 
+    def _append_production_log(self, entry: dict[str, Any]) -> None:
+        """Append a structured production-log entry for the current run."""
+        stamped = dict(entry)
+        stamped.setdefault("logged_at", datetime.now(timezone.utc).isoformat())
+        self._production_log.append(stamped)
+
+    def _augmented_director_system_prompt(self, base_prompt: str) -> str:
+        """Return *base_prompt* prepended with the director's crew profile.
+
+        When no director crew member was supplied (the common case), returns
+        *base_prompt* unchanged so callers need no conditional logic.
+
+        The crew profile block is separated from the base prompt by a blank
+        line so the LLM sees them as distinct sections::
+
+            CREW IDENTITY: Marcus Webb
+            Aesthetic philosophy: ...
+            Pacing approach: ...
+
+            You are a debate director. Respond with JSON only.
+
+        Args:
+            base_prompt: The show-specific director system prompt string.
+
+        Returns:
+            Augmented prompt string, or *base_prompt* if no profile exists.
+        """
+        profile_text = self._crew_profiles.get("director", "")
+        if not profile_text:
+            return base_prompt
+        return f"{profile_text}\n\n{base_prompt}"
+
+    @staticmethod
+    def _outline_label(item: Any) -> str:
+        """Return the best single-line label for an outline item."""
+        if isinstance(item, str):
+            return item.strip()
+        if isinstance(item, dict):
+            for key in ("title", "headline", "topic", "summary", "description", "name"):
+                value = item.get(key)
+                if value:
+                    return str(value).strip()
+            return ""
+        for attr in ("title", "headline", "topic", "summary", "description", "name"):
+            value = getattr(item, attr, None)
+            if value:
+                return str(value).strip()
+        return ""
+
+    def _build_initial_outline_context(self) -> str:
+        """Render the episode context that every session should see up front."""
+        config = self.config
+        lines = [
+            "INITIAL OUTLINE CONTEXT",
+            "=======================",
+            f"Show type: {config.content_type}",
+        ]
+
+        for label, value in (
+            ("Title", getattr(config, "title", None)),
+            ("Topic", getattr(config, "topic", None)),
+            ("Tone", getattr(config, "tone", None)),
+            ("Setting", getattr(config, "setting", None)),
+            ("Perspective", getattr(config, "perspective", None)),
+        ):
+            if value:
+                lines.append(f"{label}: {value}")
+
+        brief = str(getattr(config, "brief", "") or "").strip()
+        if brief:
+            premise = brief.replace("\n", " ")[:280].strip()
+            suffix = "..." if len(brief) > len(premise) else ""
+            lines.append(f"Premise: {premise}{suffix}")
+
+        cast_names: list[str] = []
+        for field_name in ("participants", "anchors", "hosts", "characters"):
+            entries = getattr(config, field_name, None) or []
+            for entry in entries:
+                name = getattr(entry, "name", None)
+                if name:
+                    cast_names.append(str(name))
+        for field_name in ("moderator", "show_host", "narrator", "professor"):
+            entry = getattr(config, field_name, None)
+            name = getattr(entry, "name", None) if entry is not None else None
+            if name:
+                cast_names.append(str(name))
+        if cast_names:
+            lines.append(f"Cast: {', '.join(list(dict.fromkeys(cast_names)))}")
+
+        outline_items: list[str] = []
+        for field_name, label in (
+            ("segments", "Segment"),
+            ("chapters", "Chapter"),
+            ("sections", "Section"),
+            ("beats", "Beat"),
+        ):
+            entries = getattr(config, field_name, None) or []
+            if not entries:
+                continue
+            for idx, entry in enumerate(entries[:8], start=1):
+                item_label = self._outline_label(entry)
+                outline_items.append(
+                    f"{label} {idx}: {item_label}" if item_label else f"{label} {idx}"
+                )
+            break
+
+        director_brief = getattr(config, "director_brief", None)
+        if director_brief is not None:
+            dramatic_arc = getattr(director_brief, "dramatic_arc", None)
+            if dramatic_arc:
+                lines.append(f"Arc: {dramatic_arc}")
+            key_moments = getattr(director_brief, "key_moments", None) or []
+            for moment in key_moments[:5]:
+                text = str(moment).strip()
+                if text:
+                    outline_items.append(f"Key moment: {text}")
+
+        if not outline_items:
+            for label, value in (
+                ("Planned turns", getattr(config, "target_turns", None)),
+                ("Planned segments", getattr(config, "target_segments", None)),
+                ("Planned chapters", getattr(config, "target_chapters", None)),
+                ("Planned sections", getattr(config, "target_sections", None)),
+            ):
+                if value:
+                    outline_items.append(f"{label}: {value}")
+
+        if outline_items:
+            lines.append("Outline:")
+            lines.extend(f"- {item}" for item in outline_items[:8])
+
+        return "\n".join(lines)
+
+    def _broadcast_initial_outline(self) -> None:
+        """Give every registered session the episode context before generation."""
+        if not self._session_registry:
+            return
+        outline_context = self._build_initial_outline_context().strip()
+        if not outline_context:
+            return
+        self._broadcast(
+            AgentMessage(
+                type=MessageType.BROADCAST,
+                from_agent="conductor",
+                payload={
+                    "phase": "table_read",
+                    "outline_context": outline_context,
+                },
+            )
+        )
+
+    def _register_session(self, name: str, session: AgentSession) -> AgentSession:
+        """Register a named session for future message routing."""
+        existing = self._session_registry.get(name)
+        if existing is not None and existing is not session:
+            raise ValueError(f"Session '{name}' is already registered.")
+        self._session_registry[name] = session
+        return session
+
     def _create_session(
         self,
         system_prompt: str,
         *,
         client: DeepSeekClient | None = None,
         recent_window: int | None = None,
+        session_name: str | None = None,
     ) -> AgentSession:
         """Create a tracked AgentSession.
 
         The session is registered internally so that `_total_llm_calls`
-        can aggregate call counts from all sessions.
+        can aggregate call counts from all sessions. When ``session_name``
+        is provided, the session is also added to the router registry.
         """
         c = client or self._client
         if c is None:
@@ -185,12 +387,248 @@ class BaseConductor(ABC):
             recent_window=recent_window or self._recent_window,
         )
         self._sessions.append(session)
+        if session_name is not None:
+            self._register_session(session_name, session)
         return session
 
     @property
     def _total_session_calls(self) -> int:
         """Total LLM calls across all tracked sessions."""
         return sum(s.total_calls for s in self._sessions)
+
+    # ------------------------------------------------------------------
+    # Fact-check challenge loop
+    # ------------------------------------------------------------------
+
+    def _challenge_fabrications(
+        self,
+        report: "FactCheckReport",
+        *,
+        generator_agent: str,
+        fact_checker: "FactChecker | None" = None,
+        perspective: str | None = None,
+    ) -> "FactCheckReport":
+        """Run the challenge loop on each fabricated claim in *report*.
+
+        For every claim with verdict == "fabricated", the conductor sends a
+        CHALLENGE message to the registered ``generator_agent`` session,
+        asking it to justify or correct the claim. The generator's reply
+        is then handed to the fact checker's adjudicator, which may
+        downgrade the verdict to "verified" or "unverifiable" (or leave it
+        as "fabricated", in which case the segment will still be blocked).
+
+        The original report is mutated in place AND returned for chaining.
+
+        No-ops gracefully when:
+          - ``generator_agent`` is not in the session registry (silent skip),
+          - ``fact_checker`` is None and no ``self._fact_checker`` exists,
+          - the report contains no fabricated claims.
+        """
+        if not report.fabricated_claims:
+            return report
+
+        checker = fact_checker or getattr(self, "_fact_checker", None)
+        if checker is None:
+            return report
+
+        if generator_agent not in self._session_registry:
+            logger.debug(
+                "_challenge_fabrications: generator '%s' not registered; "
+                "skipping challenge loop.",
+                generator_agent,
+            )
+            return report
+
+        challenger = "fact_checker"
+        for idx, result in enumerate(report.results):
+            if result.verdict != "fabricated":
+                continue
+            payload = {
+                "claim": result.claim,
+                "verifier_explanation": result.explanation,
+                "instructions": (
+                    "The fact-checker flagged this claim as fabricated. "
+                    "Either justify it (cite a source, quote canon, or "
+                    "explain how it aligns with the show's stated "
+                    "perspective) OR provide a corrected version. Be brief "
+                    "and concrete. If you cannot justify or correct, say so."
+                ),
+            }
+            if perspective:
+                payload["perspective"] = perspective
+            try:
+                response = self._challenge_loop(
+                    from_agent=challenger,
+                    to_agent=generator_agent,
+                    payload=payload,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_challenge_fabrications: challenge round-trip failed "
+                    "for claim %r: %r",
+                    result.claim, exc,
+                )
+                continue
+
+            justification = str(response.payload.get("response", "")).strip()
+            if not justification:
+                continue
+            new_result = checker.adjudicate_justification(
+                result, justification, perspective=perspective,
+            )
+            report.results[idx] = new_result
+            logger.info(
+                "_challenge_fabrications: claim %r -> %s (was fabricated).",
+                result.claim, new_result.verdict,
+            )
+
+        return report
+
+    def _broadcast_director_note(
+        self,
+        director_note: str,
+        *,
+        summary: str | None = None,
+        changed_sections: list[str] | None = None,
+    ) -> None:
+        """Broadcast the latest director guidance to all registered sessions."""
+        payload: dict[str, object] = {"director_note": director_note}
+        if summary:
+            payload["summary"] = summary
+        if changed_sections:
+            payload["changed_sections"] = changed_sections
+        self._broadcast(
+            AgentMessage(
+                type=MessageType.BROADCAST,
+                from_agent="director",
+                payload=payload,
+            )
+        )
+
+    def _route_editor_rejection(
+        self,
+        verdict: "EditorVerdict",
+        *,
+        chunk_id: str,
+        target_agents: list[str] | None = None,
+    ) -> None:
+        """Route editor rejection notes down the chain of command."""
+        rejection_payload = {
+            "chunk_id": chunk_id,
+            "outline_version": verdict.outline_version,
+            "status": verdict.status,
+            "summary": verdict.summary,
+            "issues": verdict.issues,
+            "recommendations": verdict.recommendations,
+        }
+        directive_payload = {
+            "chunk_id": chunk_id,
+            "outline_version": verdict.outline_version,
+            "instructions": (
+                "The editor rejected the last chunk. Regenerate from scratch "
+                "and address every issue below before proceeding."
+            ),
+            "editor_rejection": rejection_payload,
+        }
+        if target_agents:
+            for target in target_agents:
+                self._route_message(
+                    AgentMessage(
+                        type=MessageType.DIRECTIVE,
+                        from_agent="director",
+                        to_agent=target,
+                        payload=directive_payload,
+                    )
+                )
+            return
+        self._broadcast(
+            AgentMessage(
+                type=MessageType.DIRECTIVE,
+                from_agent="director",
+                payload=directive_payload,
+            )
+        )
+
+    def _report_issue_to_director(
+        self,
+        *,
+        from_agent: str,
+        summary: str,
+        proposed_remediation: str | None = None,
+    ) -> AgentMessage:
+        """Queue a cast issue report so the next director check can see it."""
+        payload = {"summary": summary}
+        if proposed_remediation:
+            payload["proposed_remediation"] = proposed_remediation
+        message = AgentMessage(
+            type=MessageType.ISSUE_REPORT,
+            from_agent=from_agent,
+            to_agent="director",
+            payload=payload,
+        )
+        self._pending_issue_reports.append(message)
+        self._append_production_log({
+            "event_type": "issue_report",
+            "status": "queued",
+            "recipients": ["director"],
+            "message": message.to_dict(),
+        })
+        return message
+
+    def _capture_issue_flag(
+        self,
+        payload: dict[str, Any],
+        *,
+        from_agent: str | None = None,
+    ) -> dict[str, Any]:
+        """Strip optional issue metadata from parsed JSON and queue a report."""
+        issue_flag = payload.pop("issue_flag", None)
+        if not issue_flag or not from_agent:
+            return payload
+
+        summary = ""
+        proposed_remediation = None
+        if isinstance(issue_flag, str):
+            summary = issue_flag.strip()
+        elif isinstance(issue_flag, dict):
+            summary = str(
+                issue_flag.get("summary")
+                or issue_flag.get("issue")
+                or issue_flag.get("message")
+                or ""
+            ).strip()
+            raw_remediation = (
+                issue_flag.get("proposed_remediation")
+                or issue_flag.get("remediation")
+                or issue_flag.get("suggested_fix")
+            )
+            if raw_remediation:
+                proposed_remediation = str(raw_remediation).strip()
+        elif isinstance(issue_flag, (list, tuple)):
+            summary = "; ".join(
+                str(item).strip() for item in issue_flag if str(item).strip()
+            )
+        else:
+            summary = str(issue_flag).strip()
+
+        if summary:
+            self._report_issue_to_director(
+                from_agent=from_agent,
+                summary=summary,
+                proposed_remediation=proposed_remediation,
+            )
+        return payload
+
+    def _consume_pending_issue_reports(self) -> str:
+        """Return queued issue reports as a text block and clear them."""
+        if not self._pending_issue_reports:
+            return ""
+        rendered = "\n\n".join(
+            message.format_for_context()
+            for message in self._pending_issue_reports
+        )
+        self._pending_issue_reports.clear()
+        return rendered
 
     # ------------------------------------------------------------------
     # Note helpers
@@ -284,12 +722,14 @@ class BaseConductor(ABC):
     def _should_wrap_up(self) -> bool:
         """True when the conductor should start wrapping up.
 
-        Uses 90% of the target as the trigger point so the closing
-        sequence doesn't overshoot.  Returns False if no target is set.
+        Uses 70% of the target as the trigger point.  This leaves
+        headroom for closing statements + host outro, which empirically
+        add another 25-40% on top of the trigger word count.  Returns
+        False if no target is set.
         """
         if self._target_words is None:
             return False
-        return self._words_generated >= self._target_words * 0.90
+        return self._words_generated >= self._target_words * self.WRAP_UP_THRESHOLD
 
     def _over_budget(self) -> bool:
         """True when the word count has exceeded the upper tolerance bound."""
@@ -358,7 +798,13 @@ class BaseConductor(ABC):
         if remaining_steps <= 0:
             return planned_words
         fair_share = self._remaining_words // remaining_steps
-        return max(planned_words, fair_share)
+        # Apply overshoot compensation so the per-turn ask aims slightly
+        # below the naive average. Empirically the model produces ~8–15%
+        # more than asked for, so scaling the budget down lands the
+        # cumulative output near target. See class-level
+        # OVERSHOOT_COMPENSATION docstring.
+        adjusted_fair_share = int(fair_share * self.OVERSHOOT_COMPENSATION)
+        return max(planned_words, adjusted_fair_share)
 
     # ── Hard length contract helpers ──────────────────────────────────
 
@@ -493,6 +939,7 @@ class BaseConductor(ABC):
             A ConductorResult with all generated events.
         """
         self._build_agents()
+        self._broadcast_initial_outline()
         self._preflight_check_bootstrap()
         raw = self._run_turn_loop()
         # ── Expansion loop ────────────────────────────────────────────
@@ -530,7 +977,9 @@ class BaseConductor(ABC):
                 f"[expansion] closed deficit in {pass_count} pass(es) — "
                 f"final word count {self._words_generated:,}."
             )
-        return self._package_result(raw)
+        result = self._package_result(raw)
+        result.production_log = list(self._production_log)
+        return result
 
     def _maybe_expand(self, raw_events: list[dict]) -> list[dict]:
         """Decide whether to call ``_expansion_pass`` and run it if so.

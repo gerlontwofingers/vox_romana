@@ -262,6 +262,7 @@ class DebateConfig(ContentConfig):
     show_host: ShowHostConfig | None = None
     director_brief: DebateDirectorBrief | None = None
     target_turns: int | None = None
+    music_style: str = ""
 
     def validate(self) -> list[str]:
         """Check this config for problems. Returns a list of warning strings.

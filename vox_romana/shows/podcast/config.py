@@ -241,6 +241,7 @@ class PodcastConfig(ContentConfig):
     hosts: list[PodcastHostProfile] = field(default_factory=list)
     segments: list[PodcastSegmentConfig] = field(default_factory=list)
     director_brief: PodcastDirectorBrief | None = None
+    music_style: str = ""
 
     def validate(self) -> list[str]:
         """Return a list of validation problems (empty = valid).

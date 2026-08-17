@@ -24,7 +24,7 @@ import re
 from .client import DeepSeekClient
 
 # ── Known show types ─────────────────────────────────────────────────────
-SHOW_TYPES = ("debate", "news", "audiobook", "podcast")
+SHOW_TYPES = ("debate", "news", "audiobook", "podcast", "lecture")
 
 # ── System prompt ────────────────────────────────────────────────────────
 ROUTER_SYSTEM_PROMPT = """\
@@ -42,10 +42,18 @@ Available show types:
   - "news": A news broadcast, newscast, or bulletin. Anchors present
     segments covering current events, topics, or stories. Includes
     breaking news, weekly roundups, and magazine-style shows.
-  - "audiobook": A narrated audiobook, story, essay, lecture, or documentary.
-    A single narrator (or small cast) reads through structured content
-    chapter by chapter. Includes fiction, non-fiction, self-help, history,
-    science explainers, and any long-form narrated audio.
+  - "audiobook": A narrated audiobook, story, or documentary. A single
+    narrator (or small cast) reads through structured content chapter by
+    chapter. Includes fiction, non-fiction, self-help, history, science
+    explainers, and any long-form narrated audio. Choose THIS for narrative
+    or storytelling content; choose "lecture" for explicitly didactic
+    teaching content.
+  - "lecture": A single-voice educational/didactic talk where a professor
+    or teacher walks listeners through a topic with structured pedagogy:
+    introduce, define, illustrate, recap. Includes university lectures,
+    masterclasses, tutorials, and explainers framed as teaching. Key
+    difference from audiobook: lectures TEACH (with learning objectives,
+    analogies, exercises) while audiobooks NARRATE.
   - "podcast": A multi-host conversational podcast. Two or more hosts discuss
     topics in a casual, personality-driven format. Includes talk shows,
     roundtable discussions, interview pods, comedy panels, and any
@@ -68,7 +76,7 @@ Research detection — set needs_research to true when the brief:
 
 Respond with ONLY a JSON object:
 {
-  "show_type": "<debate|news|audiobook|podcast>",
+  "show_type": "<debate|news|audiobook|podcast|lecture>",
   "confidence": <0.0-1.0>,
   "needs_research": <true|false>,
   "reasoning": "<one sentence explaining both decisions>"
@@ -80,8 +88,12 @@ Rules:
 - If it mentions "news", "headlines", "breaking", "anchor", "broadcast",
   "bulletin", "report", "coverage", or "roundup", choose "news".
 - If it mentions "audiobook", "story", "narrate", "novel", "chapter",
-  "essay", "lecture", "documentary", "read aloud", or describes a
-  single-narrator long-form narrative, choose "audiobook".
+    "essay", "documentary", "read aloud", or describes a single-narrator
+    long-form narrative, choose "audiobook".
+- If it mentions "lecture", "masterclass", "course", "tutorial",
+    "explainer", "teach", "professor delivering", "walk through", or
+    describes structured pedagogical content with explicit learning goals,
+    choose "lecture".
 - If it mentions "podcast", "pod", "show", "hosts", "episode", "panel
   discussion" (casual), "talk show", "roundtable" (conversational),
   or describes multiple hosts having a casual conversation, choose

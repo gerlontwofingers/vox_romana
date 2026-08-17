@@ -22,7 +22,20 @@ from vox_romana.core.editing.editor import EDITOR_SYSTEM_PROMPT, ContentEditor
 from vox_romana.core.editing.models import OutlineSection
 from vox_romana.core.editing.outline import DirectorOutline
 from vox_romana.core.editing.retry import RetryLoop
+from vox_romana.core.config import ContentConfig
+from vox_romana.core.conductor import BaseConductor, ConductorResult
 from vox_romana.core.session import AgentSession
+
+
+class _StubConductor(BaseConductor):
+    def _build_agents(self) -> None:
+        pass
+
+    def _run_turn_loop(self) -> list[dict]:
+        return []
+
+    def _package_result(self, raw_events: list[dict]) -> ConductorResult:
+        return ConductorResult(config=self.config, events=raw_events)
 
 
 @pytest.fixture
@@ -206,3 +219,32 @@ class TestMaxRetriesConfig:
         editor = ContentEditor(session)
         loop = RetryLoop(editor, max_retries=5)
         assert loop.max_retries == 5
+
+
+class TestRouterIntegration:
+    def test_fail_routes_editor_rejection_through_router(self, mock_client, sample_outline):
+        editor = _make_editor(mock_client, [_fail_json(issues=["flat"]), _pass_json()])
+        router = _StubConductor(ContentConfig(content_type="news"), client=Mock())
+        target = Mock()
+        router._register_session("narrator", target)
+        loop = RetryLoop(
+            editor,
+            max_retries=2,
+            router=router,
+            target_agents=["narrator"],
+        )
+
+        call_count = 0
+
+        def gen_fn(feedback):
+            nonlocal call_count
+            call_count += 1
+            return (f"Chunk {call_count}", [{"text": f"chunk_{call_count}"}])
+
+        loop.execute(gen_fn, "seg1", sample_outline)
+
+        target.inject_context.assert_called_once()
+        rendered = target.inject_context.call_args.args[0]
+        assert "MESSAGE TYPE: directive" in rendered
+        assert '"chunk_id": "seg1"' in rendered
+        assert '"summary": "Needs work."' in rendered

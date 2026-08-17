@@ -226,14 +226,17 @@ class TestEnsureLoaded:
         assert gen._pipeline is not None
 
     def test_mps_sdxl_vae_upcast_to_float32(self) -> None:
-        """On MPS with SDXL, VAE should be cast to float32 (NaN workaround)."""
+        """On MPS, the pipeline must be loaded with torch_dtype=float32 (NaN workaround).
+
+        The old approach cast vae separately; now torch_dtype is set at from_pretrained
+        time so the whole pipeline (including VAE) is in float32 from the start.
+        """
         gen = ImageGenerator(device="mps")
 
         mock_torch = MagicMock()
         mock_torch.float32 = "float32"
         mock_torch.float16 = "float16"
 
-        # Real class so isinstance(pipeline, StableDiffusionXLPipeline) → True.
         class _FakeXLPipeline:
             def __init__(self) -> None:
                 self.vae = MagicMock()
@@ -250,17 +253,25 @@ class TestEnsureLoaded:
         with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
             gen._ensure_loaded("stabilityai/stable-diffusion-xl-base-1.0")
 
-        fake_pipeline.vae.to.assert_called_with("float32")
+        # MPS always loads in float32 via torch_dtype — no separate vae.to() needed.
+        mock_diffusers.DiffusionPipeline.from_pretrained.assert_called_once_with(
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            torch_dtype="float32",
+            use_safetensors=True,
+        )
 
-    def test_mps_sd15_vae_cast_to_float16(self) -> None:
-        """On MPS with SD 1.x, VAE must match UNet dtype (float16) to avoid crash."""
+    def test_mps_sd15_dtype_is_float32(self) -> None:
+        """On MPS, SD 1.x pipelines must also load in float32 (unified MPS dtype policy).
+
+        The old approach cast vae to float16 separately; now MPS always uses float32
+        via torch_dtype at from_pretrained time to avoid NaN propagation on Apple Silicon.
+        """
         gen = ImageGenerator(device="mps")
 
         mock_torch = MagicMock()
         mock_torch.float32 = "float32"
         mock_torch.float16 = "float16"
 
-        # XL class used only for the isinstance check — pipeline is NOT this class.
         class _FakeXLPipeline:
             pass
 
@@ -274,13 +285,17 @@ class TestEnsureLoaded:
 
         fake_pipeline = _FakeSD15Pipeline()
         mock_diffusers = MagicMock()
-        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline  # pipeline is not this
+        mock_diffusers.StableDiffusionXLPipeline = _FakeXLPipeline
         mock_diffusers.DiffusionPipeline.from_pretrained.return_value = fake_pipeline
 
         with patch.dict("sys.modules", {"torch": mock_torch, "diffusers": mock_diffusers}):
             gen._ensure_loaded("runwayml/stable-diffusion-v1-5")
 
-        fake_pipeline.vae.to.assert_called_with("float16")
+        mock_diffusers.DiffusionPipeline.from_pretrained.assert_called_once_with(
+            "runwayml/stable-diffusion-v1-5",
+            torch_dtype="float32",
+            use_safetensors=True,
+        )
 
     def test_sd15_safety_checker_disabled(self) -> None:
         """SD 1.x pipelines should have safety_checker=None after _ensure_loaded.

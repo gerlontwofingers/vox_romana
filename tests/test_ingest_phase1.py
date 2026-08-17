@@ -932,3 +932,291 @@ class TestRunModeIngest:
             ])
         captured = capsys.readouterr()
         assert "WARNING" in captured.err or True  # does not crash
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 4 — Content-based file hash
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestContentHash:
+    """Tests for _content_hash(path) — SHA256 first-64KB + size fingerprint."""
+
+    def test_same_content_different_path_same_hash(self, tmp_path):
+        from vox_romana.memory.ingest import _content_hash
+        content = "Same content body.\n" * 100
+        p1 = tmp_path / "a.txt"
+        p2 = tmp_path / "b.txt"
+        p1.write_text(content)
+        p2.write_text(content)
+        assert _content_hash(p1) == _content_hash(p2)
+
+    def test_different_content_different_hash(self, tmp_path):
+        from vox_romana.memory.ingest import _content_hash
+        p1 = write(tmp_path, "a.txt", "Alpha content " * 100)
+        p2 = write(tmp_path, "b.txt", "Beta content  " * 100)
+        assert _content_hash(p1) != _content_hash(p2)
+
+    def test_rename_does_not_change_hash(self, tmp_path):
+        from vox_romana.memory.ingest import _content_hash
+        content = "Content stays same.\n" * 100
+        p = tmp_path / "original.txt"
+        p.write_text(content)
+        h_before = _content_hash(p)
+        p_renamed = tmp_path / "renamed.txt"
+        p.rename(p_renamed)
+        assert _content_hash(p_renamed) == h_before
+
+    def test_hash_is_hex_string(self, tmp_path):
+        from vox_romana.memory.ingest import _content_hash
+        p = write(tmp_path, "a.txt", "Hello world")
+        h = _content_hash(p)
+        assert isinstance(h, str)
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 5 — Chunk-level exact dedup
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Each "block" below is ~2100 chars — larger than default CHUNK_SIZE=2000 — so
+# each block lands in its own chunk and shares the same chunk hash when repeated.
+_SHARED_BLOCK = (
+    "This paragraph appears in both documents verbatim and is long enough "
+    "to exceed the default chunk size so it forms its own independent chunk. "
+    "The court filing cites multiple witnesses who corroborate the accounts. "
+    "The prosecution presented detailed documentary evidence during the trial. "
+    "Defence counsel challenged the admissibility of records obtained abroad. "
+    "The judge reserved judgement on several preliminary motions filed by both. "
+) * 10  # ~3 800 chars
+
+_UNIQUE_BLOCK_A = (
+    "Document A contains original factual content specific to this source only. "
+    "These sentences never appear in document B in any form whatsoever. "
+    "The author conducted independent research for this particular document. "
+    "Statistics cited here come from a separate database not used elsewhere. "
+) * 10  # ~2 800 chars
+
+_UNIQUE_BLOCK_B = (
+    "Document B introduces entirely new arguments absent from the first file. "
+    "The methodology described here differs fundamentally from document A. "
+    "Data sources consulted by the author of B were not available to author A. "
+    "Conclusions drawn in this document contradict several claims made in A. "
+) * 10  # ~2 800 chars
+
+
+def _ingester(tmp_path: Path) -> "DocumentIngester":
+    """Return a fresh DocumentIngester with isolated output and fingerprint store."""
+    out = tmp_path / "out"
+    return DocumentIngester(
+        output_dir=out,
+        fingerprint_store_path=tmp_path / "fps.npz",
+    )
+
+
+class TestChunkLevelDedup:
+    def _make_doc(self, tmp_path: Path, name: str, body: str) -> Path:
+        p = tmp_path / name
+        p.write_text(body)
+        return p
+
+    def test_overlapping_paragraphs_deduped(self, tmp_path):
+        """Ingesting doc B with shared blocks from doc A should skip shared chunks."""
+        ingester = _ingester(tmp_path)
+        # doc_a: one shared block + one unique block
+        # doc_b: same shared block + a different unique block
+        body_a = _SHARED_BLOCK + "\n\n" + _UNIQUE_BLOCK_A
+        body_b = _SHARED_BLOCK + "\n\n" + _UNIQUE_BLOCK_B
+
+        p_a = self._make_doc(tmp_path, "doc_a.txt", body_a)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", body_b)
+
+        stats_a = ingester.ingest(p_a)
+        stats_b = ingester.ingest(p_b)
+
+        assert stats_a.deduped_chunks == 0
+        assert stats_b.deduped_chunks > 0
+
+    def test_completely_new_doc_not_deduped(self, tmp_path):
+        ingester = _ingester(tmp_path)
+        body = _UNIQUE_BLOCK_A + "\n\n" + _UNIQUE_BLOCK_B
+        p = self._make_doc(tmp_path, "doc_a.txt", body)
+        stats = ingester.ingest(p)
+        assert stats.deduped_chunks == 0
+
+    def test_chunk_hashes_sidecar_created(self, tmp_path):
+        ingester = _ingester(tmp_path)
+        body = _SHARED_BLOCK + "\n\n" + _UNIQUE_BLOCK_A
+        p = self._make_doc(tmp_path, "doc.txt", body)
+        ingester.ingest(p)
+        out = tmp_path / "out"
+        assert (out / ".chunk_hashes.json").exists()
+
+    def test_chunk_hashes_sidecar_contains_hashes(self, tmp_path):
+        ingester = _ingester(tmp_path)
+        body = _SHARED_BLOCK + "\n\n" + _UNIQUE_BLOCK_A
+        p = self._make_doc(tmp_path, "doc.txt", body)
+        ingester.ingest(p)
+        out = tmp_path / "out"
+        data = json.loads((out / ".chunk_hashes.json").read_text())
+        assert isinstance(data, list)
+        assert len(data) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 6 — Near-duplicate document dedup
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LONG_BODY_BASE = (
+    "The investigation revealed extensive financial transactions between "
+    "multiple parties across several jurisdictions over a decade. Prosecutors "
+    "presented documentary evidence corroborating witness testimony. The "
+    "defence challenged the admissibility of certain records obtained via "
+    "mutual legal assistance treaties.\n\n"
+) * 20  # ~5 200 chars — well above default min_chars=500
+
+# doc_b variant: single word changed so content hash differs but bigram dist ≈ same
+_LONG_BODY_ALT = _LONG_BODY_BASE.replace(
+    "mutual legal assistance treaties.",
+    "bilateral judicial cooperation accords.",
+    1,  # only first occurrence
+)
+
+
+class TestNearDup:
+    def _make_doc(self, tmp_path: Path, name: str, body: str) -> Path:
+        p = tmp_path / name
+        p.write_text(body)
+        return p
+
+    def test_near_identical_doc_skipped(self, tmp_path):
+        """Second doc with near-identical bigram dist should be skipped as near-dup."""
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=0.97,
+        )
+        # doc_a and doc_b differ in content (different content hash) but
+        # are semantically near-identical (one-word swap in 5200 chars).
+        p_a = self._make_doc(tmp_path, "doc_a.txt", _LONG_BODY_BASE)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", _LONG_BODY_ALT)
+
+        stats_a = ingester.ingest(p_a)
+        stats_b = ingester.ingest(p_b)
+
+        assert not stats_a.skipped
+        assert stats_b.skipped
+        assert "near-duplicate" in (stats_b.skip_reason or "").lower()
+
+    def test_unrelated_doc_not_skipped(self, tmp_path):
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=0.97,
+        )
+        body_a = (_UNIQUE_BLOCK_A * 3)
+        body_b = (
+            "Quantum chromodynamics describes quark interactions via gluon "
+            "exchange. Asymptotic freedom means coupling weakens at short "
+            "distances. The confinement problem remains unsolved.\n\n"
+        ) * 20
+
+        p_a = self._make_doc(tmp_path, "doc_a.txt", body_a)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", body_b)
+
+        ingester.ingest(p_a)
+        stats_b = ingester.ingest(p_b)
+        assert not stats_b.skipped
+
+    def test_threshold_above_one_disables_near_dedup(self, tmp_path):
+        """threshold > 1.0 should never match → near-dedup disabled."""
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=1.1,
+        )
+        # Different content hash but near-identical bigrams — should NOT be blocked
+        p_a = self._make_doc(tmp_path, "doc_a.txt", _LONG_BODY_BASE)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", _LONG_BODY_ALT)
+
+        ingester.ingest(p_a)
+        stats_b = ingester.ingest(p_b)
+        assert not stats_b.skipped
+
+    def test_dry_run_bypasses_near_dedup(self, tmp_path):
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=0.97,
+        )
+        # Ingest doc_a normally so fingerprint is registered.
+        p_a = self._make_doc(tmp_path, "doc_a.txt", _LONG_BODY_BASE)
+        ingester.ingest(p_a)
+        # dry_run=True on near-identical doc must not be blocked by near-dedup.
+        # (It will be "skipped" with skip_reason='dry run', which is fine.)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", _LONG_BODY_ALT)
+        stats_dry = ingester.ingest(p_b, dry_run=True)
+        # Near-dedup must not have triggered — skip_reason must not be 'near-duplicate'.
+        assert "near-duplicate" not in (stats_dry.skip_reason or "").lower()
+
+    def test_force_reingest_bypasses_near_dedup(self, tmp_path):
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=0.97,
+        )
+        p_a = self._make_doc(tmp_path, "doc_a.txt", _LONG_BODY_BASE)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", _LONG_BODY_ALT)
+
+        ingester.ingest(p_a)
+        # force_reingest bypasses near-dedup — doc_b should be ingested.
+        stats_force = ingester.ingest(p_b, force_reingest=True)
+        assert not stats_force.skipped
+
+    def test_short_doc_skips_near_dedup_check(self, tmp_path):
+        """Documents shorter than min_chars should NOT be compared (no fingerprint)."""
+        ingester = DocumentIngester(
+            output_dir=tmp_path / "out",
+            fingerprint_store_path=tmp_path / "fps.npz",
+            near_dedup_threshold=0.97,
+        )
+        short_body = "Short doc.\n\nAnother short paragraph.\n\n"  # < 500 chars
+        p_a = self._make_doc(tmp_path, "doc_a.txt", short_body)
+        p_b = self._make_doc(tmp_path, "doc_b.txt", short_body)
+
+        ingester.ingest(p_a)
+        stats_b = ingester.ingest(p_b)
+        # Short doc must not be blocked by near-dedup (may be skipped as duplicate
+        # via content hash but not as near-dup).
+        if stats_b.skipped:
+            assert "near-duplicate" not in (stats_b.skip_reason or "").lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8 — --no-embed flag
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNoEmbed:
+    def test_no_embed_flag_in_run_py(self):
+        """--no-embed must be registered in run.py's argparse setup."""
+        run_py = Path(__file__).parent.parent / "run.py"
+        assert "--no-embed" in run_py.read_text()
+
+    def test_no_embed_prevents_migrate_documents_call(self, tmp_path):
+        """With --no-embed, the Chroma embedding phase must not be entered."""
+        import run
+        from vox_romana.memory.vector_index import ChromaVectorIndex
+        p = write(tmp_path, "doc.txt", "Test content.\n\nMore content.\n\n" * 10)
+        out = tmp_path / "out"
+        # Keep is_available() returning False so no ChromaVectorIndex is ever
+        # instantiated — avoids background threads leaking into subsequent tests.
+        with (
+            patch("vox_romana.memory.ingest.DEFAULT_DOCUMENT_DIR", out),
+            patch.object(ChromaVectorIndex, "is_available", return_value=False),
+            patch.object(ChromaVectorIndex, "migrate_documents") as mock_migrate,
+        ):
+            run.main([
+                "--mode", "ingest",
+                "--ingest-path", str(p),
+                "--no-embed",
+            ])
+        mock_migrate.assert_not_called()

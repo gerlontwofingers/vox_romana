@@ -125,6 +125,57 @@ def check_piper_voices() -> Result:
     return Result("piper voices (.onnx)", True, f"{len(voices)} voice(s) in {PIPER_VOICES_DIR}")
 
 
+def check_chroma_onnx_model() -> Result:
+    """ChromaDB's default embedding model (all-MiniLM-L6-v2 ONNX) must be cached.
+
+    The model is downloaded automatically on first use, but that download
+    happens inside tests and can take >30s — causing apparent hangs.
+    Run ``python preflight.py --fix`` once to pre-cache it.
+    """
+    try:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+            ONNXMiniLM_L6_V2,
+        )
+        from pathlib import Path as _Path
+        ef = ONNXMiniLM_L6_V2()
+        model_dir = _Path(ef.DOWNLOAD_PATH) / ef.EXTRACTED_FOLDER_NAME
+        model_file = model_dir / "model.onnx"
+        if model_file.exists():
+            return Result(
+                "chroma ONNX model",
+                True,
+                str(model_file),
+                required=False,
+            )
+        return Result(
+            "chroma ONNX model",
+            False,
+            f"not cached at {model_dir} — run: python preflight.py --fix",
+            required=False,
+        )
+    except Exception as exc:
+        return Result(
+            "chroma ONNX model",
+            False,
+            f"could not check: {exc}",
+            required=False,
+        )
+
+
+def fix_chroma_onnx_model() -> None:
+    """Download and warm-up the ChromaDB ONNX embedding model."""
+    try:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+            ONNXMiniLM_L6_V2,
+        )
+        print("Warming up ChromaDB ONNX embedding model (first-time download)…")
+        ef = ONNXMiniLM_L6_V2()
+        ef(["warm-up"])  # triggers download + onnxruntime session init
+        print("  ✓ chroma ONNX model cached.")
+    except Exception as exc:
+        print(f"  ✗ Failed to cache chroma ONNX model: {exc}", file=sys.stderr)
+
+
 def check_hf_cache() -> Result:
     """Informational: show where the HuggingFace model cache lives."""
     try:
@@ -192,6 +243,77 @@ def check_video_python_deps() -> list[Result]:
     ]
 
 
+def check_ollama_models() -> list[Result]:
+    """Check whether the Ollama models used by the University module are pulled.
+
+    Returns an empty list when Ollama is not installed so that the overall
+    preflight still passes for users who don't use the University feature.
+
+    Required for University:
+        deepseek-r1:14b — synthesis / finalize / colloquium (synthesis_model)
+        deepseek-r1:7b  — per-article note extraction (reading_model)
+
+    Optional (lens rack):
+        qwen2.5:7b  — polyglot / translator lens
+        llama3.2:3b — Salvatore / dim lens
+    """
+    if shutil.which("ollama") is None:
+        return []
+
+    try:
+        out = subprocess.check_output(
+            ["ollama", "list"], stderr=subprocess.STDOUT, text=True, timeout=10
+        )
+    except Exception as exc:
+        return [Result(
+            "ollama models",
+            False,
+            f"could not run 'ollama list': {exc}",
+            required=False,
+        )]
+
+    # Parse pulled model names from the list output (first column, after the header).
+    pulled: set[str] = set()
+    for line in out.splitlines()[1:]:
+        cols = line.split()
+        if cols:
+            pulled.add(cols[0].lower())
+
+    def _model(model: str, label: str, *, required: bool) -> Result:
+        key = model.lower()
+        present = key in pulled
+        if present:
+            return Result(label, True, f"{model} — pulled", required=required)
+        return Result(
+            label, False,
+            f"{model} not found — run: ollama pull {model}",
+            required=required,
+        )
+
+    return [
+        _model(
+            "deepseek-r1:14b",
+            "ollama: deepseek-r1:14b (university synthesis)",
+            required=False,
+        ),
+        _model(
+            "deepseek-r1:7b",
+            "ollama: deepseek-r1:7b  (university reading)",
+            required=False,
+        ),
+        _model(
+            "qwen2.5:7b",
+            "ollama: qwen2.5:7b (polyglot lens)",
+            required=False,
+        ),
+        _model(
+            "llama3.2:3b",
+            "ollama: llama3.2:3b (Salvatore lens)",
+            required=False,
+        ),
+    ]
+
+
 # ── Run all checks ────────────────────────────────────────────────────────────
 
 def _run_all() -> list[Result]:
@@ -205,6 +327,9 @@ def _run_all() -> list[Result]:
         check_tool("git-lfs",   required=True,  args=["version"]),
         check_tool("ollama",    required=False, args=["--version"]),
 
+        # ── Ollama model availability (University + Lens Rack) ────────
+        *check_ollama_models(),
+
         # ── Core pip packages ─────────────────────────────────────────
         check_import("openai",           required=True),
         check_import("dotenv",           pkg_name="python-dotenv", required=True),
@@ -212,6 +337,7 @@ def _run_all() -> list[Result]:
         check_import("pydub",            required=True),
         check_import("numpy",            required=True),
         check_import("chromadb",         required=True),
+        check_chroma_onnx_model(),
 
         # ── Optional but strongly recommended ─────────────────────────
         check_import("mlx",              required=False),
@@ -243,6 +369,7 @@ def do_fix() -> None:
         sys.exit(1)
     print(f"Running: pip install -r {req}")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req)])
+    fix_chroma_onnx_model()
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────

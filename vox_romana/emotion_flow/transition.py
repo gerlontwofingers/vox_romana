@@ -5,6 +5,16 @@ Cross-speech boundaries are excluded by default (no spurious transitions when
 one speech ends and another begins).
 
 Wilson score 95% confidence intervals are computed per cell from raw counts.
+
+Note on shared lineage
+----------------------
+The row-stochastic matrix built here is the same mathematical object as
+:class:`vox_romana.core.markov.CharBigramFingerprinter`, just over a
+discrete emotion-label state space rather than printable ASCII.  If the
+math in ``core.markov`` is ever upgraded (e.g. to a learned encoder),
+consider whether :class:`TransitionBuilderAgent` should delegate via a
+``DiscreteStateFingerprinter``.  See also
+:meth:`vox_romana.emotion_flow.models.TransitionMatrix.to_fingerprint`.
 """
 
 from __future__ import annotations

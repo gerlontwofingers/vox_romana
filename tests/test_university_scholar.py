@@ -1,7 +1,7 @@
 """Tests for vox_romana.university.scholar.
 
 Covers:
-    - Module-level helpers: _strip_think, _extract_json, _split_qid,
+    - Module-level helpers: strip_think, extract_json, _split_qid,
       _make_qid, _format_hms
     - Scholar construction (requires at least one source)
     - Scholar._fetch dispatch
@@ -23,11 +23,11 @@ import vox_romana.university.session as _sm
 from vox_romana.university.config import UniversityConfig
 from vox_romana.university.scholar import (
     Scholar,
-    _extract_json,
     _format_hms,
     _make_qid,
     _split_qid,
-    _strip_think,
+    extract_json,
+    strip_think,
 )
 from vox_romana.university.session import ScholarNote, ScholarSession
 from vox_romana.university.sources import Article, KnowledgeSource
@@ -112,53 +112,53 @@ ARTICLE_ONE = Article(
 class TestStripThink:
     def test_strips_think_block(self):
         raw = "<think>internal reasoning</think>\nactual response"
-        assert _strip_think(raw) == "actual response"
+        assert strip_think(raw) == "actual response"
 
     def test_no_think_block_unchanged(self):
-        assert _strip_think("hello world") == "hello world"
+        assert strip_think("hello world") == "hello world"
 
     def test_none_returns_empty_string(self):
-        assert _strip_think(None) == ""
+        assert strip_think(None) == ""
 
     def test_empty_string_returns_empty(self):
-        assert _strip_think("") == ""
+        assert strip_think("") == ""
 
     def test_multiline_think_stripped(self):
         raw = "<think>\nline 1\nline 2\n</think>answer"
-        assert _strip_think(raw) == "answer"
+        assert strip_think(raw) == "answer"
 
     def test_case_insensitive_think_tag(self):
         raw = "<THINK>ignore this</THINK>real answer"
-        assert _strip_think(raw) == "real answer"
+        assert strip_think(raw) == "real answer"
 
 
 class TestExtractJson:
     def test_plain_json_object(self):
-        assert _extract_json('{"a": 1}') == {"a": 1}
+        assert extract_json('{"a": 1}') == {"a": 1}
 
     def test_plain_json_array(self):
-        assert _extract_json('[1, 2, 3]') == [1, 2, 3]
+        assert extract_json('[1, 2, 3]') == [1, 2, 3]
 
     def test_fenced_json(self):
         raw = "```json\n{\"x\": 42}\n```"
-        assert _extract_json(raw) == {"x": 42}
+        assert extract_json(raw) == {"x": 42}
 
     def test_json_after_think_block(self):
         raw = '<think>thinking</think>\n{"key": "val"}'
-        assert _extract_json(raw) == {"key": "val"}
+        assert extract_json(raw) == {"key": "val"}
 
     def test_prose_wrapping_json(self):
         raw = 'Here is the result: {"a": 1} as requested.'
-        assert _extract_json(raw) == {"a": 1}
+        assert extract_json(raw) == {"a": 1}
 
     def test_unparseable_returns_none(self):
-        assert _extract_json("not json at all") is None
+        assert extract_json("not json at all") is None
 
     def test_empty_string_returns_none(self):
-        assert _extract_json("") is None
+        assert extract_json("") is None
 
     def test_none_returns_none(self):
-        assert _extract_json(None) is None
+        assert extract_json(None) is None
 
 
 class TestSplitMakeQid:

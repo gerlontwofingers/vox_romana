@@ -250,7 +250,7 @@ class TestArchitectShowHost:
         config = architect.parse_response(self._make_architect_json(with_host=True))
 
         assert config.show_host is not None
-        assert config.show_host.name == "Elena Voss"
+        assert config.show_host.name  # non-empty string (may be rewritten by curated pool)
         assert config.show_host.role == "narrator"
         assert config.show_host.style == "Documentary-style, authoritative yet warm"
 
@@ -270,7 +270,7 @@ class TestArchitectShowHost:
         config = architect.parse_response(json.dumps(data))
 
         assert config.show_host.role == "emcee"
-        assert config.show_host.name == "Marcus Webb"
+        assert config.show_host.name  # non-empty string (may be rewritten by curated pool)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -606,7 +606,7 @@ class TestBootstrapHostProfiling:
 
         # The host should exist and have a voice fingerprint
         assert config.show_host is not None
-        assert config.show_host.name == "Elena Voss"
+        assert config.show_host.name  # non-empty string (may be rewritten by curated pool)
         assert config.show_host.voice_fingerprint is not None
         assert config.show_host.voice_fingerprint != ""
 

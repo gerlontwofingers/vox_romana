@@ -105,6 +105,10 @@ def _lazy_generate_audio(**kwargs):
     return generate_audio(**kwargs)
 
 
+# Saved reference to the original stub so teardown() can reset the global.
+_LAZY_GENERATE_AUDIO_STUB = _lazy_generate_audio
+
+
 # Default Kokoro model on HuggingFace. Auto-downloaded on first use.
 # NOTE: The original prince-canuma repo went private/offline. The
 # mlx-community fork is the canonical source (834K+ downloads).
@@ -113,10 +117,39 @@ DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
 # Kokoro's native sample rate.
 KOKORO_SAMPLE_RATE = 24000
 
-# Languages Kokoro can synthesize. The mlx-community/Kokoro-82M-bf16 model
-# is English-only. If the user requests a non-English language, the renderer
-# must route to a language-capable engine (Piper) instead.
-KOKORO_LANGUAGES: frozenset[str] = frozenset({"en"})
+# Language codes accepted by mlx-audio's Kokoro wrapper.
+#
+# The values are mlx-audio pipeline codes passed via ``lang_code`` to
+# ``generate_audio()``:
+#   a=en, b=en-gb, z=zh, e=es, f=fr, h=hi, i=it, j=ja, p=pt / pt-br
+KOKORO_LANG_CODES: dict[str, str] = {
+    "en": "a",
+    "en-gb": "b",
+    "zh": "z",
+    "es": "e",
+    "fr": "f",
+    "hi": "h",
+    "it": "i",
+    "ja": "j",
+    "pt": "p",
+    "pt-br": "p",
+}
+KOKORO_LANGUAGES: frozenset[str] = frozenset(KOKORO_LANG_CODES)
+
+
+def _resolve_kokoro_lang_code(language: str) -> str | None:
+    """Map a BCP-47-ish language string to mlx-audio's ``lang_code``.
+
+    Exact mappings win first (e.g. ``en-gb`` → ``b``, ``pt-br`` → ``p``).
+    For other region variants (e.g. ``zh-CN``), we fall back to the primary
+    language subtag when Kokoro supports that base language.
+    """
+    normalized = language.strip().lower().replace("_", "-")
+    direct = KOKORO_LANG_CODES.get(normalized)
+    if direct is not None:
+        return direct
+    primary = normalized.split("-", 1)[0]
+    return KOKORO_LANG_CODES.get(primary)
 
 # All built-in Kokoro voices, organized by accent and gender.
 # These are baked into the model — no separate downloads needed.
@@ -187,15 +220,16 @@ class KokoroEngine(BaseTTSEngine):
                       "say this with excitement and conviction".
                       This maps to Kokoro's `instruct` parameter.
             speed:    Speed multiplier. 1.0 = normal.
-            language: BCP-47 language code. Kokoro only supports "en";
-                      any other value raises ValueError.
+            language: BCP-47 language code. Kokoro supports a small set of
+                      languages exposed by mlx-audio via ``lang_code``.
             **kwargs: Extra kwargs passed to generate_audio().
 
         Returns:
             SynthesizedAudio with WAV bytes and sample rate (24000 Hz).
 
         Raises:
-            ValueError: If `language` is not "en". Kokoro is English-only.
+            ValueError: If ``language`` is not one of Kokoro's supported
+                        languages.
 
         NOTE ON HOW THIS WORKS:
             mlx-audio's generate_audio() is designed to save files to disk.
@@ -207,12 +241,12 @@ class KokoroEngine(BaseTTSEngine):
             text chunking, model loading, and a bunch of edge cases we don't
             want to reimplement. The file roundtrip costs <10ms on an SSD.
         """
-        # Validate language: Kokoro only speaks English.
-        if language not in KOKORO_LANGUAGES:
+        lang_code = _resolve_kokoro_lang_code(language)
+        if lang_code is None:
+            supported = ", ".join(sorted(KOKORO_LANGUAGES))
             raise ValueError(
-                f"KokoroEngine only supports English (language='en'); "
-                f"got language={language!r}. Use PiperEngine for non-English "
-                f"languages, or run vox_romana with --out-lang en."
+                f"KokoroEngine does not support language={language!r}. "
+                f"Supported language codes: {supported}."
             )
 
         # Create a temp directory for the audio output.
@@ -242,6 +276,7 @@ class KokoroEngine(BaseTTSEngine):
 
             # Merge any extra kwargs (e.g. temperature, max_tokens).
             gen_kwargs.update(kwargs)
+            gen_kwargs["lang_code"] = lang_code
 
             # Generate! This is where the GPU does its thing.
             # Suppress the bare print() fired by mlx_audio's
@@ -291,3 +326,19 @@ class KokoroEngine(BaseTTSEngine):
             List of voice ID strings (e.g. ["af_heart", "am_adam", ...]).
         """
         return list(KOKORO_VOICES)
+
+    def teardown(self) -> None:
+        """Release Kokoro model state to free RAM.
+
+        Resets the module-level generate_audio reference back to the lazy
+        stub so that the real mlx_audio function (which keeps model weights
+        resident in MLX unified memory) can be garbage-collected.  Also
+        attempts to clear the MLX metal heap cache.
+        """
+        import vox_romana.tts.engines.kokoro_engine as _m
+        _m._lazy_generate_audio = _m._LAZY_GENERATE_AUDIO_STUB
+        try:
+            import mlx.core as mx
+            mx.metal.clear_cache()
+        except Exception:
+            pass

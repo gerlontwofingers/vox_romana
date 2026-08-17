@@ -89,6 +89,9 @@ RULES:
 - Generate queries that cover BOTH sides (pro AND con). Balanced research
   produces balanced debates.
 - Focus on: statistics, study results, named programs/policies, expert opinions.
+- If a PERSPECTIVE CONTEXT block is provided, include location-specific or
+    institution-specific queries that help ground the topic from that vantage
+    point without suppressing counterarguments.
 - Include at least one query specifically targeting counterarguments.
 - Keep queries concise and search-engine-friendly (no full sentences).
 - ALWAYS respond with a JSON array of strings. Nothing else.
@@ -113,6 +116,8 @@ the best factual background information for the topics covered.
 
 RULES:
 - Focus on: current events, statistics, named programs/policies, expert opinions.
+- If a PERSPECTIVE CONTEXT block is provided, include queries that surface
+    facts, terminology, and institutions relevant to that vantage point.
 - Keep queries concise and search-engine-friendly (no full sentences).
 - Cover the main topics mentioned in the brief.
 - ALWAYS respond with a JSON array of strings. Nothing else.
@@ -136,6 +141,7 @@ topic. Your job is to extract and organize the KEY FACTS into a structured
 reference document that debate participants will use as their source material.
 
 TOPIC: {topic}
+{perspective_block}
 
 SEARCH RESULTS:
 {search_results}
@@ -147,6 +153,8 @@ RULES:
 - Include the source (study name, organization, year) for every claim.
 - Do NOT editorialize or add your own opinions.
 - Do NOT invent facts that aren't in the search results.
+- If perspective context is provided, keep observer-relative wording and
+    institutional framing consistent with it.
 - If the search results are thin on one side, note that explicitly.
 - Use markdown formatting with ## headers and bullet points.
 - Aim for 300-600 words — enough to ground the debate, not a dissertation.
@@ -157,6 +165,7 @@ You are a research compiler preparing background material for a debate.
 No web search is available — compile what you KNOW from your training data.
 
 TOPIC: {topic}
+{perspective_block}
 
 Your job: produce a structured reference document with REAL, VERIFIABLE facts
 that debate participants will use as their source material.
@@ -169,12 +178,19 @@ RULES:
 - Cover BOTH sides — pro AND con. Balanced material produces balanced debates.
 - Organize into clear sections: Key Statistics, Pro Arguments (with sources),
   Con Arguments (with sources), Context/Background.
+- If perspective context is provided, keep observer-relative language and
+    place naming consistent with that vantage point.
 - For entertainment topics (TV shows, films, games), include: episode counts,
   plot-relevant specifics, notable events, fan-compiled data you're aware of.
 - Do NOT fabricate precise statistics you don't actually know. Round numbers
   and qualitative summaries are honest; fake decimal points are not.
 - Use markdown formatting with ## headers and bullet points.
 - Aim for 400-800 words — be thorough, this is all the participants get.
+"""
+
+_PERSPECTIVE_CONTEXT_TEMPLATE = """\
+PERSPECTIVE CONTEXT:
+{perspective}
 """
 
 
@@ -225,7 +241,7 @@ class DebateResearcher:
         self._search = search_provider
         self._query_formulator_prompt = query_formulator_prompt or QUERY_FORMULATOR_PROMPT
 
-    def run(self, brief: str) -> str:
+    def run(self, brief: str, *, perspective: str | None = None) -> str:
         """Research a topic and return structured reference material.
 
         This is the main entry point. With a search provider:
@@ -235,6 +251,7 @@ class DebateResearcher:
 
         Args:
             brief: The debate brief (natural language description).
+            perspective: Optional explicit vantage point for the show.
 
         Returns:
             A structured reference material string (markdown-formatted)
@@ -245,10 +262,10 @@ class DebateResearcher:
         """
         # ── LLM-only fallback: no search provider ───────────────────
         if self._search is None:
-            return self.run_from_knowledge(brief)
+            return self.run_from_knowledge(brief, perspective=perspective)
 
         # ── Step 1: Formulate search queries ─────────────────────────
-        queries = self.formulate_queries(brief)
+        queries = self.formulate_queries(brief, perspective=perspective)
 
         # ── Step 2: Search the web ───────────────────────────────────
         all_results: list[SearchResult] = []
@@ -267,9 +284,14 @@ class DebateResearcher:
         if not all_results:
             return ""  # No results → no reference material. Bootstrap continues without.
 
-        return self.compile_results(brief, all_results)
+        return self.compile_results(brief, all_results, perspective=perspective)
 
-    def formulate_queries(self, brief: str) -> list[str]:
+    def formulate_queries(
+        self,
+        brief: str,
+        *,
+        perspective: str | None = None,
+    ) -> list[str]:
         """Turn a brief into targeted search queries.
 
         One LLM call (with up to 2 retries on malformed JSON). The LLM reads
@@ -281,6 +303,7 @@ class DebateResearcher:
 
         Args:
             brief: The debate brief.
+            perspective: Optional explicit vantage point for the show.
 
         Returns:
             A list of 3-5 search query strings.
@@ -288,9 +311,15 @@ class DebateResearcher:
         Raises:
             ValueError: If the LLM returns unparseable JSON after all retries.
         """
+        user_content = f"BRIEF:\n{brief}"
+        if perspective and perspective.strip():
+            user_content = (
+                f"{user_content}\n\n"
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}"
+            )
         messages = [
             {"role": "system", "content": self._query_formulator_prompt},
-            {"role": "user", "content": brief},
+            {"role": "user", "content": user_content},
         ]
         last_error: Exception | None = None
 
@@ -355,6 +384,8 @@ class DebateResearcher:
         self,
         brief: str,
         results: list[SearchResult],
+        *,
+        perspective: str | None = None,
     ) -> str:
         """Compile search results into structured reference material.
 
@@ -397,6 +428,11 @@ class DebateResearcher:
         # ── Call the LLM to compile ──────────────────────────────────
         prompt = COMPILER_PROMPT.format(
             topic=brief,
+            perspective_block=(
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}\n"
+                if perspective and perspective.strip()
+                else ""
+            ),
             search_results=search_block,
         )
 
@@ -408,7 +444,12 @@ class DebateResearcher:
             temperature=0,
         )
 
-    def run_from_knowledge(self, brief: str) -> str:
+    def run_from_knowledge(
+        self,
+        brief: str,
+        *,
+        perspective: str | None = None,
+    ) -> str:
         """Compile reference material from the LLM's training knowledge.
 
         Single LLM call. No web search. Used when no search provider is
@@ -422,7 +463,14 @@ class DebateResearcher:
         Returns:
             Structured reference material (markdown string).
         """
-        prompt = KNOWLEDGE_COMPILER_PROMPT.format(topic=brief)
+        prompt = KNOWLEDGE_COMPILER_PROMPT.format(
+            topic=brief,
+            perspective_block=(
+                f"{_PERSPECTIVE_CONTEXT_TEMPLATE.format(perspective=perspective.strip())}\n"
+                if perspective and perspective.strip()
+                else ""
+            ),
+        )
 
         return self._client.chat(
             messages=[

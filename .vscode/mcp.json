@@ -1,0 +1,11 @@
+{
+    "servers": {
+        "vox_romana": {
+            "type": "stdio",
+            "command": "/Users/bagheera/repos/vox_romana/.venv/bin/python",
+            "args": ["-m", "vox_romana.mcp"],
+            "cwd": "/Users/bagheera/repos/vox_romana",
+            "env": {}
+        }
+    }
+}

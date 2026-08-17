@@ -34,6 +34,15 @@
 # data_dir: ~/vox_romana_data
 
 
+# PRODUCTION ID (longitudinal data store)
+# ──────────────────────────────────────────────────────────────────────────────
+# Short stable slug that identifies this installation in longitudinal.db.
+# Used by `python tools/studio.py ingest` and `tools/study_battery.py`.
+# Change this if you run multiple studios and want to track them separately.
+
+production_id: default
+
+
 # PIPER VOICE MODELS (optional override)
 # ──────────────────────────────────────────────────────────────────────────────
 # Where your downloaded Piper TTS voice .onnx files live.
@@ -44,6 +53,16 @@
 #   piper_voices_dir: /Volumes/BigDisk/piper-voices
 
 # piper_voices_dir: ~/piper-voices
+
+
+# VOICE CLONE PROFILES (optional override)
+# Where cloned voice profiles (reference.wav + metadata.json) are stored.
+# Defaults to data_dir/voice_profiles/ if not set.
+#
+# Example:
+#   voice_profiles_dir: /Volumes/BigDisk/voice_profiles
+
+# voice_profiles_dir: ~/vox_romana_data/voice_profiles
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,7 +120,14 @@
 #   python run.py prompt.yaml --research --university-session abc123
 
 university:
-  model: deepseek-r1:7b
+  reading_model: deepseek-r1:7b       # fast model for per-article note extraction
+  synthesis_model: deepseek-r1:14b    # quality model for synthesis passes
+  openalex_enabled: true              # query OpenAlex (200M academic works, free, no key)
+  colloquium_enabled: true            # cross-pollinate Scholars in seminar mode
+  colloquium_interval: 25             # articles per Scholar between colloquium rounds
+  colloquium_max_leads_per_peer: 3    # search hits enqueued per peer-suggested query
+  colloquium_snippet_chars: 1500      # synthesis chars shared with each peer
+  colloquium_extra_secs: 600          # extra deadline seconds reserved for colloquium phase
   base_url: http://localhost:11434/v1
   temperature: 0.6
   timeout_secs: 300          # seconds per LLM call (long articles need more)

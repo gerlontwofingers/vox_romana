@@ -56,9 +56,11 @@ TRANSITIONS:
 
 AUDIO:
 
-    The audio file is attached to the final composite clip using
-    ``CompositeAudioClip``. Duration is taken from the video, not the
-    audio — the audio is cropped or looped to match.
+    The audio file is attached to the final composite clip. If the audio
+    is longer than the assembled video (e.g. because a music bumper adds
+    time that scene timestamps don't fully account for), the video is
+    extended by freezing the last frame for the overshoot duration — audio
+    is never truncated. Differences of less than 50 ms are ignored.
 
 EXAMPLE:
 
@@ -69,6 +71,14 @@ EXAMPLE:
     output = backend.render(plan, audio_path=Path("show.wav"),
                             output_path=Path("out/video.mp4"))
     print("Video written to:", output)
+
+TYPE SUPPRESSION NOTE:
+
+    moviepy and Pillow ship no type stubs. Every ``mpy.SomeClass(...)`` call
+    and every clip method (``resize``, ``crop``, ``fl``, etc.) triggers a
+    mypy ``[attr-defined]`` error because mypy can't see the attributes.
+    These ``# type: ignore[attr-defined]`` comments throughout this file are
+    intentional — they silence false positives, not real bugs.
 """
 
 from __future__ import annotations
@@ -111,6 +121,45 @@ _OVERLAY_MARGIN_PX = 40
 # Speaker-label card: white text near bottom-left, larger than overlay.
 _LABEL_FONTSIZE = 32
 _OVERLAY_FONTSIZE = 28
+
+# ── Font resolution ───────────────────────────────────────────────────────────
+
+def _resolve_font() -> str | None:
+    """Return an absolute path to a usable TrueType/TTC font file, or None.
+
+    ImageMagick (Homebrew) does not inherit macOS system fonts, so passing a
+    font *name* such as "Helvetica" fails with "unable to read font".
+    Passing an absolute path bypasses the font registry and works via
+    FreeType directly.  We probe candidates in preference order and cache
+    the first hit at module import time.
+    """
+    import platform as _platform
+    from pathlib import Path as _Path
+
+    _CANDIDATES: list[str]
+    if _platform.system() == "Darwin":
+        _CANDIDATES = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/opt/homebrew/share/fonts/dejavu-fonts-ttf/DejaVuSans.ttf",
+            "/usr/local/share/fonts/DejaVuSans.ttf",
+        ]
+    else:
+        _CANDIDATES = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+    for candidate in _CANDIDATES:
+        if _Path(candidate).exists():
+            return candidate
+    return None
+
+
+# Resolved once at import time; None means use ImageMagick's built-in default.
+_RESOLVED_FONT: str | None = _resolve_font()
 
 
 class MoviePyBackend(BaseAnimationBackend):
@@ -186,9 +235,23 @@ class MoviePyBackend(BaseAnimationBackend):
         if audio_path and audio_path.exists():
             logger.debug("MoviePyBackend: attaching audio from %s", audio_path)
             audio_clip = mpy.AudioFileClip(str(audio_path))
-            # Crop audio to match video duration (avoids mismatch issues).
-            if audio_clip.duration > final_clip.duration:
-                audio_clip = audio_clip.subclip(0, final_clip.duration)
+            # If the audio is longer than the video (e.g. because the intro
+            # music duration wasn't fully accounted for in scene timing, or
+            # mixer pauses add a small tail), extend the video by freezing
+            # the last frame rather than truncating the audio.
+            overshoot = audio_clip.duration - final_clip.duration
+            if overshoot > 0.05:  # ignore sub-50ms rounding differences
+                logger.debug(
+                    "MoviePyBackend: audio is %.2fs longer than video — "
+                    "freezing last frame to fill gap",
+                    overshoot,
+                )
+                freeze_t = max(0.0, final_clip.duration - 0.001)
+                freeze = (
+                    final_clip.to_ImageClip(t=freeze_t)
+                    .set_duration(overshoot)
+                )
+                final_clip = mpy.concatenate_videoclips([final_clip, freeze])
             final_clip = final_clip.set_audio(audio_clip)
 
         # Determine codec from extension.
@@ -341,8 +404,19 @@ class MoviePyBackend(BaseAnimationBackend):
             if img_path.exists():
                 try:
                     clip = mpy.ImageClip(str(img_path)).set_duration(duration)  # type: ignore[attr-defined]
-                    # Resize to fill frame (crop if aspect ratio differs).
-                    clip = clip.resize((width, height))  # type: ignore[attr-defined]
+                    # Scale to cover: resize proportionally so both dimensions
+                    # are >= target, then center-crop to exact frame size.
+                    # This is the CSS background-size:cover equivalent —
+                    # no aspect-ratio distortion regardless of source dims.
+                    img_w, img_h = clip.size  # type: ignore[attr-defined]
+                    scale = max(width / img_w, height / img_h)
+                    clip = clip.resize(scale)  # type: ignore[attr-defined]
+                    clip = clip.crop(  # type: ignore[attr-defined]
+                        x_center=clip.w / 2,  # type: ignore[attr-defined]
+                        y_center=clip.h / 2,  # type: ignore[attr-defined]
+                        width=width,
+                        height=height,
+                    )
                     return clip
                 except Exception as exc:
                     logger.warning(
@@ -439,15 +513,25 @@ class MoviePyBackend(BaseAnimationBackend):
         mpy: object,
     ) -> object | None:
         """Create a text overlay clip, returning None if ImageMagick is absent."""
+        # Use an absolute font path so ImageMagick (Homebrew) can find it via
+        # FreeType without relying on its own font-name registry, which does
+        # not include macOS system fonts.  If no candidate path was found at
+        # import time we omit the font kwarg and let ImageMagick pick its
+        # own default rather than crashing.
+        base_kwargs: dict = {
+            "fontsize": fontsize,
+            "color": "white",
+            "stroke_color": "black",
+            "stroke_width": 1,
+            "method": "caption",
+            "size": (width - _OVERLAY_MARGIN_PX * 2, None),
+        }
+        if _RESOLVED_FONT is not None:
+            base_kwargs["font"] = _RESOLVED_FONT
         try:
             txt = mpy.TextClip(  # type: ignore[attr-defined]
                 text,
-                fontsize=fontsize,
-                color="white",
-                stroke_color="black",
-                stroke_width=1,
-                method="caption",
-                size=(width - _OVERLAY_MARGIN_PX * 2, None),
+                **base_kwargs,
             ).set_duration(duration).set_position(position)
             return txt
         except Exception as exc:

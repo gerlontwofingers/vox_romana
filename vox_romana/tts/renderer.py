@@ -105,6 +105,7 @@ from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
+from .voice_catalog import UNIFIED_VOICE_CATALOG
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,13 @@ logger = logging.getLogger(__name__)
 # These are LLM-generated performance directions. Standard TTS engines
 # have no way to act on them, so they end up spoken literally.
 _STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
+
+# Matches square-bracket stage directions, e.g.:
+#   [Dr. Waffleford holds the pizza aloft.]
+#   [The audience gasps.]
+# Audiobook conductors write these for scene actions. They are NEVER data —
+# strip them unconditionally (unlike parentheticals which may contain acronyms).
+_BRACKET_STAGE_DIR_RE = re.compile(r'\[[^\]]*\]')
 
 
 def _is_stage_direction(content: str) -> bool:
@@ -169,6 +177,9 @@ def strip_stage_directions(text: str) -> str:
         return m.group(0)  # keep prose parentheticals intact
 
     cleaned = _STAGE_DIR_RE.sub(_replace, text)
+    # Strip square-bracket stage directions unconditionally — these are always
+    # scene actions written by the audiobook conductor, never data.
+    cleaned = _BRACKET_STAGE_DIR_RE.sub('', cleaned)
     # Collapse ALL whitespace runs — including \n from removed inline directions
     cleaned = re.sub(r'\s+', ' ', cleaned)
     # Merge adjacent-ellipsis artifacts left by "... (direction) ...": "... ..." → "..."
@@ -198,6 +209,48 @@ _MUSIC_CUE_RE = re.compile(r'\[\s*music\s*:\s*([^\]]+?)\s*\]', re.IGNORECASE)
 _THEME_MUSIC_MARKERS: frozenset[str] = frozenset({"theme music", "theme song", "intro music", "outro music"})
 
 
+def _ensure_music_bumpers(events: list[dict]) -> None:
+    """Insert synthetic bumper events at the list boundaries if none exist.
+
+    Called by :meth:`TTSRenderer.render` when a music engine is active.  This
+    is a safety net for show JSONs generated before the prompts carried the
+    explicit cue instructions, for re-renders, and for LLM non-compliance.
+
+    A bumper event is inserted at the *start* if the first event is not
+    already a music cue, and at the *end* if the last event is not already a
+    music cue.  An event is considered a music cue if any of the following
+    apply:
+
+    - ``event_kind == "bumper"``
+    - the event text contains an inline ``[music: …]`` cue
+    - any theme-music marker (``_THEME_MUSIC_MARKERS``) appears in the
+      ``nonverbal`` list (case-insensitive substring match)
+
+    Speech events are never mutated — only dedicated bumper dicts are
+    inserted so that TTS synthesis of adjacent speech is unaffected.
+    """
+    if not events:
+        return
+
+    def _is_music_event(event: dict) -> bool:
+        if (event.get("event_kind") or "").lower() == "bumper":
+            return True
+        if _MUSIC_CUE_RE.search(event.get("text") or ""):
+            return True
+        return any(
+            any(theme in (nv or "").lower() for theme in _THEME_MUSIC_MARKERS)
+            for nv in (event.get("nonverbal") or [])
+        )
+
+    _bumper: dict = {"event_kind": "bumper", "text": "", "speaker_name": "System", "nonverbal": []}
+
+    if not _is_music_event(events[0]):
+        events.insert(0, dict(_bumper))
+
+    if not _is_music_event(events[-1]):
+        events.append(dict(_bumper))
+
+
 def strip_markdown_emphasis(text: str) -> str:
     """Remove Markdown emphasis markers from TTS text, keeping the inner word.
 
@@ -214,6 +267,55 @@ def strip_markdown_emphasis(text: str) -> str:
         'Plain text unchanged.'
     """
     return _MD_EMPHASIS_RE.sub(r'\2', text)
+
+
+def apply_pronunciation_rewrites(text: str, overrides: dict[str, Any]) -> str:
+    """Replace source phrases with their spoken forms (Piper text-rewrite path).
+
+    Performs a single-pass, case-insensitive, whole-word substitution so that
+    no replacement can be re-matched by a subsequent shorter rule.  Longer
+    phrases are listed first in the alternation so "New York" wins over "York".
+    """
+    if not overrides:
+        return text
+    # Build lookup: normalised source -> spoken form (skip empty spoken)
+    spoken_map: dict[str, str] = {}
+    for phrase in sorted(overrides, key=len, reverse=True):
+        entry = overrides[phrase]
+        spoken = entry.get("spoken", "") if isinstance(entry, dict) else str(entry)
+        if spoken:
+            spoken_map[phrase] = spoken
+    if not spoken_map:
+        return text
+    pattern = re.compile(
+        r'(?<![^\W_])(?:' +
+        '|'.join(re.escape(p) for p in spoken_map) +
+        r')(?![^\W_])',
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: spoken_map[next(
+        k for k in spoken_map if k.lower() == m.group().lower()
+    )], text)
+
+
+def build_pronunciation_hint(overrides: dict[str, Any]) -> str:
+    """Build a natural-language pronunciation guidance suffix for Kokoro.
+
+    Returns a string like::
+
+        "pronounce Okonkwo as oh-KOHN-kwoh; pronounce Nguyen as nwin"
+
+    appended to the emotion hint so Kokoro's instruct layer can shape
+    phoneme production.  Returns an empty string when *overrides* is empty.
+    """
+    if not overrides:
+        return ""
+    parts = []
+    for phrase, val in overrides.items():
+        spoken = val.get("spoken", "") if isinstance(val, dict) else str(val)
+        if spoken:
+            parts.append(f"pronounce {phrase} as {spoken}")
+    return "; ".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -262,6 +364,40 @@ class RenderResult:
 # handled by the mixer or ignored.
 SPOKEN_EVENT_KINDS = frozenset({"utterance", "narration", "interrupt"})
 
+# ── Content-type detection ─────────────────────────────────────────────────
+# Infer content_type from the show JSON's top-level keys so render() doesn't
+# need a new parameter and existing callers stay unchanged.
+_CONTENT_TYPE_KEYS: dict[str, str] = {
+    "podcast_id": "podcast",
+    "debate_id": "debate",
+    "audiobook_id": "audiobook",
+    "show_id": "news",
+}
+
+# Lead-in silence (ms) prepended before the first utterance per content type.
+# Prevents cold starts where audio jumps in with zero margin.
+# Skipped when the first event already carries an intro music nonverbal cue
+# (e.g. "intro music", "theme", "sting") to avoid double-stacking with a
+# generated music bumper.
+_LEAD_IN_MS: dict[str, int] = {
+    "podcast": 1500,
+    "news": 800,
+    "debate": 1000,
+    "audiobook": 2000,
+}
+
+# Nonverbal keywords that indicate a music intro is already present in the
+# first event, making the lead-in silence redundant.
+_INTRO_MUSIC_CUES: frozenset[str] = frozenset({
+    "intro music", "theme music", "theme song", "theme", "sting", "bumper",
+})
+
+# Podcast-specific TTS speed multiplier applied on top of the per-event
+# pace-derived speed.  Keeps conversational delivery measured rather than
+# clipped.  Intentionally aligned with WPM_DEFAULTS["podcast"] = 135
+# (see core/duration.py) so word-budget estimation and playback stay in sync.
+PODCAST_DEFAULT_SPEED: float = 0.92
+
 
 class TTSRenderer:
     """Renders audio content (debates, news shows, etc.) from event dicts.
@@ -288,6 +424,7 @@ class TTSRenderer:
         music_engine: "MusicGenEngine | None" = None,
         music_style: str = "",
         music_duration: float = 8.0,
+        music_volume_db: float = 0.0,
         parallel_workers: int = 1,
     ) -> None:
         """Initialize the renderer.
@@ -352,6 +489,7 @@ class TTSRenderer:
         self._music_engine = music_engine
         self._music_style = music_style
         self._music_duration = music_duration
+        self._music_volume_db = music_volume_db
         if parallel_workers < 1:
             raise ValueError(f"parallel_workers must be >= 1, got {parallel_workers}")
         self._parallel_workers = parallel_workers
@@ -383,11 +521,21 @@ class TTSRenderer:
             RenderResult with stats about the rendering.
         """
         output_path = Path(output_path)
-        events = debate_data.get("events", [])
+        events = list(debate_data.get("events", []))
+        if self._music_engine is not None and events:
+            events = [dict(e) for e in events]  # shallow-copy — do not mutate caller's data
+            _ensure_music_bumpers(events)
         participants = debate_data.get("participants", [])
         # The show's language drives voice selection and is passed to every
         # synthesize() call so the engine can validate / route appropriately.
         language = debate_data.get("language", "en")
+        character_langs = dict(debate_data.get("character_langs", {}))
+
+        # ── Infer content type from show JSON keys ────────────────────
+        content_type = next(
+            (ct for key, ct in _CONTENT_TYPE_KEYS.items() if key in debate_data),
+            "generic",
+        )
 
         # ── STEP 1: Assign voices to speakers ────────────────────────
         # Build the voice map (auto-assign if not manually provided).
@@ -396,6 +544,10 @@ class TTSRenderer:
         voice_casting = debate_data.get("voice_casting", {})
         voice_hints = debate_data.get("voice_hints", {})
         tts_styles = debate_data.get("tts_styles", {})
+        pronunciation_overrides = debate_data.get("pronunciation_overrides", {})
+
+        # Pre-build the Kokoro instruct suffix once — same string every utterance.
+        _pron_hint_suffix = build_pronunciation_hint(pronunciation_overrides)
         _title = debate_data.get("title", "")
         _seed = sum(ord(c) for c in _title[:32]) if _title else 0
 
@@ -410,9 +562,31 @@ class TTSRenderer:
 
         voice_map = self._build_voice_map(
             speaker_names, voice_casting, voice_hints,
-            language=language, seed=_seed,
+            language=language, character_langs=character_langs, seed=_seed,
             registry=self._registry, series_key=series_key,
         )
+
+        # _build_voice_map normalises speaker names to canonical host names
+        # (e.g. "Lord Bridgerton" → "Viscount Anthony Bridgerton").  Events in
+        # the JSON still carry the original speaker_name, so add alias entries
+        # so the main render loop can look up either form.
+        _raw_speakers = self._extract_speakers(events)
+        for raw_name in _raw_speakers:
+            canonical = voice_map.get(raw_name)
+            if canonical is None:
+                # Try suffix-token match against existing keys.
+                raw_last = raw_name.lower().split()[-1] if raw_name else ""
+                for key, vid in voice_map.items():
+                    if raw_last and raw_last in key.lower().split():
+                        voice_map[raw_name] = vid
+                        break
+            if raw_name in character_langs:
+                continue
+            raw_last = raw_name.lower().split()[-1] if raw_name else ""
+            for key, code in list(character_langs.items()):
+                if raw_last and raw_last in key.lower().split():
+                    character_langs[raw_name] = code
+                    break
 
         # Build a VoiceConfig map covering all auto-assigned speakers so that
         # engine-specific extras (e.g. Piper speaker-id) are populated even
@@ -450,7 +624,12 @@ class TTSRenderer:
                 if self._music_engine is not None and self._is_music_cue(event):
                     continue
                 synth_kwargs = self._prepare_synth_kwargs(
-                    event, voice_map, voice_cfg_map, tts_styles, language,
+                    event,
+                    voice_map,
+                    voice_cfg_map,
+                    tts_styles,
+                    character_langs,
+                    language,
                 )
                 if synth_kwargs is None:
                     continue
@@ -463,6 +642,24 @@ class TTSRenderer:
         rendered = 0
         skipped = 0
         event_durations: dict[int, float] = {}
+
+        # ── C1: Cold-start lead-in silence ───────────────────────────
+        # Prepend a brief silence before the first spoken clip so audio
+        # doesn't jump in with zero margin ("cold start" artefact).
+        # Skip if the first event already has an intro music nonverbal cue
+        # so we don't stack silence on top of a generated bumper.
+        lead_in_ms = _LEAD_IN_MS.get(content_type, 0)
+        if lead_in_ms > 0:
+            first_event = next(
+                (e for e in events if e.get("text", "").strip()),
+                None,
+            )
+            first_nonverbals = {
+                n.lower()
+                for n in (first_event.get("nonverbal") or [])
+            } if first_event else set()
+            if not (_INTRO_MUSIC_CUES & first_nonverbals):
+                mixer.add_silence(lead_in_ms)
 
         for i, event in enumerate(events):
             # Only render events that have spoken text.
@@ -504,7 +701,18 @@ class TTSRenderer:
                     mixer.add_music_clip(
                         music_result.audio,
                         sample_rate=music_result.sample_rate,
+                        gain_db=self._music_volume_db,
                     )
+                    # Record music clip duration so TimelineSync can account
+                    # for it when building scene timestamps.  Without this,
+                    # music events are invisible to the timeline and all
+                    # subsequent scenes start too early in video time.
+                    try:
+                        with wave.open(io.BytesIO(music_result.audio)) as _wf:
+                            event_durations[i] = _wf.getnframes() / _wf.getframerate()
+                    except Exception:
+                        # Fall back to the requested duration if WAV probe fails.
+                        event_durations[i] = self._music_duration
                     rendered += 1
                 except Exception as exc:
                     logger.warning(
@@ -519,9 +727,26 @@ class TTSRenderer:
                 continue
 
             speaker = event.get("speaker_name", "Unknown")
+            event_language = self._event_language(
+                event,
+                character_langs,
+                default_language=language,
+            )
             voice_id = voice_map.get(speaker)
             if voice_id is None:
                 voice_id = self._default_voice()
+
+            # ── Pronunciation overrides ───────────────────────────
+            # Determine engine for this voice once per utterance.
+            # Piper: rewrite source phrase directly in the text.
+            # Kokoro: append a guidance suffix to the emotion hint.
+            _voice_engine = "kokoro"
+            if pronunciation_overrides or _pron_hint_suffix:
+                _desc = UNIFIED_VOICE_CATALOG.get(voice_id)
+                if _desc is not None:
+                    _voice_engine = _desc.engine
+                if _voice_engine == "piper" and pronunciation_overrides:
+                    text = apply_pronunciation_rewrites(text, pronunciation_overrides)
 
             # ── Build the emotion hint from event metadata ────────
             # We combine tone, pace, volume, and nonverbal cues into
@@ -529,9 +754,15 @@ class TTSRenderer:
             # If a persistent tts_style is set for this speaker, it
             # is prepended as a baseline delivery instruction.
             emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
+            if _pron_hint_suffix and _voice_engine == "kokoro":
+                emotion = (emotion + "; " + _pron_hint_suffix).lstrip("; ")
 
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))
+            # C2: Apply podcast-specific speed baseline so delivery stays
+            # measured.  Aligned with WPM_DEFAULTS["podcast"] = 135.
+            if content_type == "podcast":
+                speed *= PODCAST_DEFAULT_SPEED
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))
@@ -564,7 +795,7 @@ class TTSRenderer:
                         voice=voice_id,
                         emotion=emotion,
                         speed=speed,
-                        language=language,
+                        language=event_language,
                         **extras,
                     )
 
@@ -692,6 +923,7 @@ class TTSRenderer:
         voice_hints: dict[str, str] | None = None,
         *,
         language: str = "en",
+        character_langs: dict[str, str] | None = None,
         seed: int = 0,
         registry: "VoiceRegistry | None" = None,
         series_key: str | None = None,
@@ -725,6 +957,7 @@ class TTSRenderer:
                             pre-filtered to voices whose id encodes that
                             language; catalog matching is skipped (the
                             built-in catalogs only cover English voices).
+            character_langs: Optional per-speaker language overrides.
 
         Returns:
             Dict mapping every speaker name to a voice_id string.
@@ -732,7 +965,64 @@ class TTSRenderer:
         available = self._engine.available_voices()
         casting = voice_casting or {}
         hints = voice_hints or {}
+        language_overrides = character_langs or {}
         result: dict[str, str] = {}
+
+        # ── Normalize speaker names to canonical host names ────────────
+        # The conductor LLM sometimes uses shortened or informal variants of
+        # a host's canonical name (e.g. "Lord Bridgerton" instead of
+        # "Viscount Anthony Bridgerton"). This causes casting / hints lookups
+        # to silently miss, dropping gender info and producing wrong voices.
+        # Build a name_map that resolves event speaker_names to the canonical
+        # key used in voice_casting / voice_hints.
+        #
+        # Match priority (first hit wins):
+        #   1. Exact match — no-op, already correct.
+        #   2. Case-insensitive exact match.
+        #   3. Suffix token match: last whitespace-delimited token of the
+        #      event name appears as a token in exactly one canonical name
+        #      (e.g. "Bridgerton" → "Viscount Anthony Bridgerton").
+        canonical_names: set[str] = set(casting) | set(hints)
+
+        def _resolve_name(name: str) -> str:
+            if name in canonical_names:
+                return name
+            name_lower = name.lower()
+            for cname in canonical_names:
+                if cname.lower() == name_lower:
+                    return cname
+            # Suffix token match: last token of event name appears in canonical
+            tokens_event = name.lower().split()
+            if tokens_event:
+                last_token = tokens_event[-1]
+                matches = [
+                    c for c in canonical_names
+                    if last_token in c.lower().split()
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+            return name
+
+        # Remap speaker_names list and build a translation table so that
+        # result keys are always the canonical form used by casting/hints.
+        name_map: dict[str, str] = {n: _resolve_name(n) for n in speaker_names}
+        speaker_names = [name_map[n] for n in speaker_names]
+        # Deduplicate while preserving order (two variants of the same host).
+        seen_canonical: set[str] = set()
+        deduped: list[str] = []
+        for n in speaker_names:
+            if n not in seen_canonical:
+                seen_canonical.add(n)
+                deduped.append(n)
+        speaker_names = deduped
+        speaker_languages: dict[str, str] = {}
+        for raw_name, canonical_name in name_map.items():
+            effective_language = (
+                language_overrides.get(canonical_name)
+                or language_overrides.get(raw_name)
+                or language
+            )
+            speaker_languages.setdefault(canonical_name, effective_language)
 
         # Detect which engine is active and pick the right catalog.
         from .engine import BaseTTSEngine
@@ -755,27 +1045,38 @@ class TTSRenderer:
         except Exception:
             _is_multi = False
 
-        # ── Filter the voice pool by language ─────────────────────────
-        # For Piper (and MultiEngine, which delegates to Piper for non-en),
-        # restrict the candidate voices to those whose id encodes the
-        # requested language. The built-in catalogs are English-only, so
-        # we skip catalog matching entirely for non-English shows.
-        skip_catalog = False
-        if language != "en" and (_is_piper or _is_multi):
-            available = [
-                v for v in available
-                if _lang_from_voice_id(v) == language
-            ]
-            skip_catalog = True
-
         if _is_multi:
-            # Both Kokoro + Piper voices are valid candidates; the engine
-            # will route synthesis to the right backend based on voice_id.
+            # MultiEngine exposes the unified catalog for voice lookup; the
+            # language gate below decides which voices are eligible.
             active_catalog = UNIFIED_VOICE_CATALOG
         elif _is_piper:
             active_catalog = PIPER_VOICE_CATALOG
         else:
             active_catalog = KOKORO_VOICE_CATALOG
+
+        def _candidate_pool_for_language(speaker_language: str) -> list[str]:
+            normalized_language = speaker_language.strip().lower().replace("_", "-")
+            primary_language = normalized_language.split("-", 1)[0]
+
+            if primary_language == "en" or not (_is_piper or _is_multi):
+                return list(available)
+
+            if _is_multi:
+                # Only route non-English speakers to voices that are truly
+                # language-aware. Voice clones (vc_*) are cross-lingual, and
+                # Piper voices are native-language models. Kokoro voices are
+                # intentionally excluded here: their voices are English-trained
+                # even when the phonemizer is switched to a non-English code.
+                return [
+                    voice_id for voice_id in available
+                    if voice_id.startswith("vc_")
+                    or _lang_from_voice_id(voice_id) == primary_language
+                ]
+
+            return [
+                voice_id for voice_id in available
+                if _lang_from_voice_id(voice_id) == primary_language
+            ]
 
         # ── Manual overrides first ────────────────────────────────────
         for name in speaker_names:
@@ -787,10 +1088,12 @@ class TTSRenderer:
         # in the available pool, reuse it so the same character keeps the
         # same voice across episodes within the series.
         if registry is not None and series_key:
-            available_set = set(available)
             for name in speaker_names:
                 if name in result:
                     continue
+                available_set = set(
+                    _candidate_pool_for_language(speaker_languages.get(name, language))
+                )
                 try:
                     locked = registry.resolve(name, series_key)
                 except Exception:
@@ -810,11 +1113,15 @@ class TTSRenderer:
         # ── Catalog matching (when any speaker has a voice_hint) ──────
         # Build a cast dict for unassigned speakers that have hints.
         remaining = [n for n in speaker_names if n not in result]
-        if not skip_catalog and remaining and any(n in hints for n in remaining):
+        catalog_remaining = [
+            n for n in remaining
+            if speaker_languages.get(n, language) == "en"
+        ]
+        if catalog_remaining and any(n in hints for n in catalog_remaining):
             from .voice_catalog import match_voices_for_cast
 
             cast_info: dict[str, dict] = {}
-            for name in remaining:
+            for name in catalog_remaining:
                 info: dict[str, str] = {}
                 if name in casting:
                     info["gender"] = casting[name]
@@ -902,23 +1209,39 @@ class TTSRenderer:
         for name in speaker_names:
             if name in result:
                 continue
-            if name in casting and casting[name] == "female" and female_voices:
-                result[name] = female_voices[female_idx % len(female_voices)]
+            speaker_language = speaker_languages.get(name, language)
+            speaker_available = _candidate_pool_for_language(
+                speaker_language
+            )
+            speaker_available_set = set(speaker_available)
+            speaker_male_voices = [v for v in male_voices if v in speaker_available_set]
+            speaker_female_voices = [v for v in female_voices if v in speaker_available_set]
+            if not speaker_available:
+                fallback_voice = self._default_voice()
+                logger.warning(
+                    "TTSRenderer: no native voice available for speaker %r "
+                    "(language=%s); falling back to %r.",
+                    name,
+                    speaker_language,
+                    fallback_voice,
+                )
+                result[name] = fallback_voice
+                continue
+            if name in casting and casting[name] == "female" and speaker_female_voices:
+                result[name] = speaker_female_voices[female_idx % len(speaker_female_voices)]
                 female_idx += 1
-            elif name in casting and casting[name] == "male" and male_voices:
-                result[name] = male_voices[male_idx % len(male_voices)]
+            elif name in casting and casting[name] == "male" and speaker_male_voices:
+                result[name] = speaker_male_voices[male_idx % len(speaker_male_voices)]
                 male_idx += 1
-            elif male_voices:
+            elif speaker_male_voices:
                 # No gender info — default to male (safer than round-robin
                 # through all voices which starts with female).
-                result[name] = male_voices[male_idx % len(male_voices)]
+                result[name] = speaker_male_voices[male_idx % len(speaker_male_voices)]
                 male_idx += 1
-            elif available:
-                # No gendered voices found — raw round-robin fallback.
-                result[name] = available[fallback_idx % len(available)]
-                fallback_idx += 1
             else:
-                result[name] = "default"
+                # No gendered voices found — raw round-robin fallback.
+                result[name] = speaker_available[fallback_idx % len(speaker_available)]
+                fallback_idx += 1
 
         # ── Persist assignments to the registry ──────────────────
         # register() is idempotent: it locks the voice on first sight and
@@ -943,13 +1266,25 @@ class TTSRenderer:
         voices = self._engine.available_voices()
         return voices[0] if voices else "default"
 
+    @staticmethod
+    def _event_language(
+        event: dict,
+        character_langs: dict[str, str],
+        *,
+        default_language: str,
+    ) -> str:
+        """Resolve the effective language for a single event."""
+        speaker = event.get("speaker_name", "Unknown")
+        return character_langs.get(speaker, default_language)
+
     def _prepare_synth_kwargs(
         self,
         event: dict,
         voice_map: dict[str, str],
         voice_cfg_map: dict[str, VoiceConfig],
         tts_styles: dict[str, str],
-        language: str,
+        character_langs: dict[str, str],
+        default_language: str,
     ) -> dict | None:
         """Build the kwargs dict for an engine.synthesize() call.
 
@@ -976,12 +1311,17 @@ class TTSRenderer:
         emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
         speed = self._pace_to_speed(event.get("pace"))
         voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
+        event_language = self._event_language(
+            event,
+            character_langs,
+            default_language=default_language,
+        )
         kwargs = {
             "text": text,
             "voice": voice_id,
             "emotion": emotion,
             "speed": speed,
-            "language": language,
+            "language": event_language,
         }
         kwargs.update(voice_cfg.extras)
         return kwargs
@@ -1118,9 +1458,23 @@ class TTSRenderer:
         for marker in nonverbal:
             marker_lc = (marker or "").lower()
             if any(theme in marker_lc for theme in _THEME_MUSIC_MARKERS):
-                return marker.strip()
+                # The nonverbal marker is a *trigger* signal ("intro music",
+                # "outro music", etc.), not a descriptive MusicGen prompt.
+                # Fall through to music_style / generic fallback below.
+                break
 
         if self._music_style:
             return self._music_style
 
         return "podcast background music"
+
+    def teardown(self) -> None:
+        """Release all resident TTS and music model weights.
+
+        Delegates to the wrapped speech engine and the music engine (if any)
+        so that model weights are freed before the next pipeline phase.
+        Call this after render() returns and before starting animation.
+        """
+        self._engine.teardown()
+        if self._music_engine is not None:
+            self._music_engine.teardown()

@@ -377,14 +377,20 @@ class TestRunPyLanguageFlags:
         mock_result.txt_path = tmp_json.parent / "show.txt"
         mock_result.pdf_path = None
 
-        with patch("vox_romana.publish.publish_document", return_value=mock_result):
+        # Patch supported_languages so "--out-lang all" resolves to ["en"] only.
+        # Without this, installed Piper voices would expand "all" to many
+        # languages and trigger real LLM translation calls for each one.
+        with patch(
+            "vox_romana.core.languages.supported_languages",
+            return_value=["en"],
+        ), patch("vox_romana.publish.publish_document", return_value=mock_result):
             run_master.main([
                 "--mode", "publish",
                 "--script-input", str(tmp_json),
                 "--out-lang", "all",
                 "--quiet",
             ])
-        # Just verifies no crash — actual out_lang_list is ["en"] in Shot 1.
+        # Verifies no crash and that "all" → ["en"] (root lang) path is exercised.
 
     def test_banner_shows_language(self, tmp_json, capsys):
         import run as run_master

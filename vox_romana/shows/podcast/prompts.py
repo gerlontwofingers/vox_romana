@@ -32,6 +32,7 @@ THE HOSTS (you write lines for ALL of them):
 
 RULES:
 - Write natural, conversational dialogue suitable for audio recording.
+- 2–4 hosts maximum. Never exceed 4 unless the brief explicitly requests more.
 - Each host has their own personality, speech style, and expertise —
   make them sound DISTINCT from each other.
 - Hosts should RESPOND to each other. This is a conversation, not parallel
@@ -91,6 +92,12 @@ FACTUAL ACCURACY — CRITICAL:
 - WHEN IN DOUBT: have the host hedge explicitly ("I don't know the exact
   figure but...") rather than guessing a number that sounds plausible.
 
+SPEAKER NAMES — CRITICAL:
+The `speaker_name` field MUST be EXACTLY one of: {host_names}
+Do NOT use shortened forms, titles, nicknames, or informal variants.
+"Lord Bridgerton" is WRONG if the name is "Viscount Anthony Bridgerton" — use the
+full canonical name exactly as listed above, character by character.
+
 OUTPUT FORMAT:
 Respond with ONLY a JSON array of utterance objects (no other text):
 [
@@ -99,10 +106,19 @@ Respond with ONLY a JSON array of utterance objects (no other text):
     "text": "spoken words here",
     "tone": "neutral|calm|warm|excited|skeptical|passionate|playful|contemplative|urgent|dramatic",
     "volume": "soft|moderate|loud|rising|falling",
-    "pace": "slow|medium|fast|accelerating|decelerating"
+    "pace": "slow|medium|fast|accelerating|decelerating — default to slow or medium; reserve fast for genuine excitement or urgency",
+    "nonverbal": []
   }},
   ...
 ]
+
+NONVERBAL FIELD — these are AUDIBLE cues only (no visual gestures). Use
+sparingly to add color: e.g. ["laughs"], ["chuckles"], ["sighs"],
+["deep breath"], ["groans"], ["clears throat"], ["whispers"],
+["intro music"], ["outro music"]. Most utterances should leave it empty
+([]). Roughly 1 in 4-6 utterances may carry one cue when it genuinely
+shapes the moment. Never use visual cues like "gestures", "nods",
+"leans forward" — the listener cannot see them.
 
 Each object is one speaker turn. Produce 3-15 turns per segment, depending
 on the segment type and target length. Every host should speak at least once
@@ -117,7 +133,7 @@ in multi-host segments.
 # fills one of these per host and joins them into {host_descriptions}.
 
 HOST_DESCRIPTION_TEMPLATE = """\
-  {name} ({role}):
+  {name} ({role}, {gender}):
     Style: {speech_style}
     Voice: {voice_fingerprint}
     Expertise: {knowledge_domains}
@@ -136,9 +152,8 @@ HOST_DESCRIPTION_TEMPLATE = """\
 # context from previous segments.
 
 SEGMENT_PROMPT = """\
-Generate the next podcast segment.
+Continue the conversation.
 
-SEGMENT TYPE: {segment_type}
 TOPIC: {segment_topic}
 LEAD HOST: {lead_host}
 
@@ -173,6 +188,8 @@ INTRO STRUCTURE:
   a quip, a tease, a personal connection to the topic.
 - Build anticipation for what's coming. Tease a specific angle or hot take.
 - Keep it crisp — intros should run 3-6 speaker turns total.
+- On the VERY FIRST utterance object, include `"nonverbal": ["intro music"]`
+  to signal that intro music should play at the top of the show.
 """
 
 BANTER_OVERLAY = """\
@@ -219,6 +236,8 @@ OUTRO GUIDELINES:
 - Thank the listener naturally — don't be robotic about it.
 - Tease next episode or leave the listener with something to think about.
 - Sign off with the show name. Keep it warm and genuine.
+- On the LAST utterance object, include `"nonverbal": ["outro music"]`
+  to signal that outro music should play at the end of the show.
 """
 
 # Map segment types to their overlay text for easy lookup.

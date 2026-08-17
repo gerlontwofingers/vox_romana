@@ -322,7 +322,9 @@ class TestDebateArchitect:
         """Standard JSON response should parse into a complete config."""
         config = self.architect.parse_response(
             ARCHITECT_RESPONSE,
-            brief="Two economists debate UBI",
+            brief=(
+                "Dr. Sarah Chen and James Hartley debate UBI with Jordan Lee moderating"
+            ),
             reference_material="Finland pilot data...",
             fact_check="quick",
         )
@@ -330,7 +332,9 @@ class TestDebateArchitect:
         assert config.topic == "Should the US adopt universal basic income?"
         assert config.debate_format == "public_forum"
         assert config.target_turns == 35
-        assert config.brief == "Two economists debate UBI"
+        assert config.brief == (
+            "Dr. Sarah Chen and James Hartley debate UBI with Jordan Lee moderating"
+        )
         assert config.fact_check == "quick"
         assert len(config.participants) == 2
         assert config.participants[0].name == "Dr. Sarah Chen"
@@ -340,6 +344,23 @@ class TestDebateArchitect:
         assert config.moderator.name == "Jordan Lee"
         assert config.audience is not None
         assert config.audience.present is True
+
+    def test_parse_curates_generated_names(self):
+        data = {
+            "title": "Test",
+            "participants": [
+                {"name": "Dr. Sarah Chen", "side": "pro", "role": "participant"},
+                {"name": "James Hartley", "side": "con", "role": "participant"},
+            ],
+            "moderator": {"name": "Jordan Lee", "mode": "active"},
+        }
+        config = self.architect.parse_response(json.dumps(data), brief="Two economists debate UBI")
+
+        assert config.participants[0].name != "Dr. Sarah Chen"
+        assert config.participants[1].name != "James Hartley"
+        assert config.participants[0].name != config.participants[1].name
+        assert config.moderator is not None
+        assert config.moderator.name != "Jordan Lee"
 
     def test_parse_markdown_wrapped(self):
         """JSON wrapped in ```json ... ``` fences should still parse."""
@@ -507,7 +528,7 @@ class TestDebateBootstrap:
     def test_full_chain(self):
         """The complete bootstrap should produce a fully populated config."""
         config = self.bootstrap.from_brief(
-            "Two economists debate universal basic income",
+            "Dr. Sarah Chen and James Hartley debate universal basic income",
             reference_material="Finland's 2017 UBI pilot...",
             fact_check="quick",
         )
@@ -516,7 +537,7 @@ class TestDebateBootstrap:
         assert config.title == "The UBI Question: Promise or Pipe Dream?"
         assert config.debate_format == "public_forum"
         assert config.fact_check == "quick"
-        assert config.brief == "Two economists debate universal basic income"
+        assert config.brief == "Dr. Sarah Chen and James Hartley debate universal basic income"
 
         # ── Profile Builder output ────────────────────────────────────
         assert len(config.participants) == 2

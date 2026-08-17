@@ -70,14 +70,23 @@ class MultiEngine(BaseTTSEngine):
         self._voice_owner_cache: dict[str, BaseTTSEngine] = {}
 
     @classmethod
-    def from_engine_names(cls, names: list[str]) -> "MultiEngine":
+    def from_engine_names(
+        cls,
+        names: list[str],
+        *,
+        profiles_dir: "str | Path | None" = None,  # type: ignore[name-defined]
+    ) -> "MultiEngine":
         """Construct from a list of engine names.
 
         Lazily imports each engine so users without a backend installed
         only pay the import cost for the engines they actually request.
 
-        Valid names: ``"kokoro"``, ``"piper"``.
+        Valid names: ``"kokoro"``, ``"piper"``, ``"voice_clone"``.
         Duplicates are silently deduplicated.
+
+        ``"voice_clone"`` requires ``profiles_dir`` to locate the registered
+        ``vc_*`` profiles.  If ``profiles_dir`` is not supplied and
+        ``"voice_clone"`` is in ``names``, a ``ValueError`` is raised.
         """
         instances: list[BaseTTSEngine] = []
         seen: set[str] = set()
@@ -92,10 +101,18 @@ class MultiEngine(BaseTTSEngine):
             elif key == "piper":
                 from .piper_engine import PiperEngine
                 instances.append(PiperEngine())
+            elif key == "voice_clone":
+                if profiles_dir is None:
+                    raise ValueError(
+                        "MultiEngine.from_engine_names(): 'voice_clone' engine "
+                        "requires profiles_dir to be supplied."
+                    )
+                from .voice_clone_engine import VoiceCloneEngine
+                instances.append(VoiceCloneEngine(profiles_dir=profiles_dir))
             else:
                 raise ValueError(
                     f"Unknown engine name: {name!r}. "
-                    f"Valid names: 'kokoro', 'piper'"
+                    f"Valid names: 'kokoro', 'piper', 'voice_clone'"
                 )
         return cls(instances)
 
@@ -136,6 +153,11 @@ class MultiEngine(BaseTTSEngine):
         return engine.synthesize(
             text, voice=voice, emotion=emotion, speed=speed, language=language, **kwargs,
         )
+
+    def teardown(self) -> None:
+        """Release model state in all wrapped engines."""
+        for engine in self._engines:
+            engine.teardown()
 
     # ── Dispatch ─────────────────────────────────────────────────────
 

@@ -61,6 +61,7 @@ from typing import Any
 
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
+from ...core.names import build_curated_name_map, remap_name
 from ...core.search import BaseSearchProvider, build_research_provider
 from .config import (
     PodcastConfig,
@@ -93,7 +94,7 @@ You must produce a JSON object with EXACTLY this schema:
   "tone": "string — overall episode tone (playful, serious, chaotic, etc.)",
   "hosts": [
     {{
-      "name": "string — host display name (e.g., 'The Maven', 'Dr. Sarah Chen')",
+      "name": "string — host display name. Pick a memorable, varied name. AVOID overused defaults like 'Sarah Chen', 'Marcus Webb', 'Elena Vasquez', or any combination of 'Chen'. Draw from diverse cultural backgrounds.",
       "gender": "string — REQUIRED. 'male' or 'female'. If the brief specifies \
 gender (e.g., '3 women discuss'), you MUST follow it. For unspecified genders, \
 make a creative choice based on the character's name and role.",
@@ -115,14 +116,21 @@ claim expertise in"],
       "duration_hint": "string — 'short', 'medium', or 'long'",
       "target_words": "integer — approximate word count for this segment"
     }}
-  ]
+  ],
+  "language": "BCP-47 code of the primary spoken language. Infer from host names, topic keywords, location references in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this podcast's intro/outro bumpers. Infer from the brief's genre, tone, language, and location. Be specific and evocative. Examples: 'lo-fi hip hop beats, chill' (casual tech), 'upbeat acoustic indie, energetic' (lifestyle), 'warm orchestral underscores' (storytelling). Never null or empty."
 }}
 
 RULES:
 - The HOST list MUST match the brief. If the brief says "3 women," all 3
   hosts MUST have gender: "female". If it says "2 men and a woman," follow
   that exactly. Gender is NOT optional.
-- Create 2-6 hosts depending on the brief. Most podcasts have 2-4 hosts.
+- Create 2-4 hosts. Default to 2-3. Never exceed 4 unless the brief
+  explicitly requests more hosts.
+- Host names should lean toward character names rather than abstract role
+  labels (e.g. avoid 'The Maven', 'Chill Carlos'). Use real-sounding names
+  drawn from diverse cultural backgrounds. AVOID the overused defaults
+  'Sarah Chen', 'Marcus Webb', 'Elena Vasquez', or any 'Chen' surname.
 - Each host MUST have a distinct personality and speech style. No two hosts
   should sound the same when their dialogue is generated.
 - Plan enough segments to reach the target word count. Each segment's word
@@ -314,7 +322,10 @@ class PodcastBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 1: ARCHITECT
@@ -433,11 +444,19 @@ class PodcastBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
+        name_map = build_curated_name_map(
+            [
+                (h.get("name", ""), h.get("gender"), f"podcast.host.{idx}")
+                for idx, h in enumerate(data.get("hosts", []))
+            ],
+            brief=brief,
+        )
+
         # ── Build hosts ──────────────────────────────────────────────
         hosts = []
         for h in data.get("hosts", []):
             hosts.append(PodcastHostProfile(
-                name=h.get("name", ""),
+                name=remap_name(h.get("name", ""), name_map) or "",
                 gender=h.get("gender"),  # REQUIRED — validate() will catch if missing
                 role=h.get("role", "host"),
                 speech_style=h.get("speech_style"),
@@ -452,7 +471,7 @@ class PodcastBootstrap(BaseShowBootstrap):
             segments.append(PodcastSegmentConfig(
                 segment_type=s.get("segment_type", "banter"),
                 topic=s.get("topic", ""),
-                lead_host=s.get("lead_host"),
+                lead_host=remap_name(s.get("lead_host"), name_map),
                 target_words=s.get("target_words"),
                 duration_hint=s.get("duration_hint", "medium"),
             ))
@@ -467,6 +486,8 @@ class PodcastBootstrap(BaseShowBootstrap):
             tone=data.get("tone"),
             hosts=hosts,
             segments=segments,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
         )
 
     # ═══════════════════════════════════════════════════════════════════

@@ -169,6 +169,7 @@ class NewsConfig(ContentConfig):
     director_brief: NewsDirectorBrief | None = None
     target_segments: int | None = None
     guests: list[ParticipantProfile] = field(default_factory=list)
+    music_style: str = ""
 
     def validate(self) -> list[str]:
         """Check this config for problems."""

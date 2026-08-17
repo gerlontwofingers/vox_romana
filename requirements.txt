@@ -10,6 +10,7 @@
 # ── Core ────────────────────────────────────────────────────────────────
 openai==2.30.0
 python-dotenv==1.2.2
+psutil>=5.9,<8              # RAM availability probe for resource monitoring
 pyyaml>=6.0
 mcp>=1.0                    # MCP server (vox_romana/mcp/) — Copilot/Claude integration
 
@@ -88,6 +89,7 @@ jinja2>=3.1,<3.2
 #     Only install if you need neural-network-based analysis or
 #     transformer-based forecasting / embeddings.
 torch>=2.6
+torchvision>=0.21          # required by CLIPImageProcessor/SiglipImageProcessor in diffusers
 # tensorflow>=2.17,<2.18   # uncomment if needed; large install
 sentence-transformers>=5.4,<5.5
 # Music generation: MusicGenEngine uses MusicgenForConditionalGeneration from transformers.
@@ -108,3 +110,13 @@ datasets>=3.0,<3.2          # dataset loading for memory trainer
 # If WeasyPrint is missing, --publish-format pdf is skipped with a
 # warning and TXT is still produced.
 weasyprint>=62
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+pytest-xdist>=3.0           # parallel test execution (-n auto)
+pytest-timeout>=2.3         # per-test timeout (--timeout=N)
+
+# ── Voice cloning (--mode voice-prep) — OPTIONAL ─────────────────────────────
+# Pure MLX voice cloning for Apple Silicon. No PyTorch dependency.
+# Install: pip install f5-tts-mlx>=0.2.6
+# Skip if you don't need voice cloning (VoiceCloneEngine is imported lazily).
+f5-tts-mlx>=0.2.6

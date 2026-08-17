@@ -1356,6 +1356,21 @@ class TestStripStageDirections:
         result = strip_stage_directions("Hello.\n(sighs deeply)\nWorld.")
         assert result == "Hello. World."
 
+    def test_square_bracket_stage_direction_stripped(self):
+        """[Bracket] stage directions (audiobook scene actions) are removed."""
+        result = strip_stage_directions("[Dr. Waffleford holds the pizza aloft.] Look at this.")
+        assert result == "Look at this."
+
+    def test_square_bracket_inline_stripped(self):
+        """Inline [bracket] direction mid-sentence is stripped cleanly."""
+        result = strip_stage_directions("And then [pauses dramatically] he spoke.")
+        assert result == "And then he spoke."
+
+    def test_square_bracket_multiline_stripped(self):
+        """[Bracket] direction on its own line (with newline) is stripped."""
+        result = strip_stage_directions("[The audience gasps.]\n\nWell, I never.")
+        assert result == "Well, I never."
+
 
 class TestStripMarkdownEmphasis:
     """Unit tests for the strip_markdown_emphasis() helper."""
@@ -2024,7 +2039,10 @@ class TestRendererMusicRouting:
 
         assert len(tts_engine.calls) == 1
         assert tts_engine.calls[0]["text"] == "Welcome to the show."
-        assert len(music_engine.calls) == 0
+        # _ensure_music_bumpers inserts a separate intro + outro bumper around
+        # the speech event, so the music engine IS called for those two bumpers.
+        # The key guarantee is that the speech itself still routes to TTS.
+        assert len(music_engine.calls) == 2  # intro bumper + outro bumper
 
     def test_mixed_events_route_correctly(self):
         """Bumper → music, utterances → TTS, all in a single render pass."""
@@ -2060,9 +2078,88 @@ class TestRendererMusicRouting:
         ]
         result, tts_engine, _ = self._render_events(events, music_engine=music_engine)
 
-        assert len(music_engine.calls) == 1     # Only the bumper.
-        assert len(tts_engine.calls) == 2        # Both utterances.
-        assert result.rendered == 3
+        # _ensure_music_bumpers inserts an intro bumper before 'Hello.' and an
+        # outro bumper after 'And goodbye.' (both are plain speech events).
+        assert len(music_engine.calls) == 3     # intro_bumper + original bumper + outro_bumper
+        assert len(tts_engine.calls) == 2        # Both utterances still route to TTS.
+        assert result.rendered == 5              # 3 music + 2 TTS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9b. COLD-START LEAD-IN SILENCE TESTS (A.3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRendererLeadIn:
+    """Tests for the per-content-type cold-start lead-in silence.
+
+    ``_LEAD_IN_MS`` prepends a brief silence before the first spoken clip
+    for podcast/news/debate/audiobook content so audio doesn't jump in with
+    zero margin. It's skipped when the first event already carries an
+    intro-music-style nonverbal cue.
+    """
+
+    def _plain_utterance_event(self, text="Hello there."):
+        return {
+            "event_kind": "utterance",
+            "speaker_name": "Alice",
+            "text": text,
+            "nonverbal": [],
+            "tone": [],
+            "pace": None,
+            "volume": None,
+            "interruption": False,
+            "overlap_with_previous": False,
+            "pause_before": None,
+            "pause_after": None,
+        }
+
+    def _render_and_measure(self, data, output_path):
+        tts_engine = FakeEngine()
+        renderer = TTSRenderer(tts_engine)
+        renderer.render(data, output_path, format="wav", quiet=True)
+        with wave.open(output_path, "rb") as wf:
+            return wf.getnframes() / wf.getframerate()
+
+    def test_podcast_gets_lead_in_silence(self):
+        """A podcast-shaped show (has podcast_id) gets ~1.5s of lead-in silence."""
+        events = [self._plain_utterance_event()]
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            podcast_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            generic_path = f.name
+
+        podcast_data = {"podcast_id": "p1", "events": events, "participants": []}
+        generic_data = {"events": events, "participants": []}
+
+        podcast_secs = self._render_and_measure(podcast_data, podcast_path)
+        generic_secs = self._render_and_measure(generic_data, generic_path)
+
+        # Podcast lead-in is 1500ms; generic content_type has no entry (0ms).
+        # Allow slack for mixer padding/normalization overhead beyond the raw silence.
+        assert podcast_secs > generic_secs
+        assert podcast_secs - generic_secs == pytest.approx(1.5, abs=0.5)
+
+    def test_lead_in_skipped_when_intro_music_cue_present(self):
+        """No extra silence is added if the first event already has an intro-music cue."""
+        event_with_cue = self._plain_utterance_event()
+        event_with_cue["nonverbal"] = ["intro music"]
+        events_with_cue = [event_with_cue, self._plain_utterance_event("Second line.")]
+        events_without_cue = [self._plain_utterance_event(), self._plain_utterance_event("Second line.")]
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            with_cue_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            without_cue_path = f.name
+
+        with_cue_data = {"podcast_id": "p1", "events": events_with_cue, "participants": []}
+        without_cue_data = {"podcast_id": "p1", "events": events_without_cue, "participants": []}
+
+        with_cue_secs = self._render_and_measure(with_cue_data, with_cue_path)
+        without_cue_secs = self._render_and_measure(without_cue_data, without_cue_path)
+
+        # The intro-music-cue render should be shorter (no lead-in added).
+        assert without_cue_secs > with_cue_secs
+        assert without_cue_secs - with_cue_secs == pytest.approx(1.5, abs=0.5)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

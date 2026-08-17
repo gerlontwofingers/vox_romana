@@ -432,8 +432,23 @@ class TestChromaVectorIndexDeletion:
 # 3. MemoryRecall + Chroma integration
 # ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.xdist_group("chroma_onnx")
 class TestMemoryRecallChroma:
     """MemoryRecall using an injected EphemeralClient."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_document_dir(self, tmp_path, monkeypatch):
+        """Redirect DEFAULT_DOCUMENT_DIR to an empty tmp dir for every test.
+
+        Prevents _ensure_index() from embedding the entire real corpus on each
+        call.  Tests that need specific documents (e.g.
+        test_ingested_documents_searchable) patch
+        vox_romana.memory.ingest.DEFAULT_DOCUMENT_DIR themselves inside a
+        ``with patch(...)`` block, which overrides this monkeypatch for the
+        duration of that block.
+        """
+        import vox_romana.memory.ingest as _ingest_mod
+        monkeypatch.setattr(_ingest_mod, "DEFAULT_DOCUMENT_DIR", tmp_path)
 
     def test_chroma_method_used_when_available(self, seeded_catalog, ephemeral_chroma):
         from vox_romana.memory.recall import MemoryRecall
@@ -504,11 +519,15 @@ class TestMemoryRecallChroma:
         assert result.method == "fts5"
         assert len(result.catalog_runs) > 0
 
-    def test_no_catalog_chroma_empty_returns_fts5_method(self, ephemeral_chroma):
+    def test_no_catalog_chroma_empty_returns_fts5_method(self, ephemeral_chroma, tmp_path):
         """Empty Chroma index + no catalog → method stays 'fts5' (default)."""
         from vox_romana.memory.recall import MemoryRecall
-        recall = MemoryRecall(catalog=None, _chroma_client=ephemeral_chroma)
-        result = recall.query("anything")
+        # Redirect migrate_documents to an empty dir so no real corpus
+        # documents are indexed (which would make Chroma non-empty).
+        empty_docs = tmp_path / "docs"
+        with patch("vox_romana.memory.ingest.DEFAULT_DOCUMENT_DIR", empty_docs):
+            recall = MemoryRecall(catalog=None, _chroma_client=ephemeral_chroma)
+            result = recall.query("anything")
         assert result.method == "fts5"  # no passages, default stays
         assert result.passages == []
 

@@ -18,6 +18,7 @@ import pytest
 from vox_romana.university.sources import (
     Article,
     KnowledgeSource,
+    OpenAlexSource,
     WikipediaSource,
     _slugify,
 )
@@ -262,3 +263,139 @@ class TestWikipediaSourceWithoutLibrary:
         result = wiki_source.fetch("Concrete")
         assert result is not None
         assert result.title == "Concrete"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenAlexSource
+# ══════════════════════════════════════════════════════════════════════════════
+
+_WORK = {
+    "id": "https://openalex.org/W123",
+    "title": "Neural Scaling Laws",
+    "doi": "https://doi.org/10.1234/nsl",
+    "abstract_inverted_index": {"Neural": [0], "scaling": [1], "laws": [2]},
+    "publication_year": 2020,
+    "primary_location": {"source": {"display_name": "Journal of AI"}},
+    "related_works": ["https://openalex.org/W456"],
+    "concepts": [{"display_name": "Machine Learning"}, {"display_name": "Deep Learning"}],
+}
+
+_SEARCH_RESPONSE = {"results": [_WORK]}
+
+
+class TestOpenAlexSourceAbstract:
+    def test_reconstruct_basic(self):
+        idx = {"hello": [0], "world": [1]}
+        assert OpenAlexSource._reconstruct_abstract(idx) == "hello world"
+
+    def test_reconstruct_non_sequential(self):
+        idx = {"b": [1], "a": [0], "c": [2]}
+        assert OpenAlexSource._reconstruct_abstract(idx) == "a b c"
+
+    def test_reconstruct_empty(self):
+        assert OpenAlexSource._reconstruct_abstract(None) == ""
+        assert OpenAlexSource._reconstruct_abstract({}) == ""
+
+    def test_reconstruct_malformed(self):
+        # positions list contains non-ints — should not raise
+        result = OpenAlexSource._reconstruct_abstract({"word": "notalist"})
+        assert isinstance(result, str)
+
+
+class TestOpenAlexSourceSearch:
+    """Tests for OpenAlexSource.search() using a mocked _get()."""
+
+    def _source(self):
+        return OpenAlexSource(request_pause_secs=0.0)
+
+    def test_search_empty_query_returns_empty(self):
+        src = self._source()
+        assert src.search("") == []
+        assert src.search("   ") == []
+
+    def test_search_returns_articles(self, monkeypatch):
+        src = self._source()
+        monkeypatch.setattr(src, "_get", lambda url: _SEARCH_RESPONSE)
+        results = src.search("neural scaling", n=5)
+        assert len(results) == 1
+        art = results[0]
+        assert art.title == "Neural Scaling Laws"
+        assert art.url == "https://doi.org/10.1234/nsl"
+        assert "Neural scaling laws" in art.text
+        assert "Machine Learning" in art.categories
+
+    def test_search_uses_language_filter(self, monkeypatch):
+        captured: list[str] = []
+        src = self._source()
+
+        def fake_get(url: str):
+            captured.append(url)
+            return {"results": []}
+
+        monkeypatch.setattr(src, "_get", fake_get)
+        src.search("deep learning", n=3)
+        assert captured
+        assert "filter=language:en" in captured[0]
+
+    def test_search_no_language_filter_when_none(self, monkeypatch):
+        src = OpenAlexSource(language=None, request_pause_secs=0.0)
+        captured: list[str] = []
+        monkeypatch.setattr(src, "_get", lambda url: (captured.append(url), {"results": []})[1])
+        src.search("test")
+        assert "filter=language" not in captured[0]
+
+    def test_search_network_error_returns_empty(self, monkeypatch):
+        src = self._source()
+        monkeypatch.setattr(src, "_get", lambda url: None)
+        assert src.search("quantum") == []
+
+    def test_search_respects_n(self, monkeypatch):
+        big_response = {"results": [_WORK] * 10}
+        src = self._source()
+        monkeypatch.setattr(src, "_get", lambda url: big_response)
+        assert len(src.search("x", n=3)) == 3
+
+
+class TestOpenAlexSourceFetch:
+    def _source(self):
+        return OpenAlexSource(request_pause_secs=0.0)
+
+    def test_fetch_empty_returns_none(self):
+        src = self._source()
+        assert src.fetch("") is None
+        assert src.fetch("   ") is None
+
+    def test_fetch_by_openalex_id(self, monkeypatch):
+        src = self._source()
+        captured: list[str] = []
+
+        def fake_get(url: str):
+            captured.append(url)
+            return _WORK
+
+        monkeypatch.setattr(src, "_get", fake_get)
+        art = src.fetch("W123")
+        assert art is not None
+        assert art.title == "Neural Scaling Laws"
+        assert "W123" in captured[0]
+
+    def test_fetch_strips_url_prefix(self, monkeypatch):
+        src = self._source()
+        captured: list[str] = []
+
+        def fake_get(url: str):
+            captured.append(url)
+            return _WORK
+
+        monkeypatch.setattr(src, "_get", fake_get)
+        art = src.fetch("https://openalex.org/W123")
+        assert art is not None
+        assert "W123" in captured[0]
+        assert "openalex.org/W123" not in captured[0].replace(
+            "https://api.openalex.org/works/W123", ""
+        )
+
+    def test_fetch_network_failure_returns_none(self, monkeypatch):
+        src = self._source()
+        monkeypatch.setattr(src, "_get", lambda url: None)
+        assert src.fetch("W999") is None

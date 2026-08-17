@@ -10,22 +10,85 @@ args back into an argv list.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from vox_romana.core.client import DeepSeekClient
+from vox_romana.core.crew import (
+    CrewMember,
+    EpisodicEntry,
+    compute_salience,
+    consolidate_if_needed,
+    load_crew_member,
+    write_episodic_entry,
+)
 from vox_romana.core.duration import estimate_total_words, parse_duration_from_text
 from vox_romana.core.fact_checker import FactChecker
-from vox_romana.core.paths import OUTPUT_DIR as _OUTPUT_DIR
 from vox_romana.core.router import ShowRouter
+
+
+logger = logging.getLogger(__name__)
 
 
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(f"  {msg}", flush=True)
+
+
+_PRONUNCIATION_BLOCK_RE = re.compile(
+    r"(?:^|\n)Pronunciations:\s*\n((?:[ \t]*[^\n]+\n?)*)",
+    re.IGNORECASE,
+)
+
+# Tunable constants used in word-budget formulas. Exposed at module level
+# so tools/studio.py can snapshot the values that were in effect at run time.
+_DEBATE_AVG_WORDS_PER_TURN: int = 40
+_DEBATE_HOST_OVERHEAD_WORDS: int = 280  # intro + outro + closing spillover
+_NEWS_AVG_WORDS_PER_SEGMENT: int = 180
+_NEWS_HOST_OVERHEAD_WORDS: int = 120    # intro + outro
+
+
+def _parse_pronunciations(brief: str) -> tuple[str, dict[str, Any]]:
+    """Strip the optional ``Pronunciations:`` block from *brief*.
+
+    Syntax (one entry per line, inside the block)::
+
+        Pronunciations:
+        Okonkwo = oh-KOHN-kwoh | /oʊˈkɒŋkwoʊ/
+        Nguyen  = nwin
+
+    Returns a ``(cleaned_brief, overrides)`` tuple where *overrides* maps
+    each source phrase to ``{"spoken": str, "ipa": str | None}``.
+    Lines that don't contain ``=`` are silently skipped.
+    """
+    m = _PRONUNCIATION_BLOCK_RE.search(brief)
+    if not m:
+        return brief, {}
+
+    block_text = m.group(1)
+    overrides: dict[str, Any] = {}
+    for line in block_text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        phrase, _, rest = line.partition("=")
+        phrase = phrase.strip()
+        if not phrase:
+            continue
+        parts = [p.strip() for p in rest.split("|", 1)]
+        spoken = parts[0] if parts else ""
+        ipa = parts[1] if len(parts) > 1 else None
+        if spoken:
+            overrides[phrase] = {"spoken": spoken, "ipa": ipa}
+
+    cleaned = _PRONUNCIATION_BLOCK_RE.sub("", brief).strip()
+    return cleaned, overrides
 
 
 def _build_series_context(catalog, series_id: str) -> str:
@@ -159,12 +222,15 @@ def _log_length_summary(
     content_type: str,
     length_warnings: list[str] | None = None,
     quiet: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Emit a one-line summary of generated word count vs target.
 
     Always shows actual words + estimated duration. When a target is
     set, also shows the target and the percentage achieved. Length
-    warnings (from the conductor) are surfaced afterwards.
+    warnings (from the conductor) are surfaced afterwards — only when
+    ``verbose`` is True (they are kept silent by default to keep clean
+    runs uncluttered; the conductor still records them).
     """
     from vox_romana.core.duration import get_wpm, words_to_seconds
 
@@ -188,7 +254,7 @@ def _log_length_summary(
             quiet=quiet,
         )
 
-    if length_warnings:
+    if verbose and length_warnings:
         for w in length_warnings[:5]:  # cap noise
             log(f"  \u26a0 {w}", quiet=quiet)
         if len(length_warnings) > 5:
@@ -196,6 +262,14 @@ def _log_length_summary(
                 f"  \u26a0 \u2026 and {len(length_warnings) - 5} more length warning(s)",
                 quiet=quiet,
             )
+    elif length_warnings and not quiet:
+        # One-line nudge so the user knows there were warnings without
+        # spilling them. Re-run with --verbose to see them.
+        log(
+            f"  ({len(length_warnings)} length warning(s) suppressed; "
+            f"re-run with --verbose to see them)",
+            quiet=quiet,
+        )
 
 
 # ── Checkpoint plumbing ─────────────────────────────────
@@ -356,6 +430,164 @@ def _build_output_path(args: argparse.Namespace, content_type: str) -> Path:
     return args.output / filename
 
 
+def _write_production_log(output_path: str | Path, result: Any) -> None:
+    """Persist the conductor's structured production log next to the JSON output."""
+    entries = getattr(result, "production_log", None)
+    if not entries:
+        return
+    output = Path(output_path)
+    log_path = output.with_name(f"{output.stem}_production_log.jsonl")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True))
+            handle.write("\n")
+    if hasattr(result, "production_log_path"):
+        result.production_log_path = str(log_path)
+
+
+def _prepend_run_context(result: Any, show_type: str, args: argparse.Namespace) -> None:
+    """Insert a run_context entry at position 0 of the production_log.
+
+    Records the CLI context that produced this run so that the
+    production_log is self-describing when read from disk.
+    No-ops when the result has no production_log attribute.
+    """
+    log = getattr(result, "production_log", None)
+    if log is None:
+        return
+    cli_flags = {
+        k: getattr(args, k, None)
+        for k in ("brief", "type", "duration", "research", "fact_check", "verbose", "tag")
+        if getattr(args, k, None) is not None
+    }
+    entry = {
+        "logged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event_type": "run_context",
+        "show_type": show_type,
+        "target_words": getattr(result, "target_words", None),
+        "title": getattr(result, "title", None),
+        "cli_flags": cli_flags,
+    }
+    log.insert(0, entry)
+
+
+def _load_crew_members_from_args(args: argparse.Namespace) -> list[CrewMember]:
+    """Build a :class:`CrewMember` list from CLI args.
+
+    Reads ``args.crew_director`` and ``args.crew_factchecker``.  Missing
+    attributes (pre-crew CLI invocations) are treated as ``None``.
+    """
+    crew_dir_raw = getattr(args, "crew_dir", None)
+    crew_dir = Path(crew_dir_raw) if crew_dir_raw else None
+    members: list[CrewMember] = []
+    director_id = getattr(args, "crew_director", None)
+    if director_id:
+        members.append(load_crew_member(director_id, "director", crew_dir=crew_dir))
+    factchecker_id = getattr(args, "crew_factchecker", None)
+    if factchecker_id:
+        members.append(
+            load_crew_member(factchecker_id, "factchecker", crew_dir=crew_dir)
+        )
+    return members
+
+
+def _write_crew_episodic(
+    result: Any,
+    config: Any,
+    crew_members: list[CrewMember],
+    client: DeepSeekClient,
+    args: argparse.Namespace,
+) -> None:
+    """Write end-of-run episodic entries for all assigned crew members.
+
+    Computes salience from the production log, builds an
+    :class:`EpisodicEntry`, appends it to each crew member's
+    ``short_term.jsonl``, and triggers consolidation if the entry count
+    has crossed the threshold.
+
+    Failures are logged as warnings so a crew write error never aborts a
+    successful show run.
+    """
+    if not crew_members:
+        return
+
+    production_log: list[dict] = getattr(result, "production_log", []) or []
+    salience = compute_salience(production_log)
+    show_type = getattr(config, "content_type", "unknown") or "unknown"
+    title = getattr(config, "title", "") or ""
+
+    # Count events via show-type-specific attribute names
+    n_events = 0
+    for attr in (
+        "debate_events", "news_events", "podcast_events",
+        "audiobook_events", "lecture_events", "events",
+    ):
+        events = getattr(result, attr, None)
+        if events is not None:
+            n_events = len(events)
+            break
+
+    n_llm_calls = int(getattr(result, "total_llm_calls", 0) or 0)
+    n_issues = sum(
+        1 for e in production_log if e.get("event_type") == "issue_report"
+    )
+    summary = (
+        f"{show_type} '{title}' — {n_events} events, {n_llm_calls} LLM calls."
+    )
+    if n_issues:
+        summary += f" {n_issues} issue report(s) raised during the run."
+
+    # Use production_log_path as run_id when available (already unique)
+    run_id = getattr(result, "production_log_path", None) or ""
+    if not run_id:
+        run_id = f"{show_type}_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    crew_dir_raw = getattr(args, "crew_dir", None)
+    crew_dir = Path(crew_dir_raw) if crew_dir_raw else None
+
+    entry = EpisodicEntry(
+        run_id=run_id,
+        show_type=show_type,
+        title=title,
+        date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        salience_score=round(salience, 2),
+        summary=summary,
+        production_log_stats={
+            "event_count": n_events,
+            "llm_calls": n_llm_calls,
+            "issue_count": n_issues,
+        },
+    )
+
+    for member in crew_members:
+        try:
+            write_episodic_entry(member.crew_id, entry, crew_dir=crew_dir)
+            consolidate_if_needed(member.crew_id, client=client, crew_dir=crew_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "crew: failed to write episodic entry for %r: %s", member.crew_id, exc
+            )
+
+
+def _apply_character_langs(participants: list, args: argparse.Namespace) -> None:
+    """Stamp per-character language overrides onto participant profiles.
+
+    Reads ``args.character_langs`` (a ``{name: code}`` dict set by
+    ``parse_character_langs()`` in ``main()``) and sets
+    ``profile.language`` on any participant whose display name appears
+    as a key.  Unmatched names in the dict are silently ignored (the
+    name might belong to a news anchor, narrator, etc.).
+    """
+    character_langs: dict[str, str] = getattr(args, "character_langs", {})
+    if not character_langs:
+        return
+    for profile in participants:
+        lang = character_langs.get(profile.name)
+        if lang is not None:
+            profile.language = lang
+
+
 # ── Show runners ──────────────────────────────────────────────────────────
 
 
@@ -395,6 +627,8 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (casting, profiling, directing)...", quiet=args.quiet)
@@ -410,12 +644,31 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     bootstrap = DebateBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
 
+    # ── Clamp target_turns so it fits the word budget ────────────────
+    # The Architect doesn't know the target duration when it picks
+    # target_turns, so for short shows it routinely overshoots.
+    # Reserve some words for the host intro+outro narration, then
+    # divide the remainder by an average per-turn word count.
+    if config.target_words and config.target_turns:
+        budget_for_turns = max(80, config.target_words - _DEBATE_HOST_OVERHEAD_WORDS)
+        max_turns = max(4, budget_for_turns // _DEBATE_AVG_WORDS_PER_TURN)
+        if config.target_turns > max_turns:
+            log(
+                f"  Clamping target_turns: {config.target_turns} -> {max_turns} "
+                f"(fits {config.target_words}-word budget)",
+                quiet=args.quiet,
+            )
+            config.target_turns = max_turns
+
     t1 = time.time()
     log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
     log(f"  Title: {config.title}", quiet=args.quiet)
     log(f"  Participants: {', '.join(p.name for p in config.participants)}", quiet=args.quiet)
     log(f"  Format: {config.debate_format} | Tone: {config.tone} | Turns: {config.target_turns}", quiet=args.quiet)
     print()
+
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.participants, args)
 
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (running the debate)...", quiet=args.quiet)
@@ -427,10 +680,12 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         num_segments=config.target_turns or 0,
         quiet=args.quiet,
     )
+    crew_members = _load_crew_members_from_args(args)
     conductor = DebateConductor(
         config,
         client=client,
         lens_rack=getattr(args, "lens_rack", None),
+        crew_members=crew_members,
         **checkpoint_kwargs,
     )
     result = conductor.run()
@@ -445,6 +700,7 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
         content_type="debate",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -452,11 +708,17 @@ def _run_debate(brief: str, client: DeepSeekClient, args: argparse.Namespace) ->
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_debate(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = DebateSerializer()
 
     output_path = _build_output_path(args, "debate")
 
     serializer.save_merged(merged, output_path)
+    _prepend_run_context(result, "debate", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -493,6 +755,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (rundown planning, anchor profiling)...", quiet=args.quiet)
@@ -508,6 +772,21 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     bootstrap = NewsBootstrap(client=client)
     config = bootstrap.from_brief(brief, **bootstrap_kwargs)
 
+    # ── Trim segment list to fit the word budget ─────────────────────
+    # The Architect doesn't know the target duration when it picks
+    # target_segments, so for short broadcasts it routinely overshoots.
+    # Each segment costs ~150 anchor words + ~30 transition words.
+    if config.target_words and config.segments:
+        budget_for_segments = max(120, config.target_words - _NEWS_HOST_OVERHEAD_WORDS)
+        max_segments = max(1, budget_for_segments // _NEWS_AVG_WORDS_PER_SEGMENT)
+        if len(config.segments) > max_segments:
+            log(
+                f"  Trimming segments: {len(config.segments)} -> {max_segments} "
+                f"(fits {config.target_words}-word budget)",
+                quiet=args.quiet,
+            )
+            config.segments = config.segments[:max_segments]
+
     t1 = time.time()
     log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
     log(f"  Title: {config.title}", quiet=args.quiet)
@@ -515,6 +794,9 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log(f"  Anchors: {anchor_names}", quiet=args.quiet)
     log(f"  Segments: {len(config.segments)} | Tone: {config.tone}", quiet=args.quiet)
     print()
+
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.anchors, args)
 
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (generating the broadcast)...", quiet=args.quiet)
@@ -526,7 +808,8 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         num_segments=len(config.segments),
         quiet=args.quiet,
     )
-    conductor = NewsConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = NewsConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -539,6 +822,7 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
         content_type="news",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -546,11 +830,17 @@ def _run_news(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> P
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_news_show(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = NewsSerializer()
 
     output_path = _build_output_path(args, "news")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "news", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -591,6 +881,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (casting hosts, profiling, directing)...", quiet=args.quiet)
@@ -617,6 +909,9 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log(f"  Segments: {len(config.segments)} | Tone: {config.tone}", quiet=args.quiet)
     print()
 
+    # ── Apply per-character language overrides ────────────────────────
+    _apply_character_langs(config.hosts, args)
+
     # ── Conductor ────────────────────────────────────────────────────
     log("Conductor (generating the episode)...", quiet=args.quiet)
     t2 = time.time()
@@ -627,7 +922,8 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         num_segments=len(config.segments),
         quiet=args.quiet,
     )
-    conductor = PodcastConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = PodcastConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -640,6 +936,7 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
         content_type="podcast",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -647,11 +944,17 @@ def _run_podcast(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_podcast(series_id=getattr(args, "series_id", None))
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = PodcastSerializer()
 
     output_path = _build_output_path(args, "podcast")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "podcast", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -692,6 +995,8 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         overrides["max_retries"] = args.max_retries
     if args.allow_bootstrap_fabrications:
         overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
 
     # ── Bootstrap ────────────────────────────────────────────────────
     log("Bootstrap (planning chapters, profiling narrator, directing)...", quiet=args.quiet)
@@ -725,7 +1030,8 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         num_segments=len(config.chapters),
         quiet=args.quiet,
     )
-    conductor = AudiobookConductor(config, client=client, **checkpoint_kwargs)
+    crew_members = _load_crew_members_from_args(args)
+    conductor = AudiobookConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
     result = conductor.run()
 
     t3 = time.time()
@@ -738,6 +1044,7 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
         content_type="audiobook",
         length_warnings=getattr(conductor, "_length_warnings", None),
         quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
     )
     print()
 
@@ -745,11 +1052,117 @@ def _run_audiobook(brief: str, client: DeepSeekClient, args: argparse.Namespace)
     log("Saving output...", quiet=args.quiet)
 
     merged = result.to_merged_audiobook()
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
     serializer = AudiobookSerializer()
 
     output_path = _build_output_path(args, "audiobook")
 
     serializer.save(merged, output_path)
+    _prepend_run_context(result, "audiobook", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
+    return output_path
+
+
+def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
+    """Run the lecture pipeline, return the output path.
+
+    Lecture studio floor. The brief has been classified as a lecture by the
+    router — this function handles bootstrap → conductor → serializer.
+
+    Lecture generation is section-by-section: a single professor agent
+    delivers each section in sequence (with type-specific overlay prompts:
+    intro / concept / case_study / exercise / recap / outro).
+    """
+    from vox_romana.shows.lecture.bootstrap import LectureBootstrap
+    from vox_romana.shows.lecture.conductor import LectureConductor
+    from vox_romana.shows.lecture.serializer import LectureSerializer
+
+    # ── Build overrides from CLI flags ─────────────────────────────
+    overrides = _resolve_duration(args, brief)
+    target_words = None
+    if "target_duration_minutes" in overrides:
+        target_words = estimate_total_words(
+            overrides["target_duration_minutes"], "lecture",
+            engine=args.engine,
+        )
+        overrides["target_words"] = target_words
+    if args.tone is not None:
+        overrides["tone"] = args.tone
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
+
+    # ── Bootstrap ──────────────────────────────────────────────────
+    log("Bootstrap (planning sections, profiling professor, directing)...", quiet=args.quiet)
+    t0 = time.time()
+
+    reference_text_lecture = _read_reference_material(args)
+
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text_lecture, target_words=target_words
+    )
+
+    bootstrap = LectureBootstrap(client=client)
+    config = bootstrap.from_brief(brief, **bootstrap_kwargs)
+
+    t1 = time.time()
+    log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
+    log(f"  Title:        {config.title}", quiet=args.quiet)
+    log(f"  Subject area: {config.subject_area}", quiet=args.quiet)
+    professor_name = config.professor.name if config.professor else "(no professor)"
+    log(f"  Professor:    {professor_name}", quiet=args.quiet)
+    log(f"  Sections:     {len(config.sections)}", quiet=args.quiet)
+    print()
+
+    # ── Conductor ──────────────────────────────────────────────────
+    log("Conductor (generating the lecture)...", quiet=args.quiet)
+    t2 = time.time()
+
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "lecture",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.sections),
+        quiet=args.quiet,
+    )
+    crew_members = _load_crew_members_from_args(args)
+    conductor = LectureConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
+    result = conductor.run()
+
+    t3 = time.time()
+    log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
+    log(f"  Generated {len(result.lecture_events)} events across {len(result.lecture_sections)} sections", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.lecture_events),
+        target_words=overrides.get("target_words") or target_words,
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="lecture",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
+    )
+    print()
+
+    # ── Serialize ──────────────────────────────────────────────────
+    log("Saving output...", quiet=args.quiet)
+
+    merged = result.to_merged_lecture()
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
+    serializer = LectureSerializer()
+
+    output_path = _build_output_path(args, "lecture")
+
+    serializer.save(merged, output_path)
+    _prepend_run_context(result, "lecture", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
     return output_path
 
 
@@ -759,6 +1172,7 @@ _RUNNERS = {
     "news": _run_news,
     "podcast": _run_podcast,
     "audiobook": _run_audiobook,
+    "lecture": _run_lecture,
 }
 
 
@@ -787,6 +1201,10 @@ def run_generate(args: argparse.Namespace) -> Path:
     if not brief:
         print(f"Error: prompt file is empty: {args.prompt}", file=sys.stderr)
         sys.exit(1)
+
+    # ── Strip Pronunciations: block before the LLM ever sees the brief ──
+    brief, _pronunciation_overrides = _parse_pronunciations(brief)
+    args.pronunciation_overrides = _pronunciation_overrides
 
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -841,7 +1259,11 @@ def run_generate(args: argparse.Namespace) -> Path:
     if args.fact_check != "off":
         _preflight_checker = FactChecker.build_default(client)
         _preflight_report = _preflight_checker.check_content(
-            brief, content_id="brief", mode="quick", content_mode="factual"
+            brief,
+            content_id="brief",
+            mode="quick",
+            content_mode="factual",
+            perspective=getattr(args, "perspective", None),
         )
         if _preflight_report.has_fabrications:
             print("\n\u26a0  PRE-FLIGHT WARNING: Your brief may contain incorrect claims.")
@@ -941,6 +1363,7 @@ _CONTENT_TYPE_KEYS: dict[str, str] = {
     "show_id": "news",
     "podcast_id": "podcast",
     "book_id": "audiobook",
+    "audiobook_id": "audiobook",
 }
 
 
@@ -1213,6 +1636,18 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Duration in seconds of each generated music clip (default: 8.0).",
     )
     parser.add_argument(
+        "--music-volume",
+        type=float,
+        default=0.0,
+        dest="music_volume",
+        metavar="DB",
+        help=(
+            "Adjust music level relative to speech in dB. Negative = quieter "
+            "(e.g. -6). Default 0 — music is already normalised to "
+            "-28 dBFS, 8 dB below speech."
+        ),
+    )
+    parser.add_argument(
         "--series-id",
         type=str,
         default=None,
@@ -1283,6 +1718,29 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         print(f"Error creating {args.engine} engine: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # ── Pre-load show JSON for voice policy and music style resolution ─
+    with open(json_path) as f:
+        show_data = json.load(f)
+
+    # Under 'auto' policy, strip voice_hints so the renderer falls back
+    # to the simpler gender-based round-robin assignment.
+    if args.voice_policy == "auto":
+        show_data.pop("voice_hints", None)
+
+    # ── Resolve music style: CLI arg > show JSON field > type-based default ─
+    _MUSIC_STYLE_FALLBACK: dict[str, str] = {
+        "news": "news broadcast theme music, professional and authoritative",
+        "podcast": "podcast background music, warm and conversational",
+        "debate": "measured discussion underscore, formal",
+        "audiobook": "cinematic orchestral underscore, atmospheric and immersive",
+    }
+    _music_style = args.music_style
+    if not _music_style:
+        _music_style = show_data.get("music_style", "")
+    if not _music_style:
+        _ct = _detect_content_type(show_data)
+        _music_style = _MUSIC_STYLE_FALLBACK.get(_ct, "background music")
+
     # ── Build the renderer and render ────────────────────────────────
     registry = None
     series_key = getattr(args, "series_id", None)
@@ -1300,8 +1758,9 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         series_key=series_key,
         exclude_whispery=args.no_whisper_voices,
         music_engine=_build_music_engine(args),
-        music_style=args.music_style,
+        music_style=_music_style,
         music_duration=args.music_duration,
+        music_volume_db=args.music_volume,
         parallel_workers=args.tts_workers,
     )
 
@@ -1312,15 +1771,6 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         print()
 
     start_time = time.time()
-
-    # Load the show JSON so we can apply the voice policy before rendering.
-    with open(json_path) as f:
-        show_data = json.load(f)
-
-    # Under 'auto' policy, strip voice_hints so the renderer falls back
-    # to the simpler gender-based round-robin assignment.
-    if args.voice_policy == "auto":
-        show_data.pop("voice_hints", None)
 
     if not args.quiet:
         title = show_data.get("title", json_path.stem)
@@ -1335,6 +1785,13 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
         normalize=not args.no_normalize,
         quiet=args.quiet,
     )
+
+    # Release TTS model weights now that audio is on disk.  This frees RAM
+    # before the resource monitor's pre-animate checkpoint fires so the
+    # animation phase (SD, AnimateDiff, etc.) can claim its full budget.
+    renderer.teardown()
+    import gc as _gc
+    _gc.collect()
 
     elapsed = time.time() - start_time
 

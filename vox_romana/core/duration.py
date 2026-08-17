@@ -50,8 +50,9 @@ if TYPE_CHECKING:
 WPM_DEFAULTS: dict[str, int] = {
     "debate": 150,
     "news": 165,
-    "podcast": 150,
+    "podcast": 135,  # Lowered from 150 — aligned with PODCAST_DEFAULT_SPEED=0.92 in renderer.
     "audiobook": 155,
+    "lecture": 145,
 }
 
 # Per-engine WPM calibration. When the renderer engine is known at
@@ -61,7 +62,7 @@ WPM_DEFAULTS: dict[str, int] = {
 #   - Piper:  slightly faster delivery on the same text, ~165 wpm
 #   - both:   midpoint, used when --engine both mixes the two
 WPM_BY_ENGINE: dict[str, int] = {
-    "kokoro": 150,
+    "kokoro": 140,  # Lowered from 150 — aligned with PODCAST_DEFAULT_SPEED=0.92 in renderer.
     "piper": 165,
     "both": 158,
 }

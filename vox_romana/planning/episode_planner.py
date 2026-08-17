@@ -248,6 +248,7 @@ _DEFAULT_DURATIONS: dict[str, float] = {
     "news": 12.0,
     "podcast": 30.0,
     "audiobook": 60.0,
+    "lecture": 30.0,
 }
 
 

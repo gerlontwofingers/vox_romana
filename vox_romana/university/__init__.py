@@ -21,7 +21,13 @@ Public API (built incrementally across chunks):
 """
 
 from vox_romana.university.config import UniversityConfig
-from vox_romana.university.scholar import Scholar
+from vox_romana.university.scholar import (
+    MAX_SYNTHESIS_CHARS_IN_PROMPT,
+    Scholar,
+    extract_json,
+    strip_think,
+)
+from vox_romana.university.seminar_plan import SeminarPlan
 from vox_romana.university.session import ScholarNote, ScholarSession
 from vox_romana.university.sources import (
     Article,
@@ -36,9 +42,13 @@ __all__ = [
     "Article",
     "KnowledgeSource",
     "LocalSource",
+    "MAX_SYNTHESIS_CHARS_IN_PROMPT",
     "Scholar",
     "ScholarNote",
     "ScholarSession",
+    "SeminarPlan",
+    "extract_json",
+    "strip_think",
     "UniversitySearchProvider",
     "University",
     "UniversityConfig",

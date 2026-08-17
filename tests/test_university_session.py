@@ -263,10 +263,16 @@ class TestToJsonlChunks:
         chunk = simple_session.to_jsonl_chunks()[0]
         assert chunk["title"] == "Roman engineering"
 
-    def test_chunk_source_uses_university_scheme(self, simple_session):
+    def test_chunk_source_preserves_note_source_url(self, simple_session):
         chunk = simple_session.to_jsonl_chunks()[0]
+        assert chunk["source"] == simple_session.notes[0].source_url
+
+    def test_chunk_source_falls_back_to_university_scheme_without_provenance(self):
+        s = ScholarSession(topic="Roman aqueducts")
+        s.notes = [ScholarNote(article_title="Roman engineering")]
+        chunk = s.to_jsonl_chunks()[0]
         assert chunk["source"].startswith("university://")
-        assert simple_session.session_id in chunk["source"]
+        assert s.session_id in chunk["source"]
 
     def test_chunk_index_and_total(self, simple_session):
         chunk = simple_session.to_jsonl_chunks()[0]

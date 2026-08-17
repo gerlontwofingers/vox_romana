@@ -97,6 +97,7 @@ from typing import TYPE_CHECKING
 from ...core.client import DeepSeekClient
 from ...core.conductor import BaseConductor, ConductorResult
 from ...core.fact_checker import FactChecker
+from ...core.messages import AgentMessage, MessageType
 from ...core.session import AgentSession
 from .bootstrap import DebateBootstrap
 from .config import DebateConfig, ParticipantProfile
@@ -115,6 +116,28 @@ if TYPE_CHECKING:
     from ...core.lens import LLMLensRack
 
 logger = logging.getLogger(__name__)
+
+
+def _build_language_instruction(language: str | None) -> str:
+    """Return a prompt instruction for a character's assigned language.
+
+    Returns an empty string when *language* is ``None`` or ``"en"`` so that
+    the ``{language_instruction}`` placeholder leaves no trace in the prompt.
+    For any other language code, returns an explicit instruction block that
+    tells the LLM to write all dialogue in that language.
+    """
+    if not language or language == "en":
+        return ""
+    from ...core.languages import LANGUAGE_NAMES
+    lang_name = LANGUAGE_NAMES.get(language, language)
+    return (
+        f"\nLANGUAGE CONSTRAINT (critical):\n"
+        f"- You MUST write ALL of your dialogue in {lang_name} ({language}).\n"
+        f"- Every word in the \"text\" field must be in {lang_name}.\n"
+        f"- The debate topic, names, and other speakers' words may be in English —\n"
+        f"  but YOUR spoken lines are always in {lang_name}.\n"
+        f"- JSON keys and tone/volume/pace values remain in English as usual."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -212,6 +235,7 @@ class DebateConductorResult(ConductorResult):
         voice_casting: dict[str, str] = {}
         voice_hints: dict[str, str] = {}
         tts_styles: dict[str, str] = {}
+        character_langs: dict[str, str] = {}
         for p in config.participants:
             if p.voice_gender:
                 voice_casting[p.name] = p.voice_gender
@@ -219,6 +243,8 @@ class DebateConductorResult(ConductorResult):
                 voice_hints[p.name] = p.voice_hint
             if p.tts_style:
                 tts_styles[p.name] = p.tts_style
+            if p.language and p.language != "en":
+                character_langs[p.name] = p.language
         if config.moderator and config.moderator.name:
             # Moderators don't have profiles, default to male.
             voice_casting.setdefault(config.moderator.name, "male")
@@ -259,6 +285,9 @@ class DebateConductorResult(ConductorResult):
             voice_casting=voice_casting,
             voice_hints=voice_hints,
             tts_styles=tts_styles,
+            character_langs=character_langs,
+            language=config.language,
+            music_style=config.music_style,
             series_id=series_id,
         )
 
@@ -288,6 +317,10 @@ class DebateConductor(BaseConductor):
     """
 
     _bootstrap_cls = DebateBootstrap
+
+    # Extra turns allowed beyond target_turns for closing statements.
+    # Subclasses may override.
+    CLOSING_WINDOW_EXTRA: int = 3
 
     def __init__(
         self,
@@ -426,10 +459,13 @@ class DebateConductor(BaseConductor):
                 prompt,
                 client=char_client,
                 recent_window=DEFAULT_RECENT_WINDOW,
+                session_name=f"participant:{name}",
             )
         if self._moderator_prompt and config.moderator:
             self._agent_sessions[config.moderator.name] = self._create_session(
-                self._moderator_prompt, recent_window=DEFAULT_RECENT_WINDOW,
+                self._moderator_prompt,
+                recent_window=DEFAULT_RECENT_WINDOW,
+                session_name=f"moderator:{config.moderator.name}",
             )
 
         # ── Reset runtime state ──────────────────────────────────────
@@ -460,8 +496,8 @@ class DebateConductor(BaseConductor):
         surfaces: list[str] = []
         if config.topic:
             surfaces.append(config.topic)
-        if config.director_brief and config.director_brief.arc:
-            surfaces.append(config.director_brief.arc)
+        if config.director_brief and config.director_brief.dramatic_arc:
+            surfaces.append(config.director_brief.dramatic_arc)
         bootstrap_text = " ".join(surfaces).strip()
         if not bootstrap_text:
             return
@@ -472,6 +508,7 @@ class DebateConductor(BaseConductor):
                 reference_material=config.reference_material,
                 mode=config.fact_check,
                 content_mode="factual",
+                perspective=config.perspective,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("DebateConductor: bootstrap preflight raised: %r", exc)
@@ -572,6 +609,7 @@ class DebateConductor(BaseConductor):
                     f"4. Build anticipation for the debate.\n\n"
                     f"Speakers: {speaker_intros}"
                 ),
+                word_budget=self._host_intro_budget(),
             )
             raw_events.append(intro_event)
 
@@ -590,7 +628,7 @@ class DebateConductor(BaseConductor):
                 wrapping_up = True
             if not wrapping_up and self._should_wrap_up():
                 wrapping_up = True
-            if turn_number > target_turns + 6:
+            if turn_number > target_turns + self.CLOSING_WINDOW_EXTRA:
                 break  # Hard cap: don't let closing statements go on forever.
             if self._over_budget():
                 break  # Hard cap: word budget exceeded.
@@ -742,6 +780,7 @@ class DebateConductor(BaseConductor):
                     f"End with something like 'This has been Vox Romana' or similar. "
                     f"3-5 sentences."
                 ),
+                word_budget=self._host_outro_budget(),
             )
             raw_events.append(outro_event)
 
@@ -854,6 +893,7 @@ class DebateConductor(BaseConductor):
             factual_claims=claims_str,
             tangent_topics=tangents_str,
             reference_corpus_section=corpus_section,
+            language_instruction=_build_language_instruction(profile.language or config.language),
         )
 
     def _build_ground_rules(self, profile: ParticipantProfile) -> str:
@@ -981,7 +1021,9 @@ class DebateConductor(BaseConductor):
             role_instructions=role_instructions,
         )
 
-    def _generate_host_event(self, *, beat: str, context_hint: str) -> dict:
+    def _generate_host_event(
+        self, *, beat: str, context_hint: str, word_budget: int | None = None
+    ) -> dict:
         """Generate one narration event from the show host.
 
         This is similar to _generate_turn() but simpler — the host doesn't
@@ -994,6 +1036,9 @@ class DebateConductor(BaseConductor):
             context_hint: Specific instructions for what this narration
                           should contain. Built by the caller based on the
                           current state of the debate.
+            word_budget:  Soft cap on narration length. When set, a length
+                          contract is appended to the prompt so short shows
+                          don't get blown apart by long host monologues.
 
         Returns:
             A raw event dict with event_kind="narration" and role="host".
@@ -1004,6 +1049,11 @@ class DebateConductor(BaseConductor):
         # The host sees: their system prompt (personality) + a beat-specific
         # instruction (what to narrate right now).
         user_message = f"NARRATION BEAT: {beat.upper()}\n\n{context_hint}"
+        if word_budget and word_budget > 0:
+            user_message += (
+                f"\n\nLENGTH CONTRACT: keep this narration to about {word_budget} words "
+                f"(hard ceiling: {int(word_budget * 1.3)}). Do not exceed it."
+            )
 
         raw_response = self._client.chat(
             messages=[
@@ -1014,7 +1064,10 @@ class DebateConductor(BaseConductor):
         self._llm_calls += 1
 
         # Parse the JSON response (same extraction logic as debate turns).
-        event_dict = self._parse_turn_response(raw_response)
+        event_dict = self._parse_turn_response(
+            raw_response,
+            from_agent=f"moderator:{host.name}",
+        )
 
         # Attach host-specific metadata. The key differentiator from regular
         # debate events is event_kind="narration" — this tells the renderer
@@ -1036,6 +1089,23 @@ class DebateConductor(BaseConductor):
             event_dict.setdefault("pause_before", "long")
 
         return event_dict
+
+    def _host_intro_budget(self) -> int | None:
+        """Soft word cap for the host intro narration.
+
+        Scaled to the overall word target so a 3-min show doesn't get a
+        200-word opener while a 30-min show isn't forced into 3 sentences.
+        Returns None when no target is set (let the LLM pick).
+        """
+        if self._target_words is None:
+            return None
+        return max(60, min(180, int(self._target_words * 0.18)))
+
+    def _host_outro_budget(self) -> int | None:
+        """Soft word cap for the host outro narration. Smaller than intro."""
+        if self._target_words is None:
+            return None
+        return max(40, min(120, int(self._target_words * 0.10)))
 
     # ═══════════════════════════════════════════════════════════════════
     # TURN GENERATION
@@ -1141,7 +1211,15 @@ class DebateConductor(BaseConductor):
             self._llm_calls += 1
 
         # ── Parse the JSON response ──────────────────────────────────
-        event_dict = self._parse_turn_response(raw_response)
+        route_name = (
+            f"moderator:{speaker_name}"
+            if speaker_role == "moderator"
+            else f"participant:{speaker_name}"
+        )
+        event_dict = self._parse_turn_response(
+            raw_response,
+            from_agent=route_name,
+        )
 
         # ── Length contract validation ──────────────────
         if per_turn_target > 0:
@@ -1194,6 +1272,7 @@ class DebateConductor(BaseConductor):
                         reference_material=config.reference_material,
                         mode=config.fact_check,
                         content_mode="factual",
+                        perspective=config.perspective,
                         prior_context=self._build_prior_context(),
                     )
                 except Exception as exc:
@@ -1202,6 +1281,18 @@ class DebateConductor(BaseConductor):
                         turn_number, speaker_name, exc,
                     )
                     break
+
+                if fc_report.has_fabrications:
+                    route_name = (
+                        f"moderator:{speaker_name}"
+                        if speaker_role == "moderator"
+                        else f"participant:{speaker_name}"
+                    )
+                    fc_report = self._challenge_fabrications(
+                        fc_report,
+                        generator_agent=route_name,
+                        perspective=config.perspective,
+                    )
 
                 if not (fc_report.has_fabrications or fc_report.has_contradictions):
                     break  # Turn passed — move on.
@@ -1232,7 +1323,10 @@ class DebateConductor(BaseConductor):
                     )
                     try:
                         retry_raw = session.send(rejection_msg)
-                        retry_dict = self._parse_turn_response(retry_raw)
+                        retry_dict = self._parse_turn_response(
+                            retry_raw,
+                            from_agent=route_name,
+                        )
                         retry_dict["speaker"] = speaker_name
                         retry_dict["role"] = speaker_role
                         retry_dict["turn"] = turn_number
@@ -1245,6 +1339,57 @@ class DebateConductor(BaseConductor):
                         )
                         break
                 else:
+                    route_name = (
+                        f"moderator:{speaker_name}"
+                        if speaker_role == "moderator"
+                        else f"participant:{speaker_name}"
+                    )
+                    moderator_name = getattr(config.moderator, "name", None)
+                    moderator_route = (
+                        f"moderator:{moderator_name}" if moderator_name else None
+                    )
+                    if (
+                        moderator_route
+                        and speaker_role != "moderator"
+                        and moderator_route in self._session_registry
+                        and fc_report.has_fabrications
+                    ):
+                        findings = [
+                            {
+                                "claim": item.claim,
+                                "explanation": item.explanation,
+                            }
+                            for item in fc_report.fabricated_claims
+                        ]
+                        self._route_message(
+                            AgentMessage(
+                                type=MessageType.DIRECTIVE,
+                                from_agent="fact_checker",
+                                to_agent=moderator_route,
+                                payload={
+                                    "turn_number": turn_number,
+                                    "speaker": speaker_name,
+                                    "instructions": (
+                                        "A participant still has unresolved fact-check "
+                                        "objections after the challenge loop. In the next cue, "
+                                        "consider probing the claim, narrowing the scope, or "
+                                        "explicitly flagging uncertainty before moving on."
+                                    ),
+                                    "fact_check_findings": findings,
+                                },
+                            )
+                        )
+                    self._report_issue_to_director(
+                        from_agent=route_name,
+                        summary=(
+                            f"Could not resolve fact-check objections for turn "
+                            f"{turn_number} by {speaker_name} after {config.max_retries} attempts."
+                        ),
+                        proposed_remediation=(
+                            "Steer the next exchange toward already established facts "
+                            "or narrower claims."
+                        ),
+                    )
                     # Exhausted retries — publish with warning.
                     for r in blocking:
                         self._length_warnings.append(
@@ -1314,9 +1459,12 @@ class DebateConductor(BaseConductor):
 
         # ── Hard length contract for THIS turn ───────────
         # Wrap-up turns and the moderator's opening get a shorter target.
+        # Closing statements are also hard-capped at 60 words to prevent
+        # the LLM from delivering verbose summaries that blow the budget.
         turn_target = target_words
         if wrapping_up:
-            turn_target = max(20, target_words // 2) if target_words else 0
+            half = max(20, target_words // 2) if target_words else 0
+            turn_target = min(60, half) if half else 0
         if turn_target > 0:
             parts.append(
                 self._length_contract_block(turn_target, tolerance_pct=15.0)
@@ -1426,7 +1574,7 @@ class DebateConductor(BaseConductor):
 
         return "\n".join(parts)
 
-    def _parse_turn_response(self, raw: str) -> dict:
+    def _parse_turn_response(self, raw: str, *, from_agent: str | None = None) -> dict:
         """Parse an agent's JSON response into an event dict.
 
         LLMs sometimes wrap JSON in markdown fences or add preamble text.
@@ -1454,7 +1602,7 @@ class DebateConductor(BaseConductor):
             # Ensure nonverbal is always a list.
             if isinstance(data.get("nonverbal"), str):
                 data["nonverbal"] = [data["nonverbal"]] if data["nonverbal"] else []
-            return data
+            return self._capture_issue_flag(data, from_agent=from_agent)
         except (json.JSONDecodeError, TypeError):
             # Fallback: treat the entire response as spoken text.
             # This keeps the debate going even if the LLM flubbed the format.
@@ -1576,10 +1724,17 @@ class DebateConductor(BaseConductor):
             recent_transcript=recent_text or "(debate just started)",
             window_size=len(recent),
         )
+        if pending_issues := self._consume_pending_issue_reports():
+            prompt = f"PENDING ISSUE REPORTS FROM CAST:\n{pending_issues}\n\n{prompt}"
 
         raw = self._client.chat(
             messages=[
-                {"role": "system", "content": "You are a debate director. Respond with JSON only."},
+                {
+                    "role": "system",
+                    "content": self._augmented_director_system_prompt(
+                        "You are a debate director. Respond with JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -1588,6 +1743,7 @@ class DebateConductor(BaseConductor):
 
         # Parse the director's response.
         result = self._parse_turn_response(raw)
+        previous_note = self._director_note
 
         # Update the director note that agents will see.
         mood = result.get("mood_note", "")
@@ -1605,5 +1761,10 @@ class DebateConductor(BaseConductor):
         if rep_warning:
             parts.append(f"WARNING — AVOID REPEATING: {rep_warning}")
         self._director_note = " ".join(parts) if parts else ""
+        if self._director_note != previous_note:
+            self._broadcast_director_note(
+                self._director_note,
+                summary="Director updated debate guidance.",
+            )
 
         return result

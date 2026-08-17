@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """run.py — master CLI for the vox_romana production pipeline.
 
-One command to generate text, render audio, or do both.  This replaces
+One command to generate text, render audio/video, or do both.  This replaces
 the old two-step workflow of ``run_show.py`` → ``render_show.py`` with
 a single entry point that handles the full pipeline end-to-end.
 
-    prompt file → classify → bootstrap → conductor → editor → JSON → TTS → audio
+    prompt file → classify → bootstrap → conductor → editor → JSON → TTS → audio → optional video
 
 THE PRODUCTION STUDIO ANALOGY:
 
@@ -18,10 +18,14 @@ THE PRODUCTION STUDIO ANALOGY:
     2. THE SOUND BOOTH (render_show.py) records the script into audio
        using the TTS engine of your choice (Kokoro or Piper).
 
-    3. THE DATA SCIENTIST (WPM logging) records how long the audio
+    3. THE ANIMATION STUDIO (--mode video) turns the rendered audio into
+       an MP4 using the animation planner, image generation, timeline sync,
+       and MoviePy compositing stack.
+
+    4. THE DATA SCIENTIST (WPM logging) records how long the audio
        actually came out, so future duration estimates get better.
 
-    run.py coordinates all three.  You can also ask it to do just one
+    run.py coordinates all four.  You can also ask it to do just one
     step (--mode generate or --mode render) if you want manual control.
 
 MODES:
@@ -57,6 +61,7 @@ MODES:
 
         python run.py prompts/ubi_debate.txt
         python run.py prompts/tech_news.txt --engine kokoro --format mp3
+        python run.py prompts/ai_ethics_lecture.txt --type lecture --engine both
 
         # --name gives the output files a fixed stem (no timestamp):
         python run.py prompts/ubi_debate.txt --name ubi_v4
@@ -102,6 +107,13 @@ MODES:
         python run.py prompts/ubi_debate.txt --mode video \\
             --video-platform both
         # → video_youtube.mp4  +  video_tiktok.mp4
+
+        # Add generated bumper music when the script includes music cues:
+        python run.py prompts/period_drama.txt --mode video \
+            --music \
+            --music-style "subtle harpsichord music" \
+            --music-duration 12 \
+            --music-model large
 
         # --name controls the video stem too:
         python run.py prompts/ubi_debate.txt --mode video \\
@@ -330,10 +342,14 @@ NAMING (--name / -n STEM):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -414,7 +430,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode", "-m",
         type=str,
         default="full",
-        choices=["generate", "render", "full", "ingest", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package"],
+        choices=["generate", "render", "full", "ingest", "dedupe", "publish", "music", "analysis", "emotion-flow", "university", "video", "series", "audition", "package", "voice-prep", "voice-assign"],
         help=(
             "Pipeline mode. "
             "'generate' = text only (JSON). "
@@ -422,6 +438,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'full' = generate + render (default). "
             "'video' = generate + render + animate (requires animation deps). "
             "'ingest' = feed documents into the knowledge store. "
+            "'dedupe' = scan corpus for near-duplicate documents and report clusters. "
             "'publish' = format an existing show JSON as a human-readable "
             "document (TXT/PDF). "
             "'music' = generate a standalone audio clip from a text prompt "
@@ -476,6 +493,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--skip-resource-monitor",
+        action="store_true",
+        default=False,
+        dest="skip_resource_monitor",
+        help=(
+            "Disable the background disk/RAM monitor. "
+            "Use in CI or tests where resources are intentionally constrained."
+        ),
+    )
+
+    parser.add_argument(
         "--tts-workers",
         type=int,
         default=1,
@@ -503,6 +531,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--production-id",
+        type=str,
+        default=None,
+        metavar="ID",
+        help=(
+            "Production identifier for longitudinal tracking. Stored in "
+            "run metadata and used by the single-run ingest path."
+        ),
+    )
+
     # ── Generation flags (forwarded to run_show.py) ──────────────────
     gen_group = parser.add_argument_group("generation (forwarded to run_show.py)")
 
@@ -510,7 +549,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news", "podcast", "audiobook"],
+        choices=["debate", "news", "podcast", "audiobook", "lecture"],
         dest="show_type",
         help="Force a show type (skip the router).",
     )
@@ -642,6 +681,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     gen_group.add_argument(
+        "--perspective",
+        type=str,
+        default=None,
+        dest="perspective",
+        help=(
+            "Optional framing string for observer-relative language, for example "
+            "\"from Guatemala's geographic perspective\". Passed through to "
+            "the config and fact-checker as-is."
+        ),
+    )
+
+    gen_group.add_argument(
         "--allow-bootstrap-fabrications",
         action="store_true",
         default=False,
@@ -650,6 +701,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Skip the bootstrap preflight abort when fabricated facts are detected "
             "in the generated outline/rundown. Prints a warning and continues. "
             "Not recommended."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-director",
+        type=str,
+        default=None,
+        dest="crew_director",
+        metavar="CREW_ID",
+        help=(
+            "Assign a crew director to this run. CREW_ID is a directory name "
+            "under the crew root (--crew-dir). The director's profile.yaml is "
+            "injected into every director check-in prompt, and an episodic "
+            "memory entry is written to the director's short_term.jsonl at run end."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-factchecker",
+        type=str,
+        default=None,
+        dest="crew_factchecker",
+        metavar="CREW_ID",
+        help=(
+            "Assign a crew fact-checker to this run. CREW_ID is a directory name "
+            "under the crew root. The fact-checker's profile is available for "
+            "injection and an episodic memory entry is written at run end."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--crew-dir",
+        type=str,
+        default=None,
+        dest="crew_dir",
+        metavar="PATH",
+        help=(
+            "Base directory for crew data (profile.yaml, short_term.jsonl, "
+            "long_term.jsonl). Defaults to ~/.vox_romana/crew/."
         ),
     )
 
@@ -769,13 +859,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render_group.add_argument(
         "--music",
         action="store_true",
-        default=False,
+        default=True,
         dest="music",
         help=(
             "Enable generative music for bumper events and [music: …] cues. "
             "Uses MusicGen via HuggingFace Transformers. Model auto-downloads "
-            "on first use (~300 MB for small)."
+            "on first use (~300 MB for small). Enabled by default."
         ),
+    )
+    render_group.add_argument(
+        "--no-music",
+        action="store_false",
+        dest="music",
+        help="Disable generative music intro/outro (enabled by default).",
     )
     render_group.add_argument(
         "--music-style",
@@ -811,6 +907,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Duration in seconds of each generated music clip (default: 8.0 "
             "for show bumpers; 30.0 for --mode music). "
             "Ignored when --music is not set outside of music mode."
+        ),
+    )
+    render_group.add_argument(
+        "--music-volume",
+        type=float,
+        default=0.0,
+        dest="music_volume",
+        metavar="DB",
+        help=(
+            "Adjust music level relative to speech in dB. Negative = quieter "
+            "(e.g. --music-volume -6). Default 0. Ignored when --music is not set."
         ),
     )
     render_group.add_argument(
@@ -891,6 +998,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         metavar="TAG",
         help="Tag string embedded in every chunk (e.g. 'batch-2026-04').",
+    )
+    ingest_group.add_argument(
+        "--no-embed",
+        dest="no_embed",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip Phase 2 (ChromaDB vector embedding) after ingest. "
+            "Useful for large batches where you want to embed separately."
+        ),
+    )
+    # ── Deduplication flags (--mode dedupe) ───────────────────────────
+    dedupe_group = parser.add_argument_group(
+        "deduplication (--mode dedupe)"
+    )
+    dedupe_group.add_argument(
+        "--dedupe-path",
+        dest="dedupe_path",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory of JSONL corpus files to scan for near-duplicates. "
+            "Defaults to the configured documents directory."
+        ),
+    )
+    dedupe_group.add_argument(
+        "--dedupe-threshold",
+        dest="dedupe_threshold",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help=(
+            "Cosine similarity threshold (default: dedup.similarity_threshold "
+            "from vox_romana.yaml, or 0.97)."
+        ),
+    )
+    dedupe_group.add_argument(
+        "--apply",
+        dest="dedupe_apply",
+        action="store_true",
+        default=False,
+        help=(
+            "Remove the lower-chunk-count JSONL in each near-duplicate pair. "
+            "Prompts for confirmation. Without --apply the scan is read-only."
+        ),
     )
     # ── Animation flags (--mode video) ──────────────────────────────
     anim_group = parser.add_argument_group(
@@ -1379,6 +1531,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "final audio path."
         ),
     )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help=(
+            "Show diagnostic detail: per-beat length warnings, "
+            "fact-check retry messages, and budget status. Off by default."
+        ),
+    )
 
     # ── LLM lens rack ────────────────────────────────────────────────
     llm_group = parser.add_argument_group("LLM lens rack")
@@ -1407,6 +1567,120 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Roles include: director, conductor, editor, fact_checker, "
             "translator, character:<Name>, default."
         ),
+    )
+    llm_group.add_argument(
+        "--character-lang",
+        dest="character_lang",
+        action="append",
+        default=None,
+        metavar="NAME=CODE",
+        help=(
+            "Per-character language override, repeatable.  E.g. "
+            "--character-lang 'Marcus=zh' --character-lang 'Giulia=it'. "
+            "NAME is the speaker display name; CODE is a BCP-47 code (en, zh, es, fr, …)."
+        ),
+    )
+
+    voice_prep_group = parser.add_argument_group(
+        "voice-prep (--mode voice-prep)",
+        "Clean a reference audio file and register it as a named voice-clone profile.",
+    )
+    voice_prep_group.add_argument(
+        "--vp-source",
+        dest="vp_source",
+        type=Path,
+        default=None,
+        metavar="AUDIO_FILE",
+        help=(
+            "Path to the reference audio file (MP3, WAV, FLAC, …). "
+            "Required for voice-prep mode."
+        ),
+    )
+    voice_prep_group.add_argument(
+        "--vp-name",
+        dest="vp_name",
+        type=str,
+        default=None,
+        metavar="VOICE_NAME",
+        help=(
+            "Short alphanumeric name for the voice profile (e.g. marcus_deep). "
+            "Stored as vc_<name>. Required for voice-prep mode."
+        ),
+    )
+    voice_prep_group.add_argument(
+        "--vp-gender",
+        dest="vp_gender",
+        type=str,
+        default="neutral",
+        metavar="GENDER",
+        help="Gender hint for the voice (male / female / neutral). Default: neutral.",
+    )
+    voice_prep_group.add_argument(
+        "--vp-tone",
+        dest="vp_tone",
+        type=str,
+        default="",
+        metavar="DESCRIPTION",
+        help='Free-text tone description (e.g. "deep, measured, resonant").',
+    )
+    voice_prep_group.add_argument(
+        "--vp-best-for",
+        dest="vp_best_for",
+        type=str,
+        default="",
+        metavar="USE_CASE",
+        help='Best-use hint (e.g. "narration", "dialogue", "lecture").',
+    )
+    voice_prep_group.add_argument(
+        "--vp-tags",
+        dest="vp_tags",
+        nargs="+",
+        default=None,
+        metavar="TAG",
+        help="Space-separated tags (e.g. --vp-tags deep male measured).",
+    )
+    voice_prep_group.add_argument(
+        "--vp-force",
+        dest="vp_force",
+        action="store_true",
+        default=False,
+        help="Overwrite an existing profile with the same name.",
+    )
+    voice_prep_group.add_argument(
+        "--skip-demucs",
+        dest="skip_demucs",
+        action="store_true",
+        default=False,
+        help="Skip the demucs vocal-separation stage (faster, but no stem isolation).",
+    )
+
+    voice_assign_group = parser.add_argument_group(
+        "voice-assign (--mode voice-assign)",
+        "Lock a cloned voice to a series character and record it in the catalog.",
+    )
+    voice_assign_group.add_argument(
+        "--voice-id",
+        dest="voice_id",
+        type=str,
+        default=None,
+        metavar="VC_ID",
+        help='Cloned voice ID to assign (must start with "vc_").',
+    )
+    voice_assign_group.add_argument(
+        "--va-character",
+        dest="va_character",
+        type=str,
+        default=None,
+        metavar="CHARACTER_NAME",
+        help="Character display name to lock the voice to.",
+    )
+    voice_assign_group.add_argument(
+        "--series-id",
+        dest="series_id",
+        type=str,
+        default=None,
+        metavar="SERIES_ID",
+        help="Series ID (from --mode series create or catalog list).",
     )
 
     return parser.parse_args(argv)
@@ -1447,8 +1721,7 @@ def _build_render_argv(
         argv += ["--voice-map", args.voice_map]
     if args.voice_policy != "auto":
         argv += ["--voice-policy", args.voice_policy]
-    if args.model_dir != str(_PIPER_VOICES_DIR):
-        argv += ["--model-dir", args.model_dir]
+    argv += ["--model-dir", args.model_dir]
     if args.model:
         argv += ["--model", args.model]
     if args.no_normalize:
@@ -1469,8 +1742,12 @@ def _build_render_argv(
         argv += ["--music-model", args.music_model]
     if args.music_duration != 8.0:
         argv += ["--music-duration", str(args.music_duration)]
+    if args.music_volume != 0.0:
+        argv += ["--music-volume", str(args.music_volume)]
     if args.quiet:
         argv.append("--quiet")
+    if getattr(args, "verbose", False):
+        argv.append("--verbose")
 
     return argv
 
@@ -1508,10 +1785,80 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace):
     Returns:
         RenderResult with stats including per-event audio durations.
     """
+    from vox_romana.tts.voice_preflight import check_piper_voices
+    check_piper_voices(
+        json_path,
+        model_dir=args.model_dir,
+        engine=args.engine,
+        quiet=getattr(args, "quiet", False),
+    )
+
     from vox_romana.cli.runners import run_render
 
     argv = _build_render_argv(json_path, args)
     return run_render(argv)
+
+
+def _mode_render_isolated(json_path: str | Path, args: argparse.Namespace):
+    """Run render mode in a child process and return lightweight metadata.
+
+    This is used by ``--mode video`` so the TTS / MusicGen process can exit
+    before animation begins. Some ML runtimes (MLX, torch, ONNX Runtime)
+    keep large caches resident even after Python references are dropped; a
+    process boundary is the only reliable way to return that memory to the OS.
+
+    Returns:
+        A namespace exposing ``event_durations`` for animation timing.
+    """
+    argv = _build_render_argv(json_path, args)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as meta_file:
+        meta_path = Path(meta_file.name)
+
+    script = (
+        "from pathlib import Path; "
+        "import json, sys; "
+        "from vox_romana.cli.runners import run_render; "
+        "result = run_render(sys.argv[1:-1]); "
+        "payload = {'event_durations': result.event_durations if result is not None else None}; "
+        "Path(sys.argv[-1]).write_text(json.dumps(payload), encoding='utf-8')"
+    )
+
+    audio_suffix = f".{args.format}"
+    audio_path = Path(args.audio_output) if args.audio_output else Path(json_path).with_suffix(audio_suffix)
+
+    try:
+        completed = subprocess.run([sys.executable, "-c", script, *argv, str(meta_path)])
+
+        payload = None
+        if meta_path.exists():
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        late_render_crash = (
+            completed.returncode < 0
+            and payload is not None
+            and audio_path.exists()
+        )
+        if completed.returncode != 0 and not late_render_crash:
+            sys.exit(completed.returncode)
+        if late_render_crash:
+            print(
+                f"Warning: render subprocess exited with signal {-completed.returncode} "
+                "after writing audio; continuing into animation.",
+                file=sys.stderr,
+            )
+
+        if payload is None:
+            raise RuntimeError("render subprocess produced no timing metadata")
+
+        event_durations = payload.get("event_durations")
+        if isinstance(event_durations, dict):
+            event_durations = {
+                int(event_index): duration
+                for event_index, duration in event_durations.items()
+            }
+        return SimpleNamespace(event_durations=event_durations)
+    finally:
+        meta_path.unlink(missing_ok=True)
 
 
 def _mode_video(args: argparse.Namespace) -> None:
@@ -1569,12 +1916,31 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'─' * 60}\n")
 
     t0 = time.time()
-    render_result = _mode_render(json_path, args)
+    render_result = _mode_render_isolated(json_path, args)
     if not args.quiet:
         print(f"\n  Done in {time.time() - t0:.0f}s")
 
+    # Belt-and-suspenders GC after render: the renderer already called
+    # teardown() on all TTS engines, but an explicit collect() here ensures
+    # any remaining Python-managed model references are freed before the
+    # resource monitor's pre-animate RAM check.
+    import gc as _gc
+    _gc.collect()
+
     audio_suffix = f".{args.format}"
     audio_path = Path(args.audio_output) if args.audio_output else json_path.with_suffix(audio_suffix)
+
+    # Mid-pipeline resource checkpoint: audio render consumed disk/RAM;
+    # re-check before the much heavier animation phase starts.
+    monitor = getattr(args, "_resource_monitor", None)
+    if monitor is not None:
+        from vox_romana.core.resource_monitor import ResourceError
+        try:
+            monitor.checkpoint("pre-animate")
+        except ResourceError as _re:
+            print(f"\nError: {_re}", file=sys.stderr)
+            monitor.stop()
+            sys.exit(1)
 
     if not args.quiet:
         platform = getattr(args, "video_platform", "youtube")
@@ -1615,6 +1981,124 @@ def _mode_video(args: argparse.Namespace) -> None:
         print(f"{'═' * 60}\n")
     elif video_path:
         print(video_path)
+
+
+def _mode_dedupe(args: argparse.Namespace) -> None:
+    """Scan corpus for near-duplicate documents and report (or remove) them.
+
+    Builds a FingerprintStore from all JSONL files in the corpus directory,
+    then calls ``nearest_pairs()`` to find documents with cosine similarity
+    above the threshold.  By default the scan is read-only.  Pass ``--apply``
+    to remove the lower-chunk-count file in each pair (with confirmation).
+    """
+    import sys
+    from vox_romana.memory.fingerprint_store import FingerprintStore
+    from vox_romana.memory.ingest import _dedup_config
+    import vox_romana.memory.ingest as _ingest_mod
+
+    # Resolve corpus directory.
+    corpus_dir = Path(args.dedupe_path) if args.dedupe_path else _ingest_mod.DEFAULT_DOCUMENT_DIR
+    if not corpus_dir.exists():
+        print(f"Error: corpus directory not found: {corpus_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    cfg_threshold, _ = _dedup_config()
+    threshold = args.dedupe_threshold if args.dedupe_threshold is not None else cfg_threshold
+
+    fp_path = corpus_dir / "fingerprints.npz"
+    store = FingerprintStore(store_path=fp_path)
+
+    if not args.quiet:
+        print(f"\n{'─' * 70}")
+        print(f"  Deduplication scan")
+        print(f"  Corpus:    {corpus_dir}")
+        print(f"  Threshold: {threshold}")
+        print(f"{'─' * 70}")
+        print("  Building fingerprints (this may take a moment)…", flush=True)
+
+    n = store.build_parallel(corpus_dir, verbose=not args.quiet)
+    pairs = store.nearest_pairs(threshold=threshold)
+
+    if not args.quiet:
+        print(f"  Fingerprinted {n} documents.")
+        if not pairs:
+            print("  No near-duplicate pairs found.")
+            print(f"{'─' * 70}\n")
+            return
+        print(f"\n  Found {len(pairs)} near-duplicate pair(s):\n")
+        col = 38
+        print(f"  {'Source A':<{col}}  {'Source B':<{col}}  {'Sim':>6}")
+        print(f"  {'-' * col}  {'-' * col}  {'-' * 6}")
+        for src_a, src_b, sim in pairs:
+            a = Path(src_a).name
+            b = Path(src_b).name
+            if len(a) > col:
+                a = "…" + a[-(col - 1):]
+            if len(b) > col:
+                b = "…" + b[-(col - 1):]
+            print(f"  {a:<{col}}  {b:<{col}}  {sim:.4f}")
+        print()
+
+    if not pairs:
+        return
+
+    if not args.dedupe_apply:
+        if not args.quiet:
+            print("  (Read-only scan — pass --apply to remove duplicates.)")
+            print(f"{'─' * 70}\n")
+        return
+
+    # ── --apply: remove lower-chunk-count file per pair ──────────────
+    # Count chunks per JSONL.
+    def _count_chunks(jsonl_path: Path) -> int:
+        try:
+            return sum(1 for _ in jsonl_path.open())
+        except Exception:
+            return 0
+
+    # Build a map: source string → Path of the JSONL that contains it.
+    # The FingerprintStore sources are file paths (absolute or relative).
+    to_remove: set[Path] = set()
+    for src_a, src_b, _sim in pairs:
+        p_a = Path(src_a)
+        p_b = Path(src_b)
+        if not p_a.exists() or not p_b.exists():
+            continue
+        keep = p_a if _count_chunks(p_a) >= _count_chunks(p_b) else p_b
+        victim = p_b if keep == p_a else p_a
+        to_remove.add(victim)
+
+    if not to_remove:
+        print("  Nothing to remove (files not found on disk).")
+        print(f"{'─' * 70}\n")
+        return
+
+    if not args.quiet:
+        print(f"  Will remove {len(to_remove)} file(s):")
+        for p in sorted(to_remove):
+            print(f"    {p.name}")
+        print()
+
+    confirm = input("  Confirm removal? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("  Aborted.")
+        print(f"{'─' * 70}\n")
+        return
+
+    removed = 0
+    for p in sorted(to_remove):
+        try:
+            p.unlink()
+            store.remove(str(p))
+            removed += 1
+            if not args.quiet:
+                print(f"  Removed: {p.name}")
+        except Exception as exc:
+            print(f"  ERROR removing {p.name}: {exc}", file=sys.stderr)
+
+    if not args.quiet:
+        print(f"\n  Done: {removed} file(s) removed.")
+        print(f"{'─' * 70}\n")
 
 
 def _mode_ingest(args: argparse.Namespace) -> None:
@@ -1700,14 +2184,15 @@ def _mode_ingest(args: argparse.Namespace) -> None:
         print(f"{'─' * 70}\n")
 
     # ── Phase 2: Update vector index after ingest ─────────────────────
-    if not args.dry_run:
+    if not args.dry_run and not args.no_embed:
         try:
             from vox_romana.memory.vector_index import ChromaVectorIndex
             import vox_romana.memory.ingest as _ingest_mod
             if ChromaVectorIndex.is_available():
                 index = ChromaVectorIndex()
                 migration_stats = index.migrate_documents(
-                    _ingest_mod.DEFAULT_DOCUMENT_DIR
+                    _ingest_mod.DEFAULT_DOCUMENT_DIR,
+                    verbose=not args.quiet,
                 )
                 if not args.quiet and migration_stats["files"] > 0:
                     print(
@@ -1926,6 +2411,30 @@ def _mode_publish(
 # ─────────────────────────────────────────────────────────────────────────────
 # Translation + multi-language fan-out
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _mode_voice_prep(args: argparse.Namespace) -> None:
+    """Run voice-prep mode: clean reference audio + register as voice profile.
+
+    Delegates to :func:`vox_romana.cli.voice_prep_cli.run_voice_prep`.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.cli.voice_prep_cli import run_voice_prep
+    run_voice_prep(args)
+
+
+def _mode_voice_assign(args: argparse.Namespace) -> None:
+    """Run voice-assign mode: lock cloned voice to a series character.
+
+    Delegates to :func:`vox_romana.cli.voice_assign_cli.run_voice_assign`.
+
+    Args:
+        args: Parsed namespace from parse_args().
+    """
+    from vox_romana.cli.voice_assign_cli import run_voice_assign
+    run_voice_assign(args)
+
 
 def _mode_translate(
     src_json: Path,
@@ -2180,6 +2689,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    if args.mode == "dedupe" and args.dedupe_threshold is not None:
+        if not (0.0 < args.dedupe_threshold <= 1.0):
+            print(
+                "Error: --dedupe-threshold must be in (0.0, 1.0].",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     if args.mode in ("generate", "full", "video") and args.prompt is None:
         print(
             "Error: prompt file is required for "
@@ -2317,6 +2834,38 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(1)
 
     # ── Validate and normalise language args ─────────────────────────
+    # Inject voice_profiles_dir onto args for voice-prep / voice-assign modes.
+    if args.mode in ("voice-prep", "voice-assign"):
+        from vox_romana.core.paths import VOICE_PROFILES_DIR
+        args.voice_profiles_dir = VOICE_PROFILES_DIR
+
+    if args.mode == "voice-prep":
+        if args.vp_source is None:
+            print("Error: --vp-source is required for 'voice-prep' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.vp_name is None:
+            print("Error: --vp-name is required for 'voice-prep' mode.", file=sys.stderr)
+            sys.exit(1)
+
+    if args.mode == "voice-assign":
+        if args.voice_id is None:
+            print("Error: --voice-id is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.va_character is None:
+            print("Error: --va-character is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+        if args.series_id is None:
+            print("Error: --series-id is required for 'voice-assign' mode.", file=sys.stderr)
+            sys.exit(1)
+
+    # Parse --character-lang NAME=CODE overrides into a dict
+    from vox_romana.core.llm_config import parse_character_langs
+    try:
+        args.character_langs = parse_character_langs(getattr(args, "character_lang", None))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     # Normalise root_lang
     args.root_lang = args.root_lang.strip().lower()
     if args.root_lang not in LANGUAGE_CODES:
@@ -2327,6 +2876,39 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # ── Resource monitor ─────────────────────────────────────────────
+    # Start the background disk+RAM sampler before any model loading.
+    # Modes that don't write large outputs (ingest, dedupe, analysis, …)
+    # still benefit from at least knowing disk state at launch.
+    if not getattr(args, "skip_resource_monitor", False):
+        from vox_romana.core.resource_monitor import ResourceMonitor, ResourceError
+        _resource_monitor = ResourceMonitor.for_mode(args.mode, args)
+        _resource_monitor.start()
+        # First checkpoint: verify there is enough headroom right now.
+        # This catches the case where the disk is already nearly full before
+        # we even start generating.  Later checkpoints fire mid-pipeline.
+        try:
+            snapshot = _resource_monitor.checkpoint("pre-flight")
+            if not args.quiet:
+                ram_str = (
+                    f" | RAM avail: {snapshot.available_ram_gb:.1f} GB"
+                    if snapshot.available_ram_gb is not None
+                    else ""
+                )
+                print(
+                    f"  Resources: {snapshot.free_disk_gb:.1f} GB disk free"
+                    f" ({snapshot.disk_path}){ram_str}"
+                )
+        except ResourceError as _re:
+            print(f"\nError: {_re}", file=sys.stderr)
+            _resource_monitor.stop()
+            sys.exit(1)
+        # Store on args so _mode_video can call checkpoint() again
+        # between pipeline steps.
+        args._resource_monitor = _resource_monitor
+    else:
+        args._resource_monitor = None
 
     # Normalise out_lang → resolved list (includes root_lang if not already)
     if args.out_lang is None:
@@ -2491,6 +3073,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "ingest":
         _mode_ingest(args)
 
+    elif args.mode == "dedupe":
+        _mode_dedupe(args)
+
     elif args.mode == "package":
         # Standalone packaging — read existing JSON → SRT + show notes.
         if args.script_input is None:
@@ -2510,6 +3095,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n{'\u2550' * 60}")
             print("  Packaging complete!")
             print(f"{'\u2550' * 60}\n")
+
+    elif args.mode == "voice-prep":
+        _mode_voice_prep(args)
+
+    elif args.mode == "voice-assign":
+        _mode_voice_assign(args)
 
     elif args.mode == "video":
         _mode_video(args)

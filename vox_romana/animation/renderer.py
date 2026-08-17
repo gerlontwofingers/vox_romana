@@ -221,6 +221,29 @@ class AnimationRenderer:
             )
             self._face_animator.animate_for_plan(plan, audio_path, faces_dir)
 
+        # ── Stage 2.7: Mid-pipeline resource checkpoint ───────────────
+        # Image generation (Stage 1) has written all SD frames to disk.
+        # This is the highest-risk transition: the SD frames are already
+        # consuming space, and moviepy is about to load all of them plus
+        # allocate large composite frame buffers.  If disk or RAM is
+        # already dangerously low, abort here rather than letting the
+        # encode start and potentially corrupt the output file.
+        try:
+            from vox_romana.core.resource_monitor import ResourceMonitor, ResourceError, free_disk_gb
+            _disk_at_encode = free_disk_gb(output_dir)
+            logger.info(
+                "AnimationRenderer [pre-encode]: %.1f GB free at %s",
+                _disk_at_encode, output_dir,
+            )
+            if _disk_at_encode < 2.0:
+                raise ResourceError(
+                    f"pre-encode disk check: only {_disk_at_encode:.1f} GB free at "
+                    f"{output_dir} — aborting before moviepy encode to avoid "
+                    "a corrupt output file"
+                )
+        except ImportError:
+            pass  # resource_monitor not importable — skip check gracefully
+
         # ── Stage 3: Video rendering ──────────────────────────────────
         backend = self._get_backend(plan.render_backend)
         logger.info(

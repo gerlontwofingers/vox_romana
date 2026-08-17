@@ -43,7 +43,15 @@ check:
 
 # ── test ──────────────────────────────────────────────────────────────────────
 test:
-	$(PYTHON) -m pytest
+	$(PYTHON) -m pytest -n auto --timeout=30
+
+# Stream live output to logs/test_run.log while also printing to stdout.
+# Usage:  make test-log          (parallel, default)
+#         make test-log N=1      (serial, for debugging a specific failure)
+N ?= auto
+test-log:
+	@mkdir -p logs
+	$(PYTHON) -m pytest -n $(N) --timeout=30 --tb=short 2>&1 | tee logs/test_run.log
 
 # ── test-integration ─────────────────────────────────────────────────────────
 test-integration:

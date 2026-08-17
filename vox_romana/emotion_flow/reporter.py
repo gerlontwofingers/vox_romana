@@ -298,7 +298,9 @@ class EmotionFlowReporter:
 
     def _html_transition(self, report: EmotionFlowReport) -> str:
         tm = report.transition_matrix
-        labels = tm.emotion_labels  # type: ignore[union-attr]
+        if tm is None:
+            return ""
+        labels = tm.emotion_labels
         n = len(labels)
 
         # Build header row
@@ -319,8 +321,8 @@ class EmotionFlowReporter:
         return (
             "<section>\n"
             "  <h2>Transition Matrix</h2>\n"
-            f'  <p class="meta">n_transitions = {tm.n_transitions}, '  # type: ignore[union-attr]
-            f"smoothing k = {tm.smoothing_k:.2f}</p>\n"  # type: ignore[union-attr]
+            f'  <p class="meta">n_transitions = {tm.n_transitions}, '
+            f"smoothing k = {tm.smoothing_k:.2f}</p>\n"
             "  <table>\n"
             f"    <tr>{header_cells}</tr>\n"
             + "\n".join(rows_html)
@@ -330,8 +332,10 @@ class EmotionFlowReporter:
 
     def _html_null_test(self, report: EmotionFlowReport) -> str:
         nt = report.null_test
-        badge_cls = "badge-structured" if nt.is_structured else "badge-not-structured"  # type: ignore[union-attr]
-        badge_txt = "STRUCTURED" if nt.is_structured else "NOT STRUCTURED"  # type: ignore[union-attr]
+        if nt is None:
+            return ""
+        badge_cls = "badge-structured" if nt.is_structured else "badge-not-structured"
+        badge_txt = "STRUCTURED" if nt.is_structured else "NOT STRUCTURED"
 
         return (
             "<section>\n"
@@ -340,59 +344,63 @@ class EmotionFlowReporter:
             "  <table>\n"
             "    <tr><th>Test</th><th>Statistic</th><th>p-value</th></tr>\n"
             f"    <tr><td>Chi-square</td>"
-            f'<td class="num">{_fmt_f(nt.chi2_statistic)}</td>'  # type: ignore[union-attr]
-            f"<td>{_fmt_p(nt.chi2_p)}</td></tr>\n"  # type: ignore[union-attr]
+            f'<td class="num">{_fmt_f(nt.chi2_statistic)}</td>'
+            f"<td>{_fmt_p(nt.chi2_p)}</td></tr>\n"
             f"    <tr><td>G-test (log-likelihood)</td>"
-            f'<td class="num">{_fmt_f(nt.g_statistic)}</td>'  # type: ignore[union-attr]
-            f"<td>{_fmt_p(nt.g_test_p)}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Permutation (n={nt.n_permutations})</td>"  # type: ignore[union-attr]
+            f'<td class="num">{_fmt_f(nt.g_statistic)}</td>'
+            f"<td>{_fmt_p(nt.g_test_p)}</td></tr>\n"
+            f"    <tr><td>Permutation (n={nt.n_permutations})</td>"
             f'<td class="num">&mdash;</td>'
-            f"<td>{_fmt_p(nt.permutation_p)}</td></tr>\n"  # type: ignore[union-attr]
+            f"<td>{_fmt_p(nt.permutation_p)}</td></tr>\n"
             f"    <tr><td>Cram&eacute;r's V</td>"
-            f'<td class="num">{_fmt_f(nt.cramers_v)}</td><td>&mdash;</td></tr>\n'  # type: ignore[union-attr]
+            f'<td class="num">{_fmt_f(nt.cramers_v)}</td><td>&mdash;</td></tr>\n'
             f"    <tr><td>Entropy rate (observed)</td>"
-            f'<td class="num">{_fmt_f(nt.entropy_observed)}</td><td>&mdash;</td></tr>\n'  # type: ignore[union-attr]
+            f'<td class="num">{_fmt_f(nt.entropy_observed)}</td><td>&mdash;</td></tr>\n'
             f"    <tr><td>Entropy rate (null mean)</td>"
-            f'<td class="num">{_fmt_f(nt.entropy_random_mean)}</td><td>&mdash;</td></tr>\n'  # type: ignore[union-attr]
+            f'<td class="num">{_fmt_f(nt.entropy_random_mean)}</td><td>&mdash;</td></tr>\n'
             "  </table>\n"
             "</section>\n"
         )
 
     def _html_semantic(self, report: EmotionFlowReport) -> str:
         sf = report.semantic_flow
-        r_class = "pass" if abs(sf.pearson_r) >= 0.3 else "num"  # type: ignore[union-attr]
+        if sf is None:
+            return ""
+        r_class = "pass" if abs(sf.pearson_r) >= 0.3 else "num"
         return (
             "<section>\n"
             "  <h2>Semantic &amp; Emotion Flow Correlation</h2>\n"
             "  <table>\n"
             "    <tr><th>Metric</th><th>Value</th></tr>\n"
             f"    <tr><td>Pearson r (topic &harr; emotion shifts)</td>"
-            f'<td class="{r_class}">{_fmt_f(sf.pearson_r)}</td></tr>\n'  # type: ignore[union-attr]
+            f'<td class="{r_class}">{_fmt_f(sf.pearson_r)}</td></tr>\n'
             f"    <tr><td>p-value</td>"
-            f"<td>{_fmt_p(sf.p_value)}</td></tr>\n"  # type: ignore[union-attr]
+            f"<td>{_fmt_p(sf.p_value)}</td></tr>\n"
             f"    <tr><td>Segment pairs</td>"
-            f'<td class="num">{sf.n_pairs}</td></tr>\n'  # type: ignore[union-attr]
+            f'<td class="num">{sf.n_pairs}</td></tr>\n'
             "  </table>\n"
             "</section>\n"
         )
 
     def _html_manifest(self, report: EmotionFlowReport) -> str:
         m = report.manifest
+        if m is None:
+            return ""
         pkg_rows = "".join(
             f"    <tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>\n"
-            for k, v in (m.package_versions.items() if m else {})  # type: ignore[union-attr]
+            for k, v in m.package_versions.items()
         )
         return (
             "<section>\n"
             "  <h2>Reproducibility</h2>\n"
             "  <table>\n"
             "    <tr><th>Field</th><th>Value</th></tr>\n"
-            f"    <tr><td>Seed</td><td>{m.seed}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Python</td><td>{_esc(m.python_version)}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Git commit</td><td>{_esc(m.git_commit)}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Timestamp</td><td>{_esc(m.timestamp)}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Hardware</td><td>{_esc(m.hardware)}</td></tr>\n"  # type: ignore[union-attr]
-            f"    <tr><td>Deterministic mode</td><td>{'Yes' if m.deterministic_mode else 'No'}</td></tr>\n"  # type: ignore[union-attr]
+            f"    <tr><td>Seed</td><td>{m.seed}</td></tr>\n"
+            f"    <tr><td>Python</td><td>{_esc(m.python_version)}</td></tr>\n"
+            f"    <tr><td>Git commit</td><td>{_esc(m.git_commit)}</td></tr>\n"
+            f"    <tr><td>Timestamp</td><td>{_esc(m.timestamp)}</td></tr>\n"
+            f"    <tr><td>Hardware</td><td>{_esc(m.hardware)}</td></tr>\n"
+            f"    <tr><td>Deterministic mode</td><td>{'Yes' if m.deterministic_mode else 'No'}</td></tr>\n"
             + pkg_rows
             + "  </table>\n"
             "</section>\n"

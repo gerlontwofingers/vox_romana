@@ -20,6 +20,7 @@ import json
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.config import ParticipantProfile, ShowHostConfig
+from ...core.names import build_curated_name_map, remap_name, remap_names
 from ...core.search import BaseSearchProvider
 from .config import (
     AudiobookConfig,
@@ -52,12 +53,12 @@ text outside the JSON block.
   "tone": "string — overall narrative tone (e.g., 'contemplative', 'urgent', 'warm')",
   "setting": "string — world or setting description",
   "narrator": {{
-    "name": "string — narrator's name (can be a fictional persona)",
+    "name": "string — narrator's name (can be a fictional persona). Pick a memorable, varied name. AVOID overused defaults like 'Sarah Chen', 'Marcus Webb', 'Elena Vasquez', 'Auntie Star', or any 'Chen' surname. Draw from diverse cultural backgrounds.",
     "style": "string — narration style description"
   }},
   "characters": [
     {{
-      "name": "string — character name",
+      "name": "string — character name. Draw from diverse cultural backgrounds; avoid generic placeholder names.",
       "role": "string — role in the story (e.g., 'protagonist', 'antagonist', 'mentor')",
       "voice_gender": "string — 'male', 'female', or null"
     }}
@@ -72,24 +73,10 @@ text outside the JSON block.
       "target_beats": "integer — how many generation beats (1=short, 2-3=standard, 4+=deep). Default 2.",
       "characters": ["array of character names who appear in this chapter"]
     }}
-  ]
-}}
-
-RULES:
-- Plan enough chapters for the scope described. A short story: 3-5 chapters.
-  A novella: 8-15. A full novel: 20-60. Scale to match the brief.
-- If the user specifies a word count or duration, the TARGET LENGTH block
-  takes precedence over these defaults — scale chapters AND beats per chapter
-  up as needed to reach the word budget. Each beat produces ~150-250 words
-  of narration (~200 on average). Use this to derive your plan:
-      ideal_chapters   = max(3, target_words // 2000)
-      beats_per_chapter = max(2, target_words // (200 * ideal_chapters))
-  A 74,000-word audiobook → ~37 chapters, ~10 beats each.
-  A 20,000-word novella  → ~10 chapters, ~10 beats each.
-  There is no upper cap on beats_per_chapter for long-form content.
-- Each chapter should have 2-6 key_points — these are the narrative beats
-  the narrator will cover in order.
-- The first chapter should hook the reader. The last should resolve or conclude.
+  ],
+  "language": "BCP-47 code of the primary spoken language. Infer from character names, location references, and topic keywords in the brief. Examples: 'es' (Spanish), 'fr' (French), 'de' (German), 'pt' (Portuguese), 'it' (Italian), 'zh' (Mandarin). Default 'en' if unclear.",
+  "music_style": "string — music style for this audiobook's intro/outro bumpers. Infer from the genre, tone, and setting. Be specific and evocative. Examples: 'atmospheric orchestral, cinematic' (thriller), 'gentle acoustic guitar bed' (self-help), 'sweeping fantasy orchestra with choir' (epic fantasy). Never null or empty.",
+  "perspective": "string or null — the primary geographic, cultural, or institutional vantage point from which this audiobook is narrated. This anchors observer-relative language ('the northern border', 'our city', 'the empire to the east') so downstream fact-checkers do not flag perspectival phrasing as fabrication. Examples: 'from Guatemala' (Mexico is to its NORTH, El Salvador/Honduras to its south), 'from the perspective of the Roman Senate, late Republic', 'from a 19th-century New England whaling town'. For fiction, give the in-world vantage point. Use null ONLY if the work is genuinely placeless / omniscient with no positional framing."
 - Characters array should list all named characters with roles.
 - ALWAYS respond with valid JSON. Nothing else.
 """
@@ -143,6 +130,16 @@ Tone: {tone}
 
 Respond with ONLY a JSON object:
 {{
+  "voice_gender": "string — 'male' or 'female'. The vocal gender of this \
+narrator for TTS voice assignment. Base this on their name and persona.",
+  "voice_hint": "string — a short TTS casting note describing how this narrator \
+SOUNDS. Accent, age range, warmth, pace. Examples: 'warm baritone, 50s, \
+BBC documentary cadence', 'clear mezzo-soprano, 40s, steady and unhurried', \
+'bright tenor, 30s, intimate bedside-manner delivery'.",
+  "tts_style": "string — a persistent TTS instruction prepended to every \
+utterance by this narrator. Keeps their vocal identity stable across all chapters. \
+Examples: 'Narrate with quiet authority and unhurried gravitas, letting each \
+sentence breathe.', 'Read with warm intimacy, as if telling a story by firelight.'",
   "voice_fingerprint": "string — 2-3 sentences describing their vocal delivery, \
 cadence, verbal habits, and narrative personality. Be specific and distinctive."
 }}
@@ -204,7 +201,10 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 researcher = DebateResearcher(self._client)
             else:
                 researcher = DebateResearcher(self._client, effective_provider)
-            reference_material = researcher.run(brief) or None
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
         config = self._run_architect(
@@ -299,10 +299,19 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 f"{raw_json[:200]!r}\nParse error: {e}"
             ) from e
 
-        # Build narrator.
         narrator_data = data.get("narrator", {})
+        name_specs = [
+            (narrator_data.get("name", ""), None, "audiobook.narrator"),
+        ]
+        name_specs.extend(
+            (c.get("name", ""), c.get("voice_gender"), f"audiobook.character.{idx}")
+            for idx, c in enumerate(data.get("characters", []))
+        )
+        name_map = build_curated_name_map(name_specs, brief=brief)
+
+        # Build narrator.
         narrator = NarratorConfig(
-            name=narrator_data.get("name", ""),
+            name=remap_name(narrator_data.get("name", ""), name_map) or "",
             style=narrator_data.get("style"),
         )
 
@@ -310,7 +319,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
         characters = []
         for c in data.get("characters", []):
             characters.append(ParticipantProfile(
-                name=c.get("name", ""),
+                name=remap_name(c.get("name", ""), name_map) or "",
                 role=c.get("role", "character"),
                 voice_gender=c.get("voice_gender"),
             ))
@@ -325,7 +334,7 @@ class AudiobookBootstrap(BaseShowBootstrap):
                 tone=ch.get("tone"),
                 duration_hint=ch.get("duration_hint", "medium"),
                 target_beats=ch.get("target_beats", 2),
-                characters=ch.get("characters", []),
+                characters=remap_names(ch.get("characters", []), name_map),
             ))
 
         return AudiobookConfig(
@@ -340,6 +349,9 @@ class AudiobookBootstrap(BaseShowBootstrap):
             narrator=narrator,
             characters=characters,
             chapters=chapters,
+            language=(data.get("language") or "en").strip().lower(),
+            music_style=data.get("music_style", ""),
+            perspective=(data.get("perspective") or None),
         )
 
     def _profile_narrator(
@@ -373,6 +385,12 @@ class AudiobookBootstrap(BaseShowBootstrap):
         try:
             data = json.loads(cleaned)
             narrator.voice_fingerprint = data.get("voice_fingerprint", "")
+            if data.get("voice_gender"):
+                narrator.voice_gender = data["voice_gender"]
+            if data.get("voice_hint"):
+                narrator.voice_hint = data["voice_hint"]
+            if data.get("tts_style"):
+                narrator.tts_style = data["tts_style"]
         except (json.JSONDecodeError, TypeError):
             narrator.voice_fingerprint = "(warm, clear audiobook narration)"
 
