@@ -105,7 +105,7 @@ from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
-from .voice_catalog import UNIFIED_VOICE_CATALOG
+from .voice_catalog import UNIFIED_VOICE_CATALOG, get_default_speed
 
 logger = logging.getLogger(__name__)
 
@@ -592,8 +592,12 @@ class TTSRenderer:
         # engine-specific extras (e.g. Piper speaker-id) are populated even
         # when the voice was chosen automatically.  Manual overrides from
         # self._voice_map (which carry extras set by the caller) take precedence.
+        # Auto-assigned entries seed `speed` from the voice catalog's
+        # `default_speed` (B-6) so per-voice rate corrections actually apply.
         voice_cfg_map: dict[str, VoiceConfig] = {
-            speaker: self._voice_map.get(speaker, VoiceConfig(voice_id=vid))
+            speaker: self._voice_map.get(
+                speaker, VoiceConfig(voice_id=vid, speed=get_default_speed(vid))
+            )
             for speaker, vid in voice_map.items()
         }
 
@@ -757,12 +761,23 @@ class TTSRenderer:
             if _pron_hint_suffix and _voice_engine == "kokoro":
                 emotion = (emotion + "; " + _pron_hint_suffix).lstrip("; ")
 
+            # Get engine-specific extras (and per-voice rate override) from
+            # the voice config.
+            voice_cfg = voice_cfg_map.get(
+                speaker, VoiceConfig(voice_id=voice_id, speed=get_default_speed(voice_id))
+            )
+            extras = voice_cfg.extras
+
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))
             # C2: Apply podcast-specific speed baseline so delivery stays
             # measured.  Aligned with WPM_DEFAULTS["podcast"] = 135.
             if content_type == "podcast":
                 speed *= PODCAST_DEFAULT_SPEED
+            # B-6: per-voice rate override — VoiceConfig.speed was defined
+            # but never actually applied, so voices flagged as too fast had
+            # no way to be corrected.
+            speed *= voice_cfg.speed
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))
@@ -774,10 +789,6 @@ class TTSRenderer:
             elif event.get("overlap_with_previous"):
                 overlap = DEFAULT_SOFT_OVERLAP_MS
                 pause_before = 0
-
-            # Get engine-specific extras from the voice config.
-            voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
-            extras = voice_cfg.extras
 
             # ── Synthesize! ───────────────────────────────────────
             if not quiet:
@@ -1309,8 +1320,12 @@ class TTSRenderer:
         speaker = event.get("speaker_name", "Unknown")
         voice_id = voice_map.get(speaker) or self._default_voice()
         emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
-        speed = self._pace_to_speed(event.get("pace"))
-        voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
+        voice_cfg = voice_cfg_map.get(
+            speaker, VoiceConfig(voice_id=voice_id, speed=get_default_speed(voice_id))
+        )
+        # B-6: apply the per-voice rate override alongside the pace-derived
+        # speed — see matching comment in render()'s main loop.
+        speed = self._pace_to_speed(event.get("pace")) * voice_cfg.speed
         event_language = self._event_language(
             event,
             character_langs,

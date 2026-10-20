@@ -484,6 +484,59 @@ class TestTTSRenderer:
             renderer.render(data, tmp_path / f"out_{pace}.wav", format="wav", quiet=True)
             assert engine.calls[0]["speed"] == expected_speed
 
+    def test_voice_config_speed_override_applied(self, tmp_path):
+        """B-6: an explicit VoiceConfig.speed must multiply the final speed
+        sent to the engine — this field previously existed but was never
+        actually consulted by the renderer."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(
+            engine,
+            voice_map={"Alice": VoiceConfig(voice_id="af_heart", speed=0.8)},
+        )
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "Test",
+                "pace": "medium",
+                "tone": [],
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        # medium pace (1.0) * voice override (0.8) = 0.8
+        assert engine.calls[0]["speed"] == pytest.approx(0.8)
+
+    def test_voice_config_default_speed_from_catalog(self, tmp_path):
+        """Auto-assigned voices (no explicit VoiceConfig) should seed their
+        speed from the voice catalog's default_speed rather than always 1.0."""
+        engine = FakeEngine()
+        renderer = TTSRenderer(engine)
+        data = {
+            "events": [{
+                "event_kind": "utterance",
+                "speaker_name": "Alice",
+                "text": "Test",
+                "pace": "medium",
+                "tone": [],
+                "nonverbal": [],
+                "interruption": False,
+                "overlap_with_previous": False,
+                "pause_before": None,
+            }],
+            "participants": [{"name": "Alice"}],
+        }
+        # get_default_speed() is imported by name into renderer.py, so patch
+        # it there rather than on the voice_catalog module.
+        with patch("vox_romana.tts.renderer.get_default_speed", return_value=0.9):
+            renderer.render(data, tmp_path / "out.wav", format="wav", quiet=True)
+        assert engine.calls[0]["speed"] == pytest.approx(0.9)
+
+
     def test_interruption_triggers_overlap(self, tmp_path):
         """interruption=True causes overlap with previous clip."""
         engine = FakeEngine()
