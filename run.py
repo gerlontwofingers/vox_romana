@@ -2112,6 +2112,7 @@ def _mode_ingest(args: argparse.Namespace) -> None:
     """
     from vox_romana.memory.ingest import (
         DocumentIngester,
+        IngestStats,
         CHUNK_SIZE,
         CHUNK_OVERLAP,
     )
@@ -2148,6 +2149,15 @@ def _mode_ingest(args: argparse.Namespace) -> None:
             except Exception as exc:
                 import sys
                 print(f"  ERROR: {p}: {exc}", file=sys.stderr)
+                all_stats.append(
+                    IngestStats(
+                        source=str(p),
+                        format=p.suffix.lower(),
+                        skipped=True,
+                        skip_reason=f"error: {exc}",
+                        failed=True,
+                    )
+                )
         else:
             import sys
             print(f"  WARNING: path not found: {raw_path}", file=sys.stderr)
@@ -2174,13 +2184,18 @@ def _mode_ingest(args: argparse.Namespace) -> None:
             )
         ingested = [s for s in all_stats if not s.skipped]
         skipped = [s for s in all_stats if s.skipped]
+        failed = [s for s in all_stats if s.failed]
         total_chunks = sum(s.chunks for s in ingested)
         total_chars = sum(s.chars for s in ingested)
         print(f"{'─' * 70}")
         print(
-            f"  Total: {len(ingested)} ingested, {len(skipped)} skipped — "
-            f"{total_chunks} chunks, {total_chars:,} chars"
+            f"  Total: {len(ingested)} ingested, {len(skipped)} skipped "
+            f"({len(failed)} failed) — {total_chunks} chunks, {total_chars:,} chars"
         )
+        if failed:
+            print(f"  {len(failed)} file(s) failed to ingest:")
+            for s in failed:
+                print(f"    - {Path(s.source).name}: {s.skip_reason}")
         print(f"{'─' * 70}\n")
 
     # ── Phase 2: Update vector index after ingest ─────────────────────

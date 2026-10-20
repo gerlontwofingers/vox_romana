@@ -88,6 +88,9 @@ class IngestStats:
     skipped: bool = False
     skip_reason: str = ""
     deduped_chunks: int = 0
+    # True only for unexpected extractor errors (e.g. corrupt PDF/EPUB),
+    # as opposed to intentional skips (dry run, dedup, Tier 3, etc.).
+    failed: bool = False
 
 
 @dataclass
@@ -1007,6 +1010,15 @@ class DocumentIngester:
                     results.append(stats)
                 except Exception as e:
                     logger.warning("Failed to ingest %s: %s", path, e)
+                    results.append(
+                        IngestStats(
+                            source=str(path),
+                            format=path.suffix.lower(),
+                            skipped=True,
+                            skip_reason=f"error: {e}",
+                            failed=True,
+                        )
+                    )
 
         return results
 
