@@ -97,6 +97,11 @@ CANNOT see them. Use only sounds the audience can hear: ["laughs"],
 ["chuckles"], ["sighs"], ["scoffs"], ["deep breath"], ["groans"],
 ["clears throat"]. Most turns leave this empty ([]); use roughly 1 in
 5-8 turns when the cue genuinely punctuates a moment.
+
+STAGE DIRECTIONS: delivery/tone belongs in the structured fields (tone,
+pace, volume) above — not embedded in "text". If a scene action is ever
+unavoidable inside "text", use ONLY [square brackets], never (parentheses)
+— parentheses are reserved for prose asides like acronym expansions.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════

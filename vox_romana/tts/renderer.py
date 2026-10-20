@@ -106,6 +106,11 @@ from typing import Any
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
 from .voice_catalog import UNIFIED_VOICE_CATALOG, get_default_speed
+from ..core.stage_directions import (
+    BRACKET_STAGE_DIR_RE,
+    STAGE_DIR_RE,
+    is_stage_direction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,40 +118,12 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE DIRECTION STRIPPING
 # ═══════════════════════════════════════════════════════════════════════════
+# Detection regex/heuristic live in core.stage_directions so the conductor-side
+# format validator can't drift out of sync with what the renderer actually strips.
 
-# Matches any (parenthetical) block in utterance text, e.g.:
-#   (laughs)  (dramatic pause)  (Leaning in, voice low)
-# These are LLM-generated performance directions. Standard TTS engines
-# have no way to act on them, so they end up spoken literally.
-_STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
-
-# Matches square-bracket stage directions, e.g.:
-#   [Dr. Waffleford holds the pizza aloft.]
-#   [The audience gasps.]
-# Audiobook conductors write these for scene actions. They are NEVER data —
-# strip them unconditionally (unlike parentheticals which may contain acronyms).
-_BRACKET_STAGE_DIR_RE = re.compile(r'\[[^\]]*\]')
-
-
-def _is_stage_direction(content: str) -> bool:
-    """Return True if a parenthetical looks like a performance direction.
-
-    Stage directions contain no digits and no acronyms (two or more
-    consecutive uppercase letters).  Numeric asides and acronym expansions
-    are treated as prose and left untouched.  Long prose explanations with
-    conjunctions and verb phrases are also left untouched.
-    """
-    stripped = content.strip()
-    # Numeric asides: "(3.5 million)", "(down 12%)"
-    if re.search(r'\d', stripped):
-        return False
-    # Acronym expansions: "(UBI)", "(GDP growth)"
-    if re.search(r'[A-Z]{2,}', stripped):
-        return False
-    # Long prose parentheticals with conjunctions/relative clauses are not cues
-    if len(stripped.split()) > 15:
-        return False
-    return True
+_STAGE_DIR_RE = STAGE_DIR_RE
+_BRACKET_STAGE_DIR_RE = BRACKET_STAGE_DIR_RE
+_is_stage_direction = is_stage_direction
 
 
 def strip_stage_directions(text: str) -> str:

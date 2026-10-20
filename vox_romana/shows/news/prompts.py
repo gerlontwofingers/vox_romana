@@ -46,6 +46,10 @@ When it's your turn, respond with ONLY a JSON object (no other text):
 NONVERBAL FIELD — audible cues only, used sparingly: e.g. ["clears throat"],
 ["deep breath"], ["sighs"]. Most utterances leave it empty ([]). Never use
 visual gestures — the listener cannot see them.
+
+STAGE DIRECTIONS: if a scene action is ever unavoidable inside "text", use
+ONLY [square brackets], never (parentheses) — parentheses are reserved for
+prose asides like acronym expansions.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -91,6 +95,10 @@ When it's your turn, respond with ONLY a JSON object (no other text):
 NONVERBAL FIELD — audible cues only (no visual gestures). Use sparingly:
 intro/outro segments may include ["intro music"] or ["outro music"]; mid-show
 cues like ["deep breath"] are rare. Never use visual cues.
+
+STAGE DIRECTIONS: if a scene action is ever unavoidable inside "text", use
+ONLY [square brackets], never (parentheses) — parentheses are reserved for
+prose asides like acronym expansions.
 """
 
 # ═══════════════════════════════════════════════════════════════════════════
