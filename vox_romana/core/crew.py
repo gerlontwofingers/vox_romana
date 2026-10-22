@@ -55,6 +55,11 @@ CONSOLIDATION_THRESHOLD: int = 20
 KEEP_HIGH_SALIENCE: int = 5
 KEEP_RECENT: int = 5
 
+# Cap on how many long-term generalizations are injected into a system
+# prompt. Long-term memory grows without bound on disk; the prompt budget
+# does not. Most-recent entries win.
+MAX_LONG_TERM_IN_PROMPT: int = 8
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1 — Profile
@@ -144,20 +149,107 @@ class CrewMember:
     """A crew member assigned to a run.
 
     Attributes:
-        crew_id:  Directory name under the crew root (e.g. ``marcus_webb``).
-        role:     Functional role: ``"director"`` or ``"factchecker"``.
-        profile:  Loaded profile, or ``None`` when no ``profile.yaml`` found.
+        crew_id:    Directory name under the crew root (e.g. ``marcus_webb``).
+        role:       Functional role: ``"director"`` or ``"factchecker"``.
+        profile:    Loaded profile, or ``None`` when no ``profile.yaml`` found.
+        long_term:  Layer-2 semantic generalizations loaded from
+                    ``long_term.jsonl``. Empty until enough runs have
+                    accumulated for a consolidation pass to fire.
     """
 
     crew_id: str
     role: str
     profile: CrewProfile | None = None
+    long_term: list[dict[str, Any]] = field(default_factory=list)
 
     def profile_text(self) -> str:
         """Return the formatted profile block, or '' when no profile is set."""
         if self.profile is None:
             return ""
         return self.profile.format_for_prompt()
+
+    def memory_text(
+        self,
+        *,
+        show_type: str | None = None,
+        limit: int = MAX_LONG_TERM_IN_PROMPT,
+    ) -> str:
+        """Return the formatted long-term memory block for prompt injection.
+
+        Args:
+            show_type: When given, only generalizations tagged for this show
+                       type (or untagged, i.e. universally applicable) are
+                       included.
+            limit:     Maximum number of generalizations to include.
+        """
+        return format_long_term_for_prompt(
+            self.long_term, show_type=show_type, limit=limit,
+        )
+
+
+def format_long_term_for_prompt(
+    records: list[dict[str, Any]],
+    *,
+    show_type: str | None = None,
+    limit: int = MAX_LONG_TERM_IN_PROMPT,
+) -> str:
+    """Format Layer-2 generalizations into a compact system-prompt block.
+
+    Records whose ``show_tags`` is empty are treated as universally
+    applicable and always kept. Records tagged for other show types are
+    dropped when *show_type* is supplied. The most recent *limit* records
+    survive (long_term.jsonl is append-ordered, so later = newer).
+
+    Returns an empty string when nothing is applicable, so callers can
+    concatenate unconditionally.
+    """
+    if not records:
+        return ""
+
+    applicable: list[str] = []
+    for rec in records:
+        text = str(rec.get("text", "")).strip()
+        if not text:
+            continue
+        tags = rec.get("show_tags") or []
+        if show_type and tags and show_type not in tags:
+            continue
+        applicable.append(text)
+
+    if not applicable:
+        return ""
+
+    lines = ["WHAT YOU HAVE LEARNED FROM PAST PRODUCTIONS:"]
+    lines.extend(f"- {text}" for text in applicable[-limit:])
+    return "\n".join(lines)
+
+
+def load_long_term(
+    crew_id: str,
+    *,
+    crew_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Read all Layer-2 generalizations from ``long_term.jsonl``.
+
+    Returns an empty list when the file is absent (the normal state until
+    a crew member has accumulated enough runs to trigger consolidation).
+    Malformed lines are skipped with a warning rather than raising.
+    """
+    base = Path(crew_dir or DEFAULT_CREW_DIR)
+    path = base / crew_id / "long_term.jsonl"
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                logger.warning("crew: skipping malformed long_term line: %s", exc)
+    return records
 
 
 def load_crew_member(
@@ -167,6 +259,10 @@ def load_crew_member(
     crew_dir: Path | None = None,
 ) -> CrewMember:
     """Build a :class:`CrewMember` by reading ``profile.yaml`` from disk.
+
+    Also loads Layer-2 long-term memory from ``long_term.jsonl`` when
+    present, so accumulated cross-run wisdom can be injected alongside the
+    stable profile.
 
     Returns a member with ``profile=None`` (and logs a warning) when the
     file is absent or malformed — so callers don't need to check for errors.
@@ -193,7 +289,12 @@ def load_crew_member(
             "crew: no profile.yaml for %r at %s — running without identity.",
             crew_id, profile_path,
         )
-    return CrewMember(crew_id=crew_id, role=role, profile=profile)
+    return CrewMember(
+        crew_id=crew_id,
+        role=role,
+        profile=profile,
+        long_term=load_long_term(crew_id, crew_dir=crew_dir),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
