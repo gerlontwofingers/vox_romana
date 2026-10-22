@@ -1599,6 +1599,10 @@ class DebateConductor(BaseConductor):
 
         try:
             data = json.loads(cleaned)
+            if not isinstance(data, dict):
+                # LLM returned valid JSON but not an object (e.g. a bare
+                # quoted string) — fall through to the plain-text fallback.
+                raise TypeError("parsed JSON is not an object")
             # Ensure nonverbal is always a list.
             if isinstance(data.get("nonverbal"), str):
                 data["nonverbal"] = [data["nonverbal"]] if data["nonverbal"] else []

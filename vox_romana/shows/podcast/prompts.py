@@ -120,6 +120,10 @@ sparingly to add color: e.g. ["laughs"], ["chuckles"], ["sighs"],
 shapes the moment. Never use visual cues like "gestures", "nods",
 "leans forward" — the listener cannot see them.
 
+STAGE DIRECTIONS: if a scene action is ever unavoidable inside "text", use
+ONLY [square brackets], never (parentheses) — parentheses are reserved for
+prose asides like acronym expansions.
+
 Each object is one speaker turn. Produce 3-15 turns per segment, depending
 on the segment type and target length. Every host should speak at least once
 in multi-host segments.

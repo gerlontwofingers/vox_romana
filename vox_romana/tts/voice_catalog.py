@@ -106,6 +106,11 @@ class VoiceDescriptor:
     tags: tuple[str, ...] = ()
     engine: str = "kokoro"
     is_whispery: bool = False
+    # Baseline speed multiplier for this voice (1.0 = no correction).
+    # Set below 1.0 for voices confirmed by a listening pass to run too
+    # fast at the engine's default rate. Applied by the renderer as the
+    # starting point before any pace/content-type adjustments.
+    default_speed: float = 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -677,6 +682,17 @@ def get_catalog_voice(
     """
     catalog = catalog or KOKORO_VOICE_CATALOG
     return catalog.get(voice_id)
+
+
+def get_default_speed(voice_id: str) -> float:
+    """Return the catalog baseline speed multiplier for *voice_id*.
+
+    Looks up the unified (Kokoro + Piper) catalog so callers don't need to
+    know which engine owns the voice. Falls back to 1.0 (no correction)
+    for voices not in the catalog, e.g. custom-cloned voices.
+    """
+    desc = UNIFIED_VOICE_CATALOG.get(voice_id)
+    return desc.default_speed if desc is not None else 1.0
 
 
 def match_voice(

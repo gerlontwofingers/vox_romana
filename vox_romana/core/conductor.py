@@ -56,6 +56,7 @@ from .duration import (
 )
 from .messages import AgentMessage, AgentRouter, MessageType
 from .session import AgentSession
+from .stage_directions import find_parenthetical_stage_directions
 
 if TYPE_CHECKING:
     from .budget_tracker import BudgetTracker
@@ -581,7 +582,14 @@ class BaseConductor(AgentRouter, ABC):
         *,
         from_agent: str | None = None,
     ) -> dict[str, Any]:
-        """Strip optional issue metadata from parsed JSON and queue a report."""
+        """Strip optional issue metadata from parsed JSON and queue a report.
+
+        Also runs the stage-direction format check (B-7) on ``text``, since
+        every show conductor already funnels its per-event payload through
+        here right after parsing — the natural shared hook point.
+        """
+        self._check_stage_direction_format(payload, from_agent=from_agent)
+
         issue_flag = payload.pop("issue_flag", None)
         if not issue_flag or not from_agent:
             return payload
@@ -618,6 +626,32 @@ class BaseConductor(AgentRouter, ABC):
                 proposed_remediation=proposed_remediation,
             )
         return payload
+
+    def _check_stage_direction_format(
+        self,
+        payload: dict[str, Any],
+        *,
+        from_agent: str | None = None,
+    ) -> None:
+        """Flag (non-blocking) when ``text`` uses parentheses for a scene
+        action instead of the canonical [square brackets] convention.
+
+        The TTS renderer strips both forms either way, so this never blocks
+        or mutates generation — it's pure observability into prompt-
+        compliance drift, surfaced via the existing length-warnings channel.
+        """
+        text = payload.get("text")
+        if not isinstance(text, str) or not text:
+            return
+        violations = find_parenthetical_stage_directions(text)
+        if not violations:
+            return
+        speaker = from_agent or payload.get("speaker_name") or "unknown speaker"
+        self._length_warnings.append(
+            f"[stage-direction format] {speaker}: found (parenthetical) "
+            f"scene action(s) {violations!r} — canonical format is "
+            f"[square brackets] for scene actions."
+        )
 
     def _consume_pending_issue_reports(self) -> str:
         """Return queued issue reports as a text block and clear them."""

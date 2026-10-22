@@ -105,7 +105,12 @@ from typing import Any
 
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
-from .voice_catalog import UNIFIED_VOICE_CATALOG
+from .voice_catalog import UNIFIED_VOICE_CATALOG, get_default_speed
+from ..core.stage_directions import (
+    BRACKET_STAGE_DIR_RE,
+    STAGE_DIR_RE,
+    is_stage_direction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,40 +118,12 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE DIRECTION STRIPPING
 # ═══════════════════════════════════════════════════════════════════════════
+# Detection regex/heuristic live in core.stage_directions so the conductor-side
+# format validator can't drift out of sync with what the renderer actually strips.
 
-# Matches any (parenthetical) block in utterance text, e.g.:
-#   (laughs)  (dramatic pause)  (Leaning in, voice low)
-# These are LLM-generated performance directions. Standard TTS engines
-# have no way to act on them, so they end up spoken literally.
-_STAGE_DIR_RE = re.compile(r'\(([^)]*)\)')
-
-# Matches square-bracket stage directions, e.g.:
-#   [Dr. Waffleford holds the pizza aloft.]
-#   [The audience gasps.]
-# Audiobook conductors write these for scene actions. They are NEVER data —
-# strip them unconditionally (unlike parentheticals which may contain acronyms).
-_BRACKET_STAGE_DIR_RE = re.compile(r'\[[^\]]*\]')
-
-
-def _is_stage_direction(content: str) -> bool:
-    """Return True if a parenthetical looks like a performance direction.
-
-    Stage directions contain no digits and no acronyms (two or more
-    consecutive uppercase letters).  Numeric asides and acronym expansions
-    are treated as prose and left untouched.  Long prose explanations with
-    conjunctions and verb phrases are also left untouched.
-    """
-    stripped = content.strip()
-    # Numeric asides: "(3.5 million)", "(down 12%)"
-    if re.search(r'\d', stripped):
-        return False
-    # Acronym expansions: "(UBI)", "(GDP growth)"
-    if re.search(r'[A-Z]{2,}', stripped):
-        return False
-    # Long prose parentheticals with conjunctions/relative clauses are not cues
-    if len(stripped.split()) > 15:
-        return False
-    return True
+_STAGE_DIR_RE = STAGE_DIR_RE
+_BRACKET_STAGE_DIR_RE = BRACKET_STAGE_DIR_RE
+_is_stage_direction = is_stage_direction
 
 
 def strip_stage_directions(text: str) -> str:
@@ -592,8 +569,12 @@ class TTSRenderer:
         # engine-specific extras (e.g. Piper speaker-id) are populated even
         # when the voice was chosen automatically.  Manual overrides from
         # self._voice_map (which carry extras set by the caller) take precedence.
+        # Auto-assigned entries seed `speed` from the voice catalog's
+        # `default_speed` (B-6) so per-voice rate corrections actually apply.
         voice_cfg_map: dict[str, VoiceConfig] = {
-            speaker: self._voice_map.get(speaker, VoiceConfig(voice_id=vid))
+            speaker: self._voice_map.get(
+                speaker, VoiceConfig(voice_id=vid, speed=get_default_speed(vid))
+            )
             for speaker, vid in voice_map.items()
         }
 
@@ -757,12 +738,23 @@ class TTSRenderer:
             if _pron_hint_suffix and _voice_engine == "kokoro":
                 emotion = (emotion + "; " + _pron_hint_suffix).lstrip("; ")
 
+            # Get engine-specific extras (and per-voice rate override) from
+            # the voice config.
+            voice_cfg = voice_cfg_map.get(
+                speaker, VoiceConfig(voice_id=voice_id, speed=get_default_speed(voice_id))
+            )
+            extras = voice_cfg.extras
+
             # ── Determine speed from pace metadata ────────────────
             speed = self._pace_to_speed(event.get("pace"))
             # C2: Apply podcast-specific speed baseline so delivery stays
             # measured.  Aligned with WPM_DEFAULTS["podcast"] = 135.
             if content_type == "podcast":
                 speed *= PODCAST_DEFAULT_SPEED
+            # B-6: per-voice rate override — VoiceConfig.speed was defined
+            # but never actually applied, so voices flagged as too fast had
+            # no way to be corrected.
+            speed *= voice_cfg.speed
 
             # ── Determine pause and overlap ───────────────────────
             pause_before = mixer.resolve_pause(event.get("pause_before"))
@@ -774,10 +766,6 @@ class TTSRenderer:
             elif event.get("overlap_with_previous"):
                 overlap = DEFAULT_SOFT_OVERLAP_MS
                 pause_before = 0
-
-            # Get engine-specific extras from the voice config.
-            voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
-            extras = voice_cfg.extras
 
             # ── Synthesize! ───────────────────────────────────────
             if not quiet:
@@ -1309,8 +1297,12 @@ class TTSRenderer:
         speaker = event.get("speaker_name", "Unknown")
         voice_id = voice_map.get(speaker) or self._default_voice()
         emotion = self._build_emotion_hint(event, tts_styles.get(speaker))
-        speed = self._pace_to_speed(event.get("pace"))
-        voice_cfg = voice_cfg_map.get(speaker, VoiceConfig(voice_id=voice_id))
+        voice_cfg = voice_cfg_map.get(
+            speaker, VoiceConfig(voice_id=voice_id, speed=get_default_speed(voice_id))
+        )
+        # B-6: apply the per-voice rate override alongside the pace-derived
+        # speed — see matching comment in render()'s main loop.
+        speed = self._pace_to_speed(event.get("pace")) * voice_cfg.speed
         event_language = self._event_language(
             event,
             character_langs,

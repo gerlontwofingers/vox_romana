@@ -825,6 +825,24 @@ class TestDocumentIngesterDirectory:
         chunks = [json.loads(l) for l in jf.read_text().splitlines() if l.strip()]
         assert all(c["tag"] == "my-batch" for c in chunks)
 
+    def test_corrupt_file_recorded_as_failed(self, tmp_path):
+        """A corrupt Tier-1 file (e.g. malformed PDF) should surface in
+        results as a failure, not silently vanish from the run."""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        write(docs, "good.txt", "Content " * 50)
+        bad = docs / "corrupt.pdf"
+        bad.write_bytes(b"%PDF-1.4 not a real pdf, no EOF marker")
+        ingester = DocumentIngester(output_dir=tmp_path / "out")
+        results = ingester.ingest_directory(docs)
+        failed = [r for r in results if r.failed]
+        assert len(failed) == 1
+        assert failed[0].source.endswith("corrupt.pdf")
+        assert failed[0].skipped is True
+        assert "error:" in failed[0].skip_reason
+        ingested = [r for r in results if not r.skipped]
+        assert len(ingested) == 1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. run.py --mode ingest CLI
