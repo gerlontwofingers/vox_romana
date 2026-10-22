@@ -332,7 +332,7 @@ def _build_checkpoint_kwargs(
         return {}
 
     try:
-        engine = PiperEngine()
+        engine = PiperEngine(model_dir=getattr(args, "model_dir", None))
     except Exception as exc:  # noqa: BLE001
         log(f"  Checkpoint disabled (engine init failed: {exc!r})", quiet=quiet)
         return {}
@@ -1428,17 +1428,15 @@ def make_engine(engine_name: str, **kwargs):
 
     elif engine_name == "piper":
         from vox_romana.tts.engines.piper_engine import PiperEngine
-        model_dir = kwargs.get("model_dir", "piper-voices")
-        return PiperEngine(model_dir=model_dir)
+        return PiperEngine(model_dir=kwargs.get("model_dir"))
 
     elif engine_name == "both":
         from vox_romana.tts.engines.multi_engine import MultiEngine
         from vox_romana.tts.engines.kokoro_engine import KokoroEngine
         from vox_romana.tts.engines.piper_engine import PiperEngine
         model = kwargs.get("model", None)
-        model_dir = kwargs.get("model_dir", "piper-voices")
         kokoro = KokoroEngine(model=model) if model else KokoroEngine()
-        piper = PiperEngine(model_dir=model_dir)
+        piper = PiperEngine(model_dir=kwargs.get("model_dir"))
         return MultiEngine([kokoro, piper])
 
     else:
@@ -1484,6 +1482,8 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         Parsed namespace with all options.
     """
+    from vox_romana.core.paths import PIPER_VOICES_DIR
+
     parser = argparse.ArgumentParser(
         prog="render_show",
         description=(
@@ -1548,8 +1548,8 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="piper-voices",
-        help="Piper model directory (default: piper-voices).",
+        default=str(PIPER_VOICES_DIR),
+        help="Piper model directory (default: configured piper_voices_dir).",
     )
 
     parser.add_argument(

@@ -260,6 +260,18 @@ def _make_piper_dir(tmp_path: Path, voice_ids: list[str]) -> Path:
 
 
 class TestPiperLanguageHelpers:
+    def test_default_model_dir_is_configured_voices_dir_not_cwd(self, tmp_path, monkeypatch):
+        """PiperEngine() must not resolve 'piper-voices' against the cwd —
+        voices normally live under the configured data_dir."""
+        from vox_romana.core import paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "PIPER_VOICES_DIR", tmp_path)
+        monkeypatch.chdir(tmp_path.parent)
+        assert PiperEngine()._model_dir == tmp_path
+
+    def test_explicit_model_dir_overrides_default(self, tmp_path):
+        assert PiperEngine(model_dir=tmp_path)._model_dir == tmp_path
+
     def test_available_languages_empty_dir(self, tmp_path):
         engine = PiperEngine(model_dir=tmp_path)
         assert engine.available_languages() == []

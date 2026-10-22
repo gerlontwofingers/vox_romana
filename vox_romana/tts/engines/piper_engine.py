@@ -126,12 +126,15 @@ class PiperEngine(BaseTTSEngine):
 
     def __init__(
         self,
-        model_dir: str | Path = "piper-voices",
+        model_dir: str | Path | None = None,
     ) -> None:
         """Initialize the Piper engine.
 
         Args:
             model_dir: Directory containing .onnx voice model files.
+                       Defaults to the configured ``PIPER_VOICES_DIR``
+                       (``piper_voices_dir`` / ``data_dir`` in
+                       vox_romana.yaml), not the current directory.
                        Each voice is a pair of files:
                            {voice_name}.onnx     (the model)
                            {voice_name}.onnx.json (the config)
@@ -142,6 +145,9 @@ class PiperEngine(BaseTTSEngine):
              person doing all the parts — not ideal, but functional for
              testing.
         """
+        if model_dir is None:
+            from vox_romana.core.paths import PIPER_VOICES_DIR
+            model_dir = PIPER_VOICES_DIR
         self._model_dir = Path(model_dir)
         self._voices: dict[str, object] = {}  # voice_id → PiperVoice
         self._default_voice: str | None = None
