@@ -1602,6 +1602,14 @@ def _render_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exclude airy/whispery voices from voice assignment.",
     )
 
+    parser.add_argument(
+        "--hqvoices",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="hqvoices",
+        help="Only auto-assign high-quality voices (default: on).",
+    )
+
     # ── Music generation ─────────────────────────────────────────────
     parser.add_argument(
         "--music",
@@ -1727,6 +1735,17 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
     if args.voice_policy == "auto":
         show_data.pop("voice_hints", None)
 
+    # Download any high-quality voices this show needs but the machine lacks.
+    # Idempotent, so it is a no-op when run.py already did this pre-render.
+    if args.hqvoices:
+        from vox_romana.tts.hq_voices import ensure_hq_voices
+        ensure_hq_voices(
+            show_data,
+            engine=args.engine,
+            model_dir=args.model_dir,
+            quiet=args.quiet,
+        )
+
     # ── Resolve music style: CLI arg > show JSON field > type-based default ─
     _MUSIC_STYLE_FALLBACK: dict[str, str] = {
         "news": "news broadcast theme music, professional and authoritative",
@@ -1746,6 +1765,7 @@ def run_render(argv: list[str] | None = None) -> "RenderResult":
     series_key = getattr(args, "series_id", None)
     try:
         from vox_romana.tts.voice_registry import VoiceRegistry
+        hq_voices=args.hqvoices,
         registry = VoiceRegistry()
     except Exception as exc:
         _render_logger.warning("VoiceRegistry unavailable, voice locking disabled: %s", exc)

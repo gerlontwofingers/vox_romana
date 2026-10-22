@@ -106,6 +106,7 @@ from typing import Any
 from .engine import BaseTTSEngine, SynthesizedAudio, VoiceConfig
 from .mixer import AudioMixer, DEFAULT_OVERLAP_MS, DEFAULT_SOFT_OVERLAP_MS
 from .voice_catalog import UNIFIED_VOICE_CATALOG, get_default_speed
+from .hq_voices import restrict_to_hq
 from ..core.stage_directions import (
     BRACKET_STAGE_DIR_RE,
     STAGE_DIR_RE,
@@ -403,6 +404,7 @@ class TTSRenderer:
         music_duration: float = 8.0,
         music_volume_db: float = 0.0,
         parallel_workers: int = 1,
+        hq_voices: bool = False,
     ) -> None:
         """Initialize the renderer.
 
@@ -453,6 +455,13 @@ class TTSRenderer:
                               safe at any worker count (each call is a fresh
                               subprocess with its own model load).
 
+            hq_voices:        When True, automatic voice assignment only draws
+                              from the high-quality pool (see
+                              :mod:`vox_romana.tts.hq_voices`). A language with
+                              no high-quality voice keeps its normal voices.
+                              Explicit ``voice_map`` entries are never changed.
+                              Default False keeps the legacy behaviour.
+
         TIP: For quick testing, skip voice_map entirely. The renderer
              will assign voices automatically. For production, craft a
              voice_map that matches each character's personality.
@@ -463,6 +472,7 @@ class TTSRenderer:
         self._registry = registry
         self._series_key_override = series_key
         self._exclude_whispery = exclude_whispery
+        self._hq_voices = hq_voices
         self._music_engine = music_engine
         self._music_style = music_style
         self._music_duration = music_duration
@@ -951,6 +961,8 @@ class TTSRenderer:
             Dict mapping every speaker name to a voice_id string.
         """
         available = self._engine.available_voices()
+        if self._hq_voices:
+            available = restrict_to_hq(available)
         casting = voice_casting or {}
         hints = voice_hints or {}
         language_overrides = character_langs or {}
@@ -1041,6 +1053,14 @@ class TTSRenderer:
             active_catalog = PIPER_VOICE_CATALOG
         else:
             active_catalog = KOKORO_VOICE_CATALOG
+
+        if self._hq_voices:
+            # The hint matcher picks straight from the catalog, so narrow it
+            # to the HQ voices that are actually installed.
+            _hq_available = set(available)
+            _hq_catalog = {v: d for v, d in active_catalog.items() if v in _hq_available}
+            if _hq_catalog:
+                active_catalog = _hq_catalog
 
         def _candidate_pool_for_language(speaker_language: str) -> list[str]:
             normalized_language = speaker_language.strip().lower().replace("_", "-")
@@ -1252,6 +1272,8 @@ class TTSRenderer:
     def _default_voice(self) -> str:
         """Get the first available voice, or "default" if none."""
         voices = self._engine.available_voices()
+        if self._hq_voices:
+            voices = restrict_to_hq(voices)
         return voices[0] if voices else "default"
 
     @staticmethod

@@ -860,6 +860,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     render_group.add_argument(
+        "--hqvoices",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="hqvoices",
+        help=(
+            "Only auto-assign high-quality voices (default: on). Kokoro "
+            "voices graded C or better and Piper medium/high voices; "
+            "synthetic-sounding low-tier voices are skipped. Missing "
+            "high-quality Piper voices are downloaded when the show needs "
+            "them. Use --no-hqvoices to draw from every installed voice. "
+            "Explicit --voice-map entries are never changed."
+        ),
+    )
+    render_group.add_argument(
         "--music",
         action="store_true",
         default=True,
@@ -1737,6 +1751,8 @@ def _build_render_argv(
         argv.append("--no-strip-directions")
     if args.no_whisper_voices:
         argv.append("--no-whisper-voices")
+    if not args.hqvoices:
+        argv.append("--no-hqvoices")
     if args.music:
         argv.append("--music")
     if args.music_style:
@@ -1787,6 +1803,16 @@ def _mode_render(json_path: str | Path, args: argparse.Namespace):
 
     Returns:
         RenderResult with stats including per-event audio durations.
+    if args.hqvoices:
+        # Fetch missing high-quality voices first so the preflight below
+        # only warns about voices that are still missing afterwards.
+        from vox_romana.tts.hq_voices import ensure_hq_voices
+        ensure_hq_voices(
+            json_path,
+            engine=args.engine,
+            model_dir=args.model_dir,
+            quiet=getattr(args, "quiet", False),
+        )
     """
     from vox_romana.tts.voice_preflight import check_piper_voices
     check_piper_voices(
