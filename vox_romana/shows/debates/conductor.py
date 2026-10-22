@@ -1346,6 +1346,21 @@ class DebateConductor(BaseConductor):
                         if speaker_role == "moderator"
                         else f"participant:{speaker_name}"
                     )
+                    scrubbed = self._scrub_unresolved_claims(
+                        f"turn_{turn_number}_{speaker_name}",
+                        [turn_text],
+                        blocking,
+                    )
+                    if scrubbed is not None:
+                        event_dict["text"] = scrubbed[0]
+                        print(
+                            f"  [turn {turn_number} {speaker_name}] "
+                            f"fact-check unresolved after {config.max_retries} "
+                            f"attempts — rewrote turn to drop "
+                            f"{len(blocking)} claim(s)",
+                            flush=True,
+                        )
+                        break
                     moderator_name = getattr(config.moderator, "name", None)
                     moderator_route = (
                         f"moderator:{moderator_name}" if moderator_name else None

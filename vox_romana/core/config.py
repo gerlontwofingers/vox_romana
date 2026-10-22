@@ -165,7 +165,7 @@ class ContentConfig:
     target_words: int | None = None
     tolerance_percent: float = 10.0
     flexibility_score: float = 0.5
-    max_retries: int = 3
+    max_retries: int = 10
     allow_bootstrap_fabrications: bool = False
 
     def validate(self) -> list[str]:

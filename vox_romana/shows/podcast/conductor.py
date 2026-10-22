@@ -654,6 +654,22 @@ class PodcastConductor(BaseConductor):
                             )
                             break
                     else:
+                        scrubbed = self._scrub_unresolved_claims(
+                            seg_id,
+                            [(evt.get("text") or "") for evt in segment_events],
+                            blocking,
+                        )
+                        if scrubbed is not None:
+                            for evt, new_text in zip(segment_events, scrubbed):
+                                evt["text"] = new_text
+                            print(
+                                f"  [segment {seg_idx + 1}/{total_segments}] "
+                                f"fact-check unresolved after "
+                                f"{config.max_retries} attempts — rewrote "
+                                f"segment to drop {len(blocking)} claim(s)",
+                                flush=True,
+                            )
+                            break
                         self._report_issue_to_director(
                             from_agent="podcast_hosts",
                             summary=(

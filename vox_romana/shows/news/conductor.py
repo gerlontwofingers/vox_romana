@@ -850,6 +850,23 @@ class NewsConductor(BaseConductor):
                         )
                         break
                 else:
+                    scrubbed = self._scrub_unresolved_claims(
+                        seg_id, [e.get("text") or "" for e in events], blocking,
+                    )
+                    if scrubbed is not None:
+                        for e, new_text in zip(events, scrubbed):
+                            e["text"] = new_text
+                        seg_text = " ".join(
+                            (e.get("text") or "").strip() for e in events
+                        ).strip()
+                        print(
+                            f"  [seg {segment_number}/{total_segments}] "
+                            f"fact-check unresolved after {config.max_retries} "
+                            f"attempts — rewrote segment to drop "
+                            f"{len(blocking)} claim(s)",
+                            flush=True,
+                        )
+                        break
                     self._report_issue_to_director(
                         from_agent=f"anchor:{anchor.name}",
                         summary=(

@@ -56,6 +56,7 @@ from .duration import (
 )
 from .messages import AgentMessage, AgentRouter, MessageType
 from .session import AgentSession
+from .fact_scrub import scrub_unresolved_claims
 from .stage_directions import find_parenthetical_stage_directions
 
 if TYPE_CHECKING:
@@ -658,6 +659,36 @@ class BaseConductor(AgentRouter, ABC):
             f"scene action(s) {violations!r} — canonical format is "
             f"[square brackets] for scene actions."
         )
+
+    def _scrub_unresolved_claims(
+        self,
+        unit_id: str,
+        texts: list[str],
+        blocking: list[Any],
+    ) -> list[str] | None:
+        """Rewrite content that exhausted its fact-check retries.
+
+        Drops the claims that never passed (and anything depending on them)
+        while keeping the passages coherent and continuous. Returns the
+        rewritten passages (same length and order as *texts*) or ``None``
+        when the rewrite failed, in which case the caller falls back to
+        publishing with a warning.
+        """
+        scrubbed = scrub_unresolved_claims(
+            self._client,
+            texts,
+            blocking,
+            prior_context=getattr(self, "_build_prior_context", lambda: None)(),
+            perspective=getattr(self.config, "perspective", None),
+        )
+        if scrubbed is None:
+            return None
+        for r in blocking:
+            self._length_warnings.append(
+                f"[{unit_id}] FACT_CHECK_SCRUBBED: removed unresolved claim "
+                f"after retries were exhausted: {r.claim}"
+            )
+        return scrubbed
 
     def _consume_pending_issue_reports(self) -> str:
         """Return queued issue reports as a text block and clear them."""

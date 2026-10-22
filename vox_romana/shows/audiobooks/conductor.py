@@ -828,6 +828,23 @@ class AudiobookConductor(BaseConductor):
                         )
                         break
                 else:
+                    scrubbed = self._scrub_unresolved_claims(
+                        ch_id, [e.get("text") or "" for e in events], blocking,
+                    )
+                    if scrubbed is not None:
+                        for e, new_text in zip(events, scrubbed):
+                            e["text"] = new_text
+                        ch_text = " ".join(
+                            (e.get("text") or "").strip() for e in events
+                        ).strip()
+                        print(
+                            f"  [chapter {chapter_number}/{total_chapters}] "
+                            f"fact-check unresolved after {config.max_retries} "
+                            f"attempts — rewrote chapter to drop "
+                            f"{len(blocking)} claim(s)",
+                            flush=True,
+                        )
+                        break
                     self._report_issue_to_director(
                         from_agent="narrator",
                         summary=(

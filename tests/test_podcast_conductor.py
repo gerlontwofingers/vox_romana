@@ -1097,6 +1097,58 @@ class TestDirectorBrief:
         assert len(brief.segment_notes) == 2
 
 
+class TestFactCheckExhaustedRewrite:
+    """When fact-check retries run out, the segment is rewritten, not published as-is."""
+
+    def _run(self, rewrite_reply):
+        from vox_romana.core.editing.models import FactCheckResult
+
+        config = make_test_config(num_hosts=2, num_segments=1, with_director=False)
+        client = Mock()
+        client.chat.return_value = rewrite_reply
+        conductor = PodcastConductor(config, client=client)
+        conductor._build_agents()
+        # Enable the gate only after agents are built so no classifier runs.
+        config.fact_check = "quick"
+        config.max_retries = 1
+        conductor._content_mode = "factual"
+
+        host_names = [h.name for h in config.hosts]
+        conductor._session.send = lambda msg: make_segment_response(host_names, num_turns=3)
+
+        report = Mock(
+            has_fabrications=True,
+            has_contradictions=False,
+            fabricated_claims=[FactCheckResult(
+                claim="Unsupported claim",
+                verdict="fabricated",
+                explanation="No source.",
+                source="reference_material",
+            )],
+            contradicted_claims=[],
+        )
+        conductor._fact_checker = Mock()
+        conductor._fact_checker.check_content.return_value = report
+        conductor._challenge_fabrications = Mock(return_value=report)
+
+        return conductor, conductor._run_turn_loop()
+
+    def test_rewrites_every_line_and_keeps_speakers(self):
+        conductor, events = self._run(json.dumps(["Clean one.", "Clean two.", "Clean three."]))
+        assert [e["text"] for e in events] == ["Clean one.", "Clean two.", "Clean three."]
+        assert [e["speaker_name"] for e in events] == [
+            h for h in [conductor.config.hosts[i % 2].name for i in range(3)]
+        ]
+        assert any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+
+    def test_falls_back_to_warning_when_rewrite_is_invalid(self):
+        conductor, events = self._run("not json")
+        assert all("This is line" in e["text"] for e in events)
+        assert any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TestImports — verify all public symbols are importable
 # ═══════════════════════════════════════════════════════════════════════════

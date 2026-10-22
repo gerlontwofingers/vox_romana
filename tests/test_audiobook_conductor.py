@@ -873,6 +873,64 @@ class TestDirectorCheck:
         assert result.director_notes == []
 
 
+class TestFactCheckExhaustedRewrite:
+    """When fact-check retries run out, the chapter is rewritten, not published as-is."""
+
+    def _run(self, rewrite_reply):
+        from vox_romana.core.editing.models import FactCheckResult
+
+        config = make_test_config(num_chapters=1, with_director=False, target_beats=2)
+        config.fact_check = "quick"
+        config.max_retries = 1
+        client = Mock()
+        client.chat.return_value = rewrite_reply
+        conductor = AudiobookConductor(config, client=client)
+        conductor._audiobook_id = "test1234"
+        conductor._content_mode = "factual"
+        session = Mock()
+        session.send.return_value = make_narrator_json("Unsupported claim here.")
+        conductor._narrator_session = session
+
+        report = Mock(
+            has_fabrications=True,
+            has_contradictions=False,
+            fabricated_claims=[FactCheckResult(
+                claim="Unsupported claim",
+                verdict="fabricated",
+                explanation="No source.",
+                source="reference_material",
+            )],
+            contradicted_claims=[],
+        )
+        conductor._fact_checker = Mock()
+        conductor._fact_checker.check_content.return_value = report
+        conductor._challenge_fabrications = Mock(return_value=report)
+
+        events = conductor._generate_chapter(
+            chapter=config.chapters[0],
+            chapter_number=1,
+            total_chapters=1,
+            global_order_start=0,
+        )
+        return conductor, events
+
+    def test_rewrites_every_beat_and_keeps_event_count(self):
+        conductor, events = self._run(json.dumps(["Clean opening.", "Clean close."]))
+        assert [e["text"] for e in events] == ["Clean opening.", "Clean close."]
+        assert any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+
+    def test_approved_context_uses_rewritten_text(self):
+        conductor, _ = self._run(json.dumps(["Clean opening.", "Clean close."]))
+        assert conductor._approved_chapter_texts == ["Clean opening. Clean close."]
+
+    def test_falls_back_to_warning_when_rewrite_is_invalid(self):
+        conductor, events = self._run("not json")
+        assert [e["text"] for e in events] == ["Unsupported claim here."] * 2
+        assert any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 12: Router Integration
 # ═══════════════════════════════════════════════════════════════════════════

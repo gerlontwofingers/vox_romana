@@ -489,6 +489,68 @@ class TestTurnLoop:
         assert "Unsupported claim" in rendered
         assert "fact-check objections" in rendered
 
+    def _exhausted_fact_check_turn(self, client):
+        """Drive one turn whose fact-check never passes (max_retries=1)."""
+        config = make_test_config(target_turns=4, with_director=False)
+        config.fact_check = "strict"
+        config.max_retries = 1
+        conductor = DebateConductor(config, client=client)
+        conductor._build_agents()
+
+        participant_session = Mock()
+        participant_session.send.return_value = make_turn_json("Unsupported claim.")
+        moderator_session = Mock()
+        conductor._agent_sessions["Alice"] = participant_session
+        conductor._session_registry["participant:Alice"] = participant_session
+        conductor._session_registry["moderator:Charlie"] = moderator_session
+
+        report = Mock()
+        report.has_fabrications = True
+        report.has_contradictions = False
+        report.fabricated_claims = [FactCheckResult(
+            claim="Unsupported claim",
+            verdict="fabricated",
+            explanation="No supporting source found.",
+            source="reference_material",
+        )]
+        report.contradicted_claims = []
+        conductor._fact_checker = Mock()
+        conductor._fact_checker.check_content.return_value = report
+        conductor._challenge_fabrications = Mock(return_value=report)
+
+        event = conductor._generate_turn(
+            speaker_name="Alice",
+            speaker_role="participant",
+            turn_number=2,
+            wrapping_up=False,
+            remaining_turns=3,
+        )
+        return conductor, event, moderator_session
+
+    def test_exhausted_fact_check_rewrites_turn_to_drop_claim(self):
+        client = Mock()
+        client.chat.return_value = json.dumps(["I will stick to what we can show."])
+        conductor, event, moderator_session = self._exhausted_fact_check_turn(client)
+
+        assert event["text"] == "I will stick to what we can show."
+        assert any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+        # The objection was resolved, so no moderator directive is needed.
+        moderator_session.inject_context.assert_not_called()
+
+    def test_exhausted_fact_check_falls_back_to_warning_when_rewrite_fails(self):
+        client = Mock()
+        client.chat.return_value = "not json"
+        conductor, event, moderator_session = self._exhausted_fact_check_turn(client)
+
+        assert event["text"] == "Unsupported claim."
+        assert any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
+        assert not any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+        moderator_session.inject_context.assert_called_once()
+
+    def test_fact_check_retries_default_to_ten(self):
+        assert make_test_config().max_retries == 10
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST CLASS 5: MergedDebate Output

@@ -643,7 +643,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         dest="max_retries",
-        help="Max editor retry attempts per chunk (default: 3).",
+        help=(
+            "Max fact-check attempts per chunk (default: 10). If it still "
+            "fails, the chunk is rewritten to drop the unverifiable claims."
+        ),
     )
 
     gen_group.add_argument(
