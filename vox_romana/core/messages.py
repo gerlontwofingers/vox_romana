@@ -18,6 +18,20 @@ from typing import Any
 
 from .session import AgentSession
 
+# Appended to every cast system prompt so agents know the optional
+# "issue_flag" field exists. BaseConductor._capture_issue_flag() strips it
+# from the parsed JSON and routes it to the director. No braces here: the
+# prompts this is appended to are passed through str.format().
+ISSUE_FLAG_PROMPT_NOTE = """
+OPTIONAL ISSUE FLAG — if something is genuinely wrong and you cannot resolve
+it yourself (the outline contradicts itself, a fact you need is missing from
+the source material, an instruction is impossible to follow), add one extra
+field to your JSON: "issue_flag": "one sentence describing the problem".
+It goes straight to the director so it can be fixed before it compounds.
+Leave the field out entirely when everything is fine — most turns should
+not include it.
+"""
+
 
 class MessageType(str, Enum):
     """Kinds of inter-agent messages understood by the router."""

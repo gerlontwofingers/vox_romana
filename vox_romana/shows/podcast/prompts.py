@@ -15,6 +15,8 @@ These templates use str.format() placeholders. The conductor fills them in
 at runtime with data from the PodcastConfig and host profiles.
 """
 
+from ...core.messages import ISSUE_FLAG_PROMPT_NOTE
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PODCAST HOST SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -127,7 +129,7 @@ prose asides like acronym expansions.
 Each object is one speaker turn. Produce 3-15 turns per segment, depending
 on the segment type and target length. Every host should speak at least once
 in multi-host segments.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
