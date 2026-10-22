@@ -83,6 +83,29 @@ from ..engine import BaseTTSEngine, SynthesizedAudio
 logger = logging.getLogger(__name__)
 
 
+class _LogEachMissingPhonemeOnce(logging.Filter):
+    """Collapse piper-tts's per-occurrence "Missing phoneme" warning.
+
+    Some voices omit marks like U+0329 (syllabic consonant) from their
+    phoneme map; piper skips them with no audible effect but warns on every
+    occurrence, which floods the console over a long render.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[tuple] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not record.getMessage().startswith("Missing phoneme from id map"):
+            return True
+        if record.args in self._seen:
+            return False
+        self._seen.add(record.args)
+        return True
+
+
+logging.getLogger("piper.phoneme_ids").addFilter(_LogEachMissingPhonemeOnce())
+
 def _lang_from_voice_id(voice_id: str) -> str | None:
     """Extract the BCP-47 language code from a Piper voice id.
 

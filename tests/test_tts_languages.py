@@ -260,6 +260,25 @@ def _make_piper_dir(tmp_path: Path, voice_ids: list[str]) -> Path:
 
 
 class TestPiperLanguageHelpers:
+    def test_missing_phoneme_warning_logged_once_per_phoneme(self, caplog):
+        """piper-tts warns on every skipped phoneme; the engine module
+        collapses repeats so a long render doesn't flood the console."""
+        import logging
+
+        import vox_romana.tts.engines.piper_engine as piper_engine
+        from piper.phoneme_ids import phonemes_to_ids
+
+        for f in logging.getLogger("piper.phoneme_ids").filters:
+            if isinstance(f, piper_engine._LogEachMissingPhonemeOnce):
+                f._seen.clear()
+
+        with caplog.at_level(logging.WARNING, logger="piper.phoneme_ids"):
+            phonemes_to_ids(["a", "\u0329", "\u0329", "\u0329"], id_map={"^": [1], "$": [2], "_": [0], "a": [3]})
+            phonemes_to_ids(["\u0329", "\u0361"], id_map={"^": [1], "$": [2], "_": [0], "a": [3]})
+        msgs = [r.getMessage() for r in caplog.records if "Missing phoneme" in r.getMessage()]
+        assert msgs.count("Missing phoneme from id map: \u0329") == 1
+        assert "Missing phoneme from id map: \u0361" in msgs
+
     def test_default_model_dir_is_configured_voices_dir_not_cwd(self, tmp_path, monkeypatch):
         """PiperEngine() must not resolve 'piper-voices' against the cwd —
         voices normally live under the configured data_dir."""
