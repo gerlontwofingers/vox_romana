@@ -310,6 +310,65 @@ class TestVerifyClaims:
         assert results[0].verdict == "unverifiable"
         assert results[0].claim == "A claim"
 
+    def test_profile_text_prepended_to_verifier_system_prompt(self):
+        """C-3: a crew profile (e.g. threshold_calibration) must actually
+        reach the verifier LLM call, not just be stored unused."""
+        claims = [FlaggedClaim(text="Some claim", reason="r")]
+        response = json.dumps([
+            {"claim": "Some claim", "verdict": "verified", "explanation": "e", "source": "ref"},
+        ])
+        client = _make_client(response)
+        checker = FactChecker(
+            client=client,
+            profile_text="CREW IDENTITY: Marcus Webb\nThreshold calibration: lenient",
+        )
+        checker.verify_claims(claims, reference_material="some ref")
+        system_msg = client.chat.call_args.kwargs["messages"][0]["content"]
+        assert system_msg.startswith("CREW IDENTITY: Marcus Webb")
+        assert "Threshold calibration: lenient" in system_msg
+
+    def test_no_profile_text_leaves_prompt_unchanged(self):
+        """Default (empty) profile_text must not alter the base prompt at all."""
+        claims = [FlaggedClaim(text="Some claim", reason="r")]
+        response = json.dumps([
+            {"claim": "Some claim", "verdict": "verified", "explanation": "e", "source": "ref"},
+        ])
+        client = _make_client(response)
+        checker = FactChecker(client=client)
+        checker.verify_claims(claims, reference_material="some ref")
+        system_msg = client.chat.call_args.kwargs["messages"][0]["content"]
+        assert not system_msg.startswith("CREW IDENTITY")
+
+
+# ═════════════════════════════════════════════════════════════════
+# [C-3] TEST: FactChecker crew-profile injection
+# ══════════════════════════════════════════════════════════════
+
+class TestFactCheckerProfileInjection:
+    """_augmented_system_prompt() and adjudicate_justification() injection."""
+
+    def test_augmented_system_prompt_no_profile_returns_unchanged(self):
+        checker = FactChecker(client=Mock())
+        assert checker._augmented_system_prompt("BASE") == "BASE"
+
+    def test_augmented_system_prompt_prepends_profile(self):
+        checker = FactChecker(client=Mock(), profile_text="CREW IDENTITY: X")
+        result = checker._augmented_system_prompt("BASE")
+        assert result == "CREW IDENTITY: X\n\nBASE"
+
+    def test_adjudicate_justification_uses_profile(self):
+        response = json.dumps({
+            "verdict": "unverifiable", "explanation": "e", "source": "challenge_loop",
+        })
+        client = _make_client(response)
+        checker = FactChecker(client=client, profile_text="CREW IDENTITY: Marcus Webb")
+        original = FactCheckResult(
+            claim="c", verdict="fabricated", explanation="orig", source="ref",
+        )
+        checker.adjudicate_justification(original, "actually I misspoke")
+        system_msg = client.chat.call_args.kwargs["messages"][0]["content"]
+        assert system_msg.startswith("CREW IDENTITY: Marcus Webb")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEST: thorough mode with search
@@ -1044,6 +1103,18 @@ class TestBuildDefault:
         with patch("vox_romana.core.fact_checker.build_fact_check_provider", return_value=None):
             checker = FactChecker.build_default(client)
         assert checker._search is None
+
+    def test_profile_text_forwarded(self):
+        client = Mock()
+        with patch("vox_romana.core.fact_checker.build_fact_check_provider", return_value=None):
+            checker = FactChecker.build_default(client, profile_text="CREW IDENTITY: Y")
+        assert checker._profile_text == "CREW IDENTITY: Y"
+
+    def test_profile_text_defaults_empty(self):
+        client = Mock()
+        with patch("vox_romana.core.fact_checker.build_fact_check_provider", return_value=None):
+            checker = FactChecker.build_default(client)
+        assert checker._profile_text == ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════

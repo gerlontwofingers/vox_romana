@@ -12,6 +12,7 @@ from vox_romana.core.crew import (
     CONSOLIDATION_THRESHOLD,
     KEEP_HIGH_SALIENCE,
     KEEP_RECENT,
+    MAX_LONG_TERM_IN_PROMPT,
     CrewMember,
     CrewProfile,
     EpisodicEntry,
@@ -19,7 +20,9 @@ from vox_romana.core.crew import (
     _strip_json_fences,
     compute_salience,
     consolidate_if_needed,
+    format_long_term_for_prompt,
     load_crew_member,
+    load_long_term,
     write_episodic_entry,
 )
 
@@ -516,3 +519,309 @@ class TestAugmentedDirectorSystemPrompt:
         result = conductor._augmented_director_system_prompt(base)
         # Profile with only a name should still get prepended
         assert "CREW IDENTITY: Minimal" in result
+
+    def test_factchecker_profile_is_captured_for_show_conductors_to_forward(self):
+        """C-3: show conductors read self._crew_profiles.get('factchecker', '')
+        when constructing FactChecker.build_default() — confirm the data is
+        actually there to forward, with the threshold_calibration field that
+        matters for fact-check behaviour."""
+        profile = CrewProfile(
+            name="FC Agent", role="factchecker", threshold_calibration="lenient",
+        )
+        member = CrewMember(crew_id="fc", role="factchecker", profile=profile)
+        conductor = self._make_conductor(crew_members=[member])
+        text = conductor._crew_profiles.get("factchecker", "")
+        assert text.startswith("CREW IDENTITY: FC Agent")
+        assert "Threshold calibration: lenient" in text
+
+    def test_no_factchecker_crew_member_returns_empty_string(self):
+        conductor = self._make_conductor()
+        assert conductor._crew_profiles.get("factchecker", "") == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C-4: runners._write_crew_episodic — end-of-run episodic write wiring
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWriteCrewEpisodic:
+    """vox_romana.cli.runners._write_crew_episodic — the glue between a
+    finished run's production_log and crew.write_episodic_entry()."""
+
+    def _make_result(self, *, production_log=None, events=None, llm_calls=3):
+        return SimpleNamespace(
+            production_log=production_log or [],
+            debate_events=events if events is not None else [{"text": "a"}, {"text": "b"}],
+            total_llm_calls=llm_calls,
+            production_log_path="",
+        )
+
+    def _make_config(self, *, content_type="debate", title="Test Debate"):
+        return SimpleNamespace(content_type=content_type, title=title)
+
+    def test_no_crew_members_is_a_noop(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+        _write_crew_episodic(
+            self._make_result(), self._make_config(), [], MagicMock(), args,
+        )
+        assert not list(tmp_path.glob("**/*.jsonl"))
+
+    def test_writes_entry_with_computed_salience(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        production_log = [{"event_type": "issue_report"}]
+        result = self._make_result(production_log=production_log)
+        config = self._make_config()
+        member = CrewMember(crew_id="marcus_webb", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        _write_crew_episodic(result, config, [member], MagicMock(), args)
+
+        short_term = tmp_path / "marcus_webb" / "short_term.jsonl"
+        assert short_term.exists()
+        entries = [json.loads(l) for l in short_term.read_text().splitlines() if l.strip()]
+        assert len(entries) == 1
+        assert entries[0]["salience_score"] == compute_salience(production_log)
+        assert entries[0]["show_type"] == "debate"
+        assert "2 events" in entries[0]["summary"]
+        assert "1 issue report" in entries[0]["summary"]
+
+    def test_writes_one_entry_per_crew_member(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        members = [
+            CrewMember(crew_id="director_a", role="director", profile=None),
+            CrewMember(crew_id="fc_b", role="factchecker", profile=None),
+        ]
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        _write_crew_episodic(result, config, members, MagicMock(), args)
+
+        assert (tmp_path / "director_a" / "short_term.jsonl").exists()
+        assert (tmp_path / "fc_b" / "short_term.jsonl").exists()
+
+    def test_write_failure_is_logged_not_raised(self, tmp_path):
+        """A crew write error must never abort an otherwise-successful run."""
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        member = CrewMember(crew_id="broken", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        with patch(
+            "vox_romana.cli.runners.write_episodic_entry",
+            side_effect=OSError("disk full"),
+        ):
+            # Must not raise.
+            _write_crew_episodic(result, config, [member], MagicMock(), args)
+
+    def test_consolidation_triggered_when_called(self, tmp_path):
+        """consolidate_if_needed() must actually be invoked (below-threshold
+        is fine — the point is it's wired, not skipped)."""
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        member = CrewMember(crew_id="demo", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        with patch("vox_romana.cli.runners.consolidate_if_needed") as mock_consolidate:
+            _write_crew_episodic(result, config, [member], MagicMock(), args)
+            mock_consolidate.assert_called_once()
+            assert mock_consolidate.call_args.args[0] == "demo"
+            assert mock_consolidate.call_args.kwargs["crew_dir"] == tmp_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C-5: long-term (Layer 2) memory read-back into prompts
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _write_long_term(crew_dir: Path, crew_id: str, records: list[dict]) -> None:
+    member_dir = crew_dir / crew_id
+    member_dir.mkdir(parents=True, exist_ok=True)
+    path = member_dir / "long_term.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+
+
+class TestLoadLongTerm:
+    def test_missing_file_returns_empty_list(self, tmp_path):
+        assert load_long_term("nobody", crew_dir=tmp_path) == []
+
+    def test_reads_all_records(self, tmp_path):
+        _write_long_term(tmp_path, "demo", [
+            {"text": "Lesson one.", "show_tags": ["debate"]},
+            {"text": "Lesson two.", "show_tags": []},
+        ])
+        records = load_long_term("demo", crew_dir=tmp_path)
+        assert len(records) == 2
+        assert records[0]["text"] == "Lesson one."
+
+    def test_malformed_line_skipped_not_raised(self, tmp_path):
+        member_dir = tmp_path / "demo"
+        member_dir.mkdir(parents=True)
+        (member_dir / "long_term.jsonl").write_text(
+            '{"text": "good"}\nNOT JSON\n{"text": "also good"}\n'
+        )
+        records = load_long_term("demo", crew_dir=tmp_path)
+        assert len(records) == 2
+
+
+class TestFormatLongTermForPrompt:
+    def test_empty_records_returns_empty_string(self):
+        assert format_long_term_for_prompt([]) == ""
+
+    def test_formats_as_labelled_block(self):
+        result = format_long_term_for_prompt([{"text": "Keep it tight.", "show_tags": []}])
+        assert result.startswith("WHAT YOU HAVE LEARNED FROM PAST PRODUCTIONS:")
+        assert "- Keep it tight." in result
+
+    def test_untagged_records_always_included(self):
+        result = format_long_term_for_prompt(
+            [{"text": "Universal lesson.", "show_tags": []}], show_type="podcast",
+        )
+        assert "Universal lesson." in result
+
+    def test_filters_by_show_type(self):
+        records = [
+            {"text": "Debate wisdom.", "show_tags": ["debate"]},
+            {"text": "Podcast wisdom.", "show_tags": ["podcast"]},
+        ]
+        result = format_long_term_for_prompt(records, show_type="podcast")
+        assert "Podcast wisdom." in result
+        assert "Debate wisdom." not in result
+
+    def test_no_show_type_keeps_everything(self):
+        records = [
+            {"text": "Debate wisdom.", "show_tags": ["debate"]},
+            {"text": "Podcast wisdom.", "show_tags": ["podcast"]},
+        ]
+        result = format_long_term_for_prompt(records)
+        assert "Debate wisdom." in result
+        assert "Podcast wisdom." in result
+
+    def test_limit_keeps_most_recent(self):
+        records = [{"text": f"Lesson {i}.", "show_tags": []} for i in range(10)]
+        result = format_long_term_for_prompt(records, limit=3)
+        assert "Lesson 9." in result
+        assert "Lesson 7." in result
+        assert "Lesson 0." not in result
+
+    def test_blank_text_entries_skipped(self):
+        records = [{"text": "   ", "show_tags": []}, {"text": "Real.", "show_tags": []}]
+        result = format_long_term_for_prompt(records)
+        assert "Real." in result
+        assert result.count("- ") == 1
+
+    def test_all_filtered_out_returns_empty_string(self):
+        records = [{"text": "Debate only.", "show_tags": ["debate"]}]
+        assert format_long_term_for_prompt(records, show_type="news") == ""
+
+
+class TestCrewMemberMemoryText:
+    def test_no_long_term_returns_empty(self):
+        member = CrewMember(crew_id="x", role="director")
+        assert member.memory_text() == ""
+
+    def test_returns_formatted_block(self):
+        member = CrewMember(
+            crew_id="x", role="director",
+            long_term=[{"text": "Learned a thing.", "show_tags": []}],
+        )
+        assert "Learned a thing." in member.memory_text()
+
+    def test_load_crew_member_populates_long_term(self, tmp_path):
+        _write_long_term(tmp_path, "demo", [{"text": "From disk.", "show_tags": []}])
+        member = load_crew_member("demo", "director", crew_dir=tmp_path)
+        assert len(member.long_term) == 1
+        assert "From disk." in member.memory_text()
+
+    def test_load_crew_member_without_long_term_file(self, tmp_path):
+        member = load_crew_member("demo", "director", crew_dir=tmp_path)
+        assert member.long_term == []
+        assert member.memory_text() == ""
+
+
+class TestConductorInjectsLongTerm:
+    """BaseConductor must combine Layer-1 profile + Layer-2 memory so both
+    the director and factchecker injection sites get accumulated wisdom."""
+
+    def _make_conductor(self, crew_members=None, content_type="podcast"):
+        from unittest.mock import MagicMock
+
+        from vox_romana.core.conductor import BaseConductor, ConductorResult
+        from vox_romana.core.config import ContentConfig
+
+        class _StubConductor(BaseConductor):
+            def _build_agents(self):
+                pass
+            def _run_turn_loop(self):
+                return []
+            def _package_result(self, raw):
+                return ConductorResult(config=self.config)
+
+        config = MagicMock(spec=ContentConfig)
+        config.content_type = content_type
+        config.target_words = None
+        config.target_duration_minutes = None
+        config.estimated_duration_minutes = None
+        config.tolerance_percent = 10
+        return _StubConductor(config, client=MagicMock(), crew_members=crew_members)
+
+    def test_long_term_appears_in_director_prompt(self):
+        member = CrewMember(
+            crew_id="m", role="director",
+            profile=CrewProfile(name="Marcus Webb", role="director"),
+            long_term=[{"text": "I pace cold opens slower now.", "show_tags": []}],
+        )
+        conductor = self._make_conductor(crew_members=[member])
+        result = conductor._augmented_director_system_prompt("BASE PROMPT")
+        assert "CREW IDENTITY: Marcus Webb" in result
+        assert "I pace cold opens slower now." in result
+        assert "BASE PROMPT" in result
+
+    def test_long_term_filtered_by_show_type(self):
+        member = CrewMember(
+            crew_id="m", role="director",
+            profile=CrewProfile(name="Marcus Webb", role="director"),
+            long_term=[
+                {"text": "Debate-only lesson.", "show_tags": ["debate"]},
+                {"text": "Podcast-only lesson.", "show_tags": ["podcast"]},
+            ],
+        )
+        conductor = self._make_conductor(crew_members=[member], content_type="podcast")
+        result = conductor._augmented_director_system_prompt("BASE")
+        assert "Podcast-only lesson." in result
+        assert "Debate-only lesson." not in result
+
+    def test_memory_without_profile_still_injected(self):
+        """A crew member with no profile.yaml but accumulated wisdom should
+        still get that wisdom into the prompt."""
+        member = CrewMember(
+            crew_id="m", role="director", profile=None,
+            long_term=[{"text": "Hard-won lesson.", "show_tags": []}],
+        )
+        conductor = self._make_conductor(crew_members=[member])
+        result = conductor._augmented_director_system_prompt("BASE")
+        assert "Hard-won lesson." in result
+
+    def test_factchecker_long_term_reaches_crew_profiles(self):
+        member = CrewMember(
+            crew_id="fc", role="factchecker",
+            profile=CrewProfile(name="FC", role="factchecker"),
+            long_term=[{"text": "I flag numbers more carefully.", "show_tags": []}],
+        )
+        conductor = self._make_conductor(crew_members=[member])
+        text = conductor._crew_profiles.get("factchecker", "")
+        assert "I flag numbers more carefully." in text
+
+    def test_no_crew_members_leaves_profiles_empty(self):
+        conductor = self._make_conductor()
+        assert conductor._crew_profiles == {}

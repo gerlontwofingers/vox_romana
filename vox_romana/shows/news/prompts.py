@@ -9,6 +9,8 @@ The news show has a fundamentally different prompt structure than debates:
 - Segments are independent stories, not a continuous argument
 """
 
+from ...core.messages import ISSUE_FLAG_PROMPT_NOTE
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ANCHOR SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -50,7 +52,7 @@ visual gestures — the listener cannot see them.
 STAGE DIRECTIONS: if a scene action is ever unavoidable inside "text", use
 ONLY [square brackets], never (parentheses) — parentheses are reserved for
 prose asides like acronym expansions.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SHOW HOST SYSTEM PROMPT (narrator/emcee wrapping the broadcast)
@@ -99,7 +101,7 @@ cues like ["deep breath"] are rare. Never use visual cues.
 STAGE DIRECTIONS: if a scene action is ever unavoidable inside "text", use
 ONLY [square brackets], never (parentheses) — parentheses are reserved for
 prose asides like acronym expansions.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ROLE-SPECIFIC INSTRUCTIONS (injected into host prompt)

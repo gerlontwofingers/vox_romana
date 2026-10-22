@@ -8,6 +8,8 @@ These templates use str.format() placeholders. The conductor fills them in
 at runtime with data from the DebateConfig and participant profiles.
 """
 
+from ...core.messages import ISSUE_FLAG_PROMPT_NOTE
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PARTICIPANT SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -102,7 +104,7 @@ STAGE DIRECTIONS: delivery/tone belongs in the structured fields (tone,
 pace, volume) above — not embedded in "text". If a scene action is ever
 unavoidable inside "text", use ONLY [square brackets], never (parentheses)
 — parentheses are reserved for prose asides like acronym expansions.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MODERATOR SYSTEM PROMPT
@@ -146,7 +148,7 @@ When it's your turn, respond with ONLY a JSON object:
 NONVERBAL FIELD — AUDIBLE cues only (e.g. ["chuckles"], ["clears throat"]).
 NEVER use visual gestures — listeners cannot see them. Most moderator turns
 leave this empty ([]).
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SHOW HOST SYSTEM PROMPT
@@ -190,7 +192,7 @@ When it's your turn, respond with ONLY a JSON object (no other text):
   "pause_before": "none|short|medium|long",
   "pause_after": "none|short|medium|long"
 }}
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ROLE-SPECIFIC INSTRUCTIONS (injected into host prompt)

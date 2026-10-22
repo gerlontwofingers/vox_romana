@@ -5,6 +5,8 @@ adversarial exchange. The prompts emphasize narrative flow, pacing,
 and staying true to the source material.
 """
 
+from ...core.messages import ISSUE_FLAG_PROMPT_NOTE
+
 # ═══════════════════════════════════════════════════════════════════════════
 # NARRATOR SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -52,7 +54,7 @@ NONVERBAL FIELD — audible narrator cues only, used very sparingly
 (< 1 per chapter). Examples: ["deep breath"], ["sighs"], ["pause"].
 Never use visual gestures — the listener cannot see them. Prefer
 encoding mood through tone/pace/pause_before instead.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 
 # ═══════════════════════════════════════════════════════════════════════════

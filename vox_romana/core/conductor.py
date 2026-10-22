@@ -160,10 +160,16 @@ class BaseConductor(AgentRouter, ABC):
         # Built from the optional crew_members list.  Subclasses call
         # ``_augmented_director_system_prompt(base)`` to prepend the
         # director's profile to any per-call director system prompt.
+        # Layer-1 identity and Layer-2 accumulated wisdom are combined
+        # here so every injection site gets both without extra wiring.
         self._crew_profiles: dict[str, str] = {}
         if crew_members:
             for member in crew_members:
-                text = member.profile_text()
+                blocks = [
+                    member.profile_text(),
+                    member.memory_text(show_type=config.content_type),
+                ]
+                text = "\n\n".join(b for b in blocks if b)
                 if text:
                     self._crew_profiles[member.role] = text
 

@@ -6,6 +6,8 @@ define, exemplify, recap. The prompts emphasize clarity, structure,
 and the rhythm of good teaching — not narrative or argument.
 """
 
+from ...core.messages import ISSUE_FLAG_PROMPT_NOTE
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PROFESSOR SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -69,7 +71,7 @@ NONVERBAL FIELD — audible cues only and very rare (< 1 per section).
 Examples: ["clears throat"], ["chuckles"], ["pause"]. Never use visual
 gestures — the listener cannot see them. Prefer encoding emphasis through
 tone, pace, and pause_before.
-"""
+""" + ISSUE_FLAG_PROMPT_NOTE
 
 
 # ═══════════════════════════════════════════════════════════════════════════

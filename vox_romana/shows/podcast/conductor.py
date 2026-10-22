@@ -304,7 +304,9 @@ class PodcastConductor(BaseConductor):
 
         # Build FactChecker if fact-checking is enabled.
         if config.fact_check != "off":
-            self._fact_checker = FactChecker.build_default(self._client)
+            self._fact_checker = FactChecker.build_default(
+                self._client, profile_text=self._crew_profiles.get("factchecker", "")
+            )
             # Use explicitly-set content_mode; only call classifier when
             # config.content_mode is still the default ("factual") meaning
             # the user hasn't overridden it and auto-detection should run.
