@@ -478,7 +478,9 @@ class DebateConductor(BaseConductor):
 
         # ── Build FactChecker if fact-checking is enabled ────────────
         if config.fact_check != "off":
-            self._fact_checker = FactChecker.build_default(self._client)
+            self._fact_checker = FactChecker.build_default(
+                self._client, profile_text=self._crew_profiles.get("factchecker", "")
+            )
         else:
             self._fact_checker = None
 

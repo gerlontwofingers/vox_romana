@@ -533,6 +533,8 @@ class FactChecker:
         self,
         client: DeepSeekClient,
         search_provider: BaseSearchProvider | None = None,
+        *,
+        profile_text: str = "",
     ) -> None:
         """Initialise the FactChecker.
 
@@ -540,10 +542,25 @@ class FactChecker:
             client:          DeepSeekClient for LLM calls.
             search_provider: Any BaseSearchProvider for thorough mode.
                              If None and mode="thorough", falls back to quick.
+            profile_text:    Optional crew-profile block (see
+                             ``CrewProfile.format_for_prompt()``) prepended to
+                             the verdict-producing system prompts —
+                             ``threshold_calibration`` is the field this is
+                             meant to carry (how conservatively this
+                             fact-checker flags claims). Empty string is a
+                             no-op, matching the director's injection pattern
+                             in ``BaseConductor``.
         """
         self._client = client
         self._search = search_provider
         self._warned_no_search: bool = False
+        self._profile_text = profile_text
+
+    def _augmented_system_prompt(self, base_prompt: str) -> str:
+        """Prepend the crew profile block to *base_prompt*, if one is set."""
+        if not self._profile_text:
+            return base_prompt
+        return f"{self._profile_text}\n\n{base_prompt}"
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -784,7 +801,7 @@ class FactChecker:
         try:
             raw = self._client.chat(
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": self._augmented_system_prompt(system_prompt)},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
@@ -914,7 +931,7 @@ class FactChecker:
         try:
             raw = self._client.chat(
                 messages=[
-                    {"role": "system", "content": JUSTIFICATION_ADJUDICATOR_PROMPT},
+                    {"role": "system", "content": self._augmented_system_prompt(JUSTIFICATION_ADJUDICATOR_PROMPT)},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
@@ -1148,17 +1165,23 @@ class FactChecker:
     # \u2500\u2500 Default-construction helper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
     @classmethod
-    def build_default(cls, client: DeepSeekClient) -> FactChecker:
+    def build_default(cls, client: DeepSeekClient, *, profile_text: str = "") -> FactChecker:
         """Construct a FactChecker with the standard search-provider fallback.
 
         Mirrors the ``_enable_research`` ladder used in ``run_show.py``:
         try Google, silently fall back to LLM-only when credentials are
         missing. This is the convenience constructor every conductor uses
         unless it needs special wiring.
+
+        Args:
+            client:       DeepSeekClient for LLM calls.
+            profile_text: Optional crew-profile block, forwarded to
+                          ``FactChecker.__init__`` unchanged.
         """
         return cls(
             client=client,
             search_provider=build_fact_check_provider(),
+            profile_text=profile_text,
         )
 
     # \u2500\u2500 Summary builder \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500

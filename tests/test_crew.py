@@ -516,3 +516,21 @@ class TestAugmentedDirectorSystemPrompt:
         result = conductor._augmented_director_system_prompt(base)
         # Profile with only a name should still get prepended
         assert "CREW IDENTITY: Minimal" in result
+
+    def test_factchecker_profile_is_captured_for_show_conductors_to_forward(self):
+        """C-3: show conductors read self._crew_profiles.get('factchecker', '')
+        when constructing FactChecker.build_default() — confirm the data is
+        actually there to forward, with the threshold_calibration field that
+        matters for fact-check behaviour."""
+        profile = CrewProfile(
+            name="FC Agent", role="factchecker", threshold_calibration="lenient",
+        )
+        member = CrewMember(crew_id="fc", role="factchecker", profile=profile)
+        conductor = self._make_conductor(crew_members=[member])
+        text = conductor._crew_profiles.get("factchecker", "")
+        assert text.startswith("CREW IDENTITY: FC Agent")
+        assert "Threshold calibration: lenient" in text
+
+    def test_no_factchecker_crew_member_returns_empty_string(self):
+        conductor = self._make_conductor()
+        assert conductor._crew_profiles.get("factchecker", "") == ""

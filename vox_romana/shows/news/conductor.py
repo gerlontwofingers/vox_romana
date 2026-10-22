@@ -259,7 +259,9 @@ class NewsConductor(BaseConductor):
         # Build FactChecker (news is always factual).
         config = self.config
         if isinstance(config, NewsConfig) and config.fact_check != "off":
-            self._fact_checker = FactChecker.build_default(self._client)
+            self._fact_checker = FactChecker.build_default(
+                self._client, profile_text=self._crew_profiles.get("factchecker", "")
+            )
         else:
             self._fact_checker = None
         self._approved_segment_texts = []

@@ -233,7 +233,9 @@ class AudiobookConductor(BaseConductor):
                     brief=config.brief,
                     show_type="audiobook",
                 )
-            self._fact_checker = FactChecker.build_default(self._client)
+            self._fact_checker = FactChecker.build_default(
+                self._client, profile_text=self._crew_profiles.get("factchecker", "")
+            )
         else:
             self._content_mode = "factual"
             self._fact_checker = None
