@@ -534,3 +534,101 @@ class TestAugmentedDirectorSystemPrompt:
     def test_no_factchecker_crew_member_returns_empty_string(self):
         conductor = self._make_conductor()
         assert conductor._crew_profiles.get("factchecker", "") == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C-4: runners._write_crew_episodic — end-of-run episodic write wiring
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWriteCrewEpisodic:
+    """vox_romana.cli.runners._write_crew_episodic — the glue between a
+    finished run's production_log and crew.write_episodic_entry()."""
+
+    def _make_result(self, *, production_log=None, events=None, llm_calls=3):
+        return SimpleNamespace(
+            production_log=production_log or [],
+            debate_events=events if events is not None else [{"text": "a"}, {"text": "b"}],
+            total_llm_calls=llm_calls,
+            production_log_path="",
+        )
+
+    def _make_config(self, *, content_type="debate", title="Test Debate"):
+        return SimpleNamespace(content_type=content_type, title=title)
+
+    def test_no_crew_members_is_a_noop(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+        _write_crew_episodic(
+            self._make_result(), self._make_config(), [], MagicMock(), args,
+        )
+        assert not list(tmp_path.glob("**/*.jsonl"))
+
+    def test_writes_entry_with_computed_salience(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        production_log = [{"event_type": "issue_report"}]
+        result = self._make_result(production_log=production_log)
+        config = self._make_config()
+        member = CrewMember(crew_id="marcus_webb", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        _write_crew_episodic(result, config, [member], MagicMock(), args)
+
+        short_term = tmp_path / "marcus_webb" / "short_term.jsonl"
+        assert short_term.exists()
+        entries = [json.loads(l) for l in short_term.read_text().splitlines() if l.strip()]
+        assert len(entries) == 1
+        assert entries[0]["salience_score"] == compute_salience(production_log)
+        assert entries[0]["show_type"] == "debate"
+        assert "2 events" in entries[0]["summary"]
+        assert "1 issue report" in entries[0]["summary"]
+
+    def test_writes_one_entry_per_crew_member(self, tmp_path):
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        members = [
+            CrewMember(crew_id="director_a", role="director", profile=None),
+            CrewMember(crew_id="fc_b", role="factchecker", profile=None),
+        ]
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        _write_crew_episodic(result, config, members, MagicMock(), args)
+
+        assert (tmp_path / "director_a" / "short_term.jsonl").exists()
+        assert (tmp_path / "fc_b" / "short_term.jsonl").exists()
+
+    def test_write_failure_is_logged_not_raised(self, tmp_path):
+        """A crew write error must never abort an otherwise-successful run."""
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        member = CrewMember(crew_id="broken", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        with patch(
+            "vox_romana.cli.runners.write_episodic_entry",
+            side_effect=OSError("disk full"),
+        ):
+            # Must not raise.
+            _write_crew_episodic(result, config, [member], MagicMock(), args)
+
+    def test_consolidation_triggered_when_called(self, tmp_path):
+        """consolidate_if_needed() must actually be invoked (below-threshold
+        is fine — the point is it's wired, not skipped)."""
+        from vox_romana.cli.runners import _write_crew_episodic
+
+        result = self._make_result()
+        config = self._make_config()
+        member = CrewMember(crew_id="demo", role="director", profile=None)
+        args = SimpleNamespace(crew_dir=str(tmp_path))
+
+        with patch("vox_romana.cli.runners.consolidate_if_needed") as mock_consolidate:
+            _write_crew_episodic(result, config, [member], MagicMock(), args)
+            mock_consolidate.assert_called_once()
+            assert mock_consolidate.call_args.args[0] == "demo"
+            assert mock_consolidate.call_args.kwargs["crew_dir"] == tmp_path
