@@ -20,6 +20,7 @@ import json
 from ...core.bootstrap import BaseShowBootstrap
 from ...core.client import DeepSeekClient
 from ...core.names import build_curated_name_map, remap_name, remap_names
+from ...core.search import BaseSearchProvider
 from .config import (
     CharacterConfig,
     RadioDramaConfig,
@@ -56,7 +57,11 @@ class RadioDramaBootstrap(BaseShowBootstrap):
         reference_material: str | None = None,
         fact_check: str = "off",
         overrides: dict | None = None,
+        auto_research: bool = False,
+        search_provider: BaseSearchProvider | None = None,
         target_words: int | None = None,
+        memory=None,
+        series_context: str | None = None,
     ) -> RadioDramaConfig:
         """Run the full bootstrap chain: brief → fully populated RadioDramaConfig.
 
@@ -65,12 +70,33 @@ class RadioDramaBootstrap(BaseShowBootstrap):
             reference_material: Source text, plot notes, or research.
             fact_check:         "off", "quick", or "thorough".
             overrides:          Dict of RadioDramaConfig field names to override.
+            auto_research:      If True, research the topic before generating.
+            search_provider:    Search provider for web research.
             target_words:       Target word count for the episode.
+            memory:             Optional memory handle for research.
+            series_context:     Optional series-bible context prepended to the brief.
 
         Returns:
             A fully populated RadioDramaConfig.
         """
         overrides = overrides or {}
+
+        if series_context:
+            brief = f"{series_context}\n\n{brief}"
+
+        # ── Stage 0: Auto-research (optional) ────────────────────────
+        if auto_research and not reference_material:
+            from ...core.search import build_research_provider
+            from ..debates.researcher import DebateResearcher
+            effective_provider = build_research_provider(search_provider, memory)
+            if effective_provider is None:
+                researcher = DebateResearcher(self._client)
+            else:
+                researcher = DebateResearcher(self._client, effective_provider)
+            reference_material = researcher.run(
+                brief,
+                perspective=overrides.get("perspective"),
+            ) or None
 
         # ── Stage 1: Architect ──────────────────────────────────────
         config = self._run_architect(

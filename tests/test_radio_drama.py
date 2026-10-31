@@ -657,6 +657,25 @@ class TestRadioDramaBootstrap:
         assert config.era == "1970s"
         assert config.genre == "paranoid thriller"
 
+    def test_from_brief_accepts_runner_kwargs(self):
+        """The shared runner passes auto_research + series_context; from_brief
+        must accept them (regression: live smoke run hit a TypeError here)."""
+        bootstrap = self._make_bootstrap()
+        bootstrap._client.chat.side_effect = [
+            _architect_json("pilot"),
+            _profiler_json(),  # announcer
+            _profiler_json(),  # Sam
+            _profiler_json(),  # Dolores
+            _director_json(),
+        ]
+        config = bootstrap.from_brief(
+            "A noir mystery.",
+            auto_research=False,
+            series_context="SERIES CONTEXT: recurring noir series.",
+        )
+        assert isinstance(config, RadioDramaConfig)
+        assert "SERIES CONTEXT" in config.brief
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Conductor (shot 5.1-d)
