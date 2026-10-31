@@ -1,14 +1,15 @@
-"""Tests for the radio drama show infrastructure (shot 5.1-a).
+"""Tests for the radio drama show infrastructure.
 
-Covers the dataclasses, models, and serializer that exist after shot 5.1-a:
+Covers:
     1. Config validation (cast/scenes/era/series-mode checks)
     2. CharacterConfig / SceneConfig / RadioDramaDirectorBrief defaults
     3. Model to_dict + JSON round-trip (RadioDramaScene, MergedRadioDrama)
     4. Serializer save/load round-trip
-    5. Package imports
+    5. Prompts (era table, format-safety)
+    6. Bootstrap architect/director/character parsing + pilot-vs-serial planner
+    7. Package imports
 
-Bootstrap/conductor/prompts land in later shots (5.1-b/5.1-c/5.1-d); those
-tests arrive with them.
+Conductor tests land with shot 5.1-d.
 
 Run with:
     python -m pytest tests/test_radio_drama.py -v
@@ -26,6 +27,7 @@ from vox_romana.shows.radio_dramas import (
     SERIES_MODES,
     CharacterConfig,
     MergedRadioDrama,
+    RadioDramaBootstrap,
     RadioDramaConfig,
     RadioDramaDirectorBrief,
     RadioDramaEvent,
@@ -35,6 +37,8 @@ from vox_romana.shows.radio_dramas import (
 )
 from vox_romana.shows.radio_dramas import prompts as rd_prompts
 from vox_romana.core.messages import ISSUE_FLAG_PROMPT_NOTE
+
+from unittest.mock import Mock
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -441,3 +445,212 @@ class TestRadioDramaPrompts:
             transcript="Sam entered the dock office."
         )
         assert "Sam entered" in summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bootstrap (shot 5.1-c)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _architect_json(series_mode="pilot"):
+    return json.dumps({
+        "title": "The Missing Heiress",
+        "genre": "noir mystery",
+        "setting": "Philadelphia, 1946",
+        "tone": "tense",
+        "announcer": {"name": "The Announcer", "voice_gender": "male"},
+        "characters": [
+            {
+                "name": "Sam Vale",
+                "role": "detective",
+                "archetype": "hardboiled detective",
+                "description": "A weary private eye.",
+                "speech_style": "terse",
+                "voice_gender": "male",
+            },
+            {
+                "name": "Dolores Kane",
+                "role": "femme fatale",
+                "archetype": "femme fatale",
+                "description": "The missing heiress's sister.",
+                "speech_style": "smooth, guarded",
+                "voice_gender": "female",
+            },
+        ],
+        "scenes": [
+            {
+                "title": "The Dock",
+                "synopsis": "Sam confronts a witness.",
+                "location": "A rain-slicked dock",
+                "characters": ["Sam Vale"],
+                "duration_hint": "medium",
+                "music_hint": "tense string swell",
+                "cliffhanger": False,
+            },
+            {
+                "title": "The Letter",
+                "synopsis": "Dolores reveals a secret.",
+                "location": "A smoky office",
+                "characters": ["Sam Vale", "Dolores Kane"],
+                "duration_hint": "medium",
+                "music_hint": "dramatic brass hit",
+                "cliffhanger": False,
+            },
+        ],
+        "series_mode": series_mode,
+        "series_id": "dock-street-files" if series_mode == "serial" else None,
+        "episode_number": 1 if series_mode == "serial" else None,
+        "recurring_cast": ["Sam Vale", "Dolores Kane"] if series_mode == "serial" else [],
+        "language": "en",
+        "music_style": "1940s big band",
+    })
+
+
+def _profiler_json():
+    return json.dumps({
+        "voice_gender": "male",
+        "voice_hint": "gravelly baritone, 50s",
+        "tts_style": "Speak low and measured.",
+        "voice_fingerprint": "Terse, clipped sentences. World-weary.",
+    })
+
+
+def _director_json():
+    return json.dumps({
+        "narrative_arc": "Open tense, build, resolve with a sting.",
+        "mood_progression": ["uneasy", "tense", "shocked", "resolved"],
+        "scene_notes": "Tighten transitions between scenes 1 and 2.",
+        "closing_strategy": "Full resolution.",
+    })
+
+
+class TestRadioDramaBootstrap:
+    def _make_bootstrap(self):
+        return RadioDramaBootstrap(client=Mock())
+
+    def test_parse_architect_pilot(self):
+        bootstrap = self._make_bootstrap()
+        config = bootstrap._parse_architect_response(
+            _architect_json("pilot"),
+            brief="A noir mystery about a missing heiress.",
+            fact_check="off",
+        )
+        assert isinstance(config, RadioDramaConfig)
+        assert config.title == "The Missing Heiress"
+        assert config.genre == "noir mystery"
+        assert config.series_mode == "pilot"
+        assert config.series_id is None
+        assert config.episode_number is None
+        assert config.recurring_cast == []
+        assert len(config.characters) == 2
+        assert config.announcer is not None
+        assert config.announcer.role == "announcer"
+        assert len(config.scenes) == 2
+        assert config.scenes[0].title == "The Dock"
+
+    def test_parse_architect_serial_records_planner_fields(self):
+        bootstrap = self._make_bootstrap()
+        config = bootstrap._parse_architect_response(
+            _architect_json("serial"),
+            brief="A recurring noir series.",
+        )
+        assert config.series_mode == "serial"
+        assert config.series_id == "dock-street-files"
+        assert config.episode_number == 1
+        # recurring_cast is name-curated (diverse names), so it must match
+        # the curated character names — not the raw architect names.
+        assert config.recurring_cast == [c.name for c in config.characters]
+
+    def test_parse_architect_invalid_series_mode_falls_back_to_pilot(self):
+        data = json.loads(_architect_json("pilot"))
+        data["series_mode"] = "anthology"
+        bootstrap = self._make_bootstrap()
+        config = bootstrap._parse_architect_response(json.dumps(data), brief="x")
+        assert config.series_mode == "pilot"
+
+    def test_parse_architect_invalid_json_raises(self):
+        bootstrap = self._make_bootstrap()
+        import pytest
+        with pytest.raises(ValueError, match="invalid JSON"):
+            bootstrap._parse_architect_response("not json", brief="x")
+
+    def test_parse_architect_markdown_fenced(self):
+        bootstrap = self._make_bootstrap()
+        raw = "```json\n" + _architect_json("pilot") + "\n```"
+        config = bootstrap._parse_architect_response(raw, brief="x")
+        assert config.title == "The Missing Heiress"
+
+    def test_parse_director(self):
+        bootstrap = self._make_bootstrap()
+        brief = bootstrap._parse_director_response(_director_json())
+        assert isinstance(brief, RadioDramaDirectorBrief)
+        assert brief.narrative_arc.startswith("Open tense")
+        assert brief.mood_progression == ["uneasy", "tense", "shocked", "resolved"]
+        assert brief.closing_strategy == "Full resolution."
+
+    def test_parse_director_invalid_json_raises(self):
+        bootstrap = self._make_bootstrap()
+        import pytest
+        with pytest.raises(ValueError, match="invalid JSON"):
+            bootstrap._parse_director_response("not json")
+
+    def test_profile_character_fills_voice_fields(self):
+        bootstrap = self._make_bootstrap()
+        bootstrap._client.chat.return_value = _profiler_json()
+        character = make_character()
+        profiled = bootstrap._profile_character(
+            character, genre="noir mystery", era="1940s",
+        )
+        assert profiled.voice_fingerprint == "Terse, clipped sentences. World-weary."
+        assert profiled.voice_hint == "gravelly baritone, 50s"
+        assert profiled.tts_style == "Speak low and measured."
+
+    def test_profile_character_bad_json_falls_back(self):
+        bootstrap = self._make_bootstrap()
+        bootstrap._client.chat.return_value = "not json"
+        character = make_character()
+        profiled = bootstrap._profile_character(
+            character, genre="noir", era="1940s",
+        )
+        assert profiled.voice_fingerprint == "(distinct dramatic voice)"
+
+    def test_from_brief_full_chain(self):
+        """Architect → 2 character profiles → announcer profile → director."""
+        bootstrap = self._make_bootstrap()
+        # chat() call order:
+        #   1. architect
+        #   2. announcer profile
+        #   3. character 1 profile
+        #   4. character 2 profile
+        #   5. director
+        bootstrap._client.chat.side_effect = [
+            _architect_json("serial"),
+            _profiler_json(),  # announcer
+            _profiler_json(),  # Sam
+            _profiler_json(),  # Dolores
+            _director_json(),
+        ]
+        config = bootstrap.from_brief("A recurring noir series.")
+        assert isinstance(config, RadioDramaConfig)
+        assert config.series_mode == "serial"
+        assert config.director_brief is not None
+        assert config.director_brief.mood_progression == ["uneasy", "tense", "shocked", "resolved"]
+        # Every cast member got a voice fingerprint.
+        assert config.announcer.voice_fingerprint is not None
+        assert all(c.voice_fingerprint is not None for c in config.characters)
+        assert bootstrap._client.chat.call_count == 5
+
+    def test_from_brief_applies_overrides(self):
+        bootstrap = self._make_bootstrap()
+        bootstrap._client.chat.side_effect = [
+            _architect_json("pilot"),
+            _profiler_json(),  # announcer
+            _profiler_json(),  # Sam
+            _profiler_json(),  # Dolores
+            _director_json(),
+        ]
+        config = bootstrap.from_brief(
+            "A noir mystery.",
+            overrides={"era": "1970s", "genre": "paranoid thriller"},
+        )
+        assert config.era == "1970s"
+        assert config.genre == "paranoid thriller"
