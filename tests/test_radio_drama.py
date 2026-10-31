@@ -808,6 +808,96 @@ class TestRadioDramaConductor:
         assert "Scene 1" in result
 
 
+class TestRadioDramaConductorGaps:
+    """Targeted coverage for conductor paths not exercised by the happy path."""
+
+    def _make_conductor(self, config=None):
+        return RadioDramaConductor(config or make_config(), client=Mock())
+
+    def test_build_cast_descriptions_includes_announcer_and_cast(self):
+        config = make_config()
+        desc = RadioDramaConductor._build_cast_descriptions(config)
+        assert "The Announcer" in desc
+        assert "Sam Vale" in desc
+        assert "Dolores Kane" in desc
+
+    def test_build_cast_descriptions_empty_cast(self):
+        config = RadioDramaConfig(brief="x", scenes=[SceneConfig()])
+        desc = RadioDramaConductor._build_cast_descriptions(config)
+        assert desc == "(no cast)"
+
+    def test_parse_scene_empty_array_falls_back(self):
+        conductor = self._make_conductor()
+        events = conductor._parse_scene_response(
+            "[]", scene_id="scene_000", global_order_start=0,
+        )
+        assert len(events) == 1
+        assert events[0]["speaker_name"] == "The Announcer"
+
+    def test_parse_scene_skips_non_dict_items(self):
+        conductor = self._make_conductor()
+        raw = json.dumps([
+            {"speaker_name": "Sam Vale", "text": "Line one."},
+            "not a dict",
+            42,
+            {"speaker_name": "Dolores Kane", "text": "Line two."},
+        ])
+        events = conductor._parse_scene_response(
+            raw, scene_id="scene_000", global_order_start=0,
+        )
+        assert len(events) == 2
+        assert events[0]["speaker_name"] == "Sam Vale"
+        assert events[1]["speaker_name"] == "Dolores Kane"
+
+    def test_director_check_applies_mood_note(self):
+        config = make_config()
+        config.director_brief = RadioDramaDirectorBrief(
+            narrative_arc="Build then resolve.",
+            mood_progression=["uneasy", "tense", "resolved"],
+            closing_strategy="Full resolution.",
+        )
+        conductor = self._make_conductor(config)
+        conductor._client.chat.return_value = json.dumps({
+            "mood_note": "Keep it tense.",
+            "nudge": "Raise the stakes.",
+            "wrap_up": False,
+        })
+        result = conductor._director_check(2, 3)
+        assert result["mood_note"] == "Keep it tense."
+        assert conductor._director_note == "Keep it tense. | Raise the stakes."
+
+    def test_director_check_no_brief_returns_empty(self):
+        conductor = self._make_conductor(make_config())
+        assert conductor._director_check(1, 3) == {}
+
+    def test_director_check_bad_json_returns_empty(self):
+        config = make_config()
+        config.director_brief = RadioDramaDirectorBrief(
+            narrative_arc="arc", mood_progression=["tense"],
+        )
+        conductor = self._make_conductor(config)
+        conductor._client.chat.return_value = "not json"
+        assert conductor._director_check(2, 3) == {}
+
+    def test_compress_context_writes_compressed(self):
+        conductor = self._make_conductor()
+        conductor._context_log = [
+            f"Scene {i} — speakers: Sam Vale." for i in range(1, 6)
+        ]
+        conductor._client.chat.return_value = "Earlier scenes built tension."
+        conductor._compress_context()
+        assert conductor._compressed_ctx == "Earlier scenes built tension."
+        # Keeps only the 2 most recent verbatim.
+        assert len(conductor._context_log) == 2
+
+    def test_compress_context_noop_when_too_short(self):
+        conductor = self._make_conductor()
+        conductor._context_log = ["Scene 1 — speakers: Sam Vale."]
+        conductor._compress_context()
+        assert conductor._compressed_ctx == ""
+        assert len(conductor._context_log) == 1
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Router + runners wiring (shot 5.1-e)
 # ═══════════════════════════════════════════════════════════════════════════
