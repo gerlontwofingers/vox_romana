@@ -16,6 +16,7 @@ import pytest
 
 from vox_romana.publish import (
     PDF_AVAILABLE,
+    JINJA_AVAILABLE,
     DebateFormatter,
     NewsFormatter,
     PodcastFormatter,
@@ -24,6 +25,7 @@ from vox_romana.publish import (
     format_document,
     publish_document,
     render_txt,
+    render_html,
 )
 from vox_romana.publish.formatter import _norm_list  # type: ignore
 from vox_romana.publish.models import FormattedDocument
@@ -461,6 +463,33 @@ class TestRenderTxt:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# render_html
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRenderHtml:
+    @pytest.mark.skipif(not JINJA_AVAILABLE, reason="jinja2 not installed")
+    def test_writes_self_contained_html(self, tmp_path):
+        doc = format_document(_debate_fixture())
+        out = tmp_path / "debate.html"
+        render_html(doc, out)
+        assert out.exists()
+        html = out.read_text(encoding="utf-8")
+        assert "<!DOCTYPE html>" in html
+        assert "TEST DEBATE" in html or doc.title in html
+        # Stylesheet is inlined — no external CSS reference.
+        assert "<style>" in html
+        assert "<link" not in html
+        assert "I believe the answer is yes." in html
+
+    def test_raises_when_jinja_missing(self, tmp_path, monkeypatch):
+        import vox_romana.publish.outputter as out_mod
+        monkeypatch.setattr(out_mod, "JINJA_AVAILABLE", False)
+        doc = format_document(_debate_fixture())
+        with pytest.raises(RuntimeError, match="jinja2"):
+            render_html(doc, tmp_path / "debate.html")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # publish_document
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -480,6 +509,27 @@ class TestPublishDocument:
         src.write_text(json.dumps(_news_fixture()), encoding="utf-8")
         with pytest.raises(ValueError):
             publish_document(src, formats=("md",), dest_dir=tmp_path)
+
+    @pytest.mark.skipif(not JINJA_AVAILABLE, reason="jinja2 not installed")
+    def test_html_only(self, tmp_path):
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps(_debate_fixture()), encoding="utf-8")
+        result = publish_document(src, formats=("html",), dest_dir=tmp_path)
+        assert result.html_path is not None
+        assert result.html_path.exists()
+        assert result.txt_path is None
+        assert result.pdf_path is None
+
+    def test_html_skipped_warning_when_unavailable(self, tmp_path, monkeypatch):
+        import vox_romana.publish.outputter as out_mod
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps(_news_fixture()), encoding="utf-8")
+        monkeypatch.setattr(out_mod, "JINJA_AVAILABLE", False)
+        result = out_mod.publish_document(
+            src, formats=("html",), dest_dir=tmp_path,
+        )
+        assert result.html_path is None
+        assert any("HTML skipped" in w for w in result.warnings)
 
     def test_pdf_skipped_warning_when_unavailable(self, tmp_path, monkeypatch):
         src = tmp_path / "in.json"

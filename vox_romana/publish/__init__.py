@@ -1,9 +1,10 @@
 """Publish package — turn show JSON into formatted human-readable documents.
 
-Currently supports plain text (always) and PDF (when ``weasyprint`` is
-installed).  An optional LLM polish pass (``vox_romana.publish.polisher``)
-can clean spoken-style phrasing into written prose; that lives in a separate
-module so the deterministic path here has zero LLM dependencies.
+Currently supports plain text (always), HTML (when ``jinja2`` is installed),
+and PDF (when ``weasyprint`` is installed).  An optional LLM polish pass
+(``vox_romana.publish.polisher``) can clean spoken-style phrasing into written
+prose; that lives in a separate module so the deterministic path here has
+zero LLM dependencies.
 
 Public API:
 
@@ -30,7 +31,14 @@ from .formatter import (
     detect_show_type,
     format_document,
 )
-from .outputter import render_txt, render_pdf, publish_document, PDF_AVAILABLE
+from .outputter import (
+    render_txt,
+    render_pdf,
+    render_html,
+    publish_document,
+    PDF_AVAILABLE,
+    JINJA_AVAILABLE,
+)
 
 __all__ = [
     "FormattedDocument",
@@ -45,6 +53,8 @@ __all__ = [
     "format_document",
     "render_txt",
     "render_pdf",
+    "render_html",
     "publish_document",
     "PDF_AVAILABLE",
+    "JINJA_AVAILABLE",
 ]
