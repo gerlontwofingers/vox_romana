@@ -35,6 +35,12 @@ Workflow::
 
 from __future__ import annotations
 
+from .abstraction import (
+    MOVE_LEVELS,
+    AbstractionMove,
+    AbstractionTagger,
+    split_sentences,
+)
 from .corpus import CorpusLoader
 from .embedder import CorpusEmbedder
 from .hypothesis import HypothesisTester
@@ -54,8 +60,11 @@ from .stance import StanceExtractor
 from .topics import TopicModeler
 
 __all__ = [
+    "AbstractionMove",
+    "AbstractionTagger",
     "CorpusLoader",
     "CorpusEmbedder",
+    "MOVE_LEVELS",
     "TopicModeler",
     "HypothesisTester",
     "SimilarityAnalyzer",
@@ -69,4 +78,5 @@ __all__ = [
     "SilenceReport",
     "SimilarityReport",
     "AnalysisReport",
+    "split_sentences",
 ]
