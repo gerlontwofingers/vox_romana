@@ -33,6 +33,8 @@ from vox_romana.shows.radio_dramas import (
     RadioDramaSerializer,
     SceneConfig,
 )
+from vox_romana.shows.radio_dramas import prompts as rd_prompts
+from vox_romana.core.messages import ISSUE_FLAG_PROMPT_NOTE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -331,3 +333,111 @@ class TestRadioDramaImports:
     def test_constants(self):
         assert ERAS == ("1940s", "1970s", "present", "future")
         assert SERIES_MODES == ("pilot", "serial")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Prompts (shot 5.1-b)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRadioDramaPrompts:
+    def test_era_table_has_all_eras(self):
+        assert set(rd_prompts.ERA_TABLE) == set(ERAS)
+
+    def test_era_guidance_is_brace_free(self):
+        # era_guidance is spliced into str.format templates as a value, so it
+        # must contain no braces.
+        for era in ERAS:
+            g = rd_prompts.era_guidance(era)
+            assert "{" not in g
+            assert "}" not in g
+
+    def test_era_guidance_reflects_era(self):
+        g = rd_prompts.era_guidance("1940s")
+        assert "Golden Age" in g
+        assert "ANNOUNCER REGISTER" in g
+        assert "MUSIC STYLE" in g
+        # Unknown era falls back to present.
+        assert "Present day" in rd_prompts.era_guidance("bogus")
+
+    def _scriptwriter_kwargs(self):
+        return dict(
+            show_name="The Dock Street Files",
+            genre="noir mystery",
+            title="The Missing Heiress",
+            setting="Philadelphia, 1946",
+            era_guidance=rd_prompts.era_guidance("1940s"),
+            cast_descriptions=(
+                "  Sam Vale (detective): terse, world-weary\n"
+                "  The Announcer (announcer): boom-voiced"
+            ),
+            character_names='"Sam Vale", "The Announcer"',
+        )
+
+    def test_scriptwriter_formats_and_advertises_issue_flag(self):
+        prompt = rd_prompts.SCRIPTWRITER_SYSTEM_PROMPT.format(
+            **self._scriptwriter_kwargs()
+        )
+        assert "Sam Vale" in prompt
+        assert "The Announcer" in prompt
+        assert "Golden Age of Radio" in prompt
+        assert '"issue_flag"' in prompt
+        assert prompt.endswith(ISSUE_FLAG_PROMPT_NOTE)
+
+    def test_scriptwriter_prompt_mentions_sfx_and_music_cues(self):
+        prompt = rd_prompts.SCRIPTWRITER_SYSTEM_PROMPT.format(
+            **self._scriptwriter_kwargs()
+        )
+        assert "[music:" in prompt
+        assert "[sfx:" in prompt
+
+    def test_scene_delivery_formats(self):
+        prompt = rd_prompts.SCENE_DELIVERY_PROMPT.format(
+            scene_title="The Dock",
+            location="A rain-slicked dock",
+            synopsis="Sam confronts a witness.",
+            characters_present="Sam Vale",
+            scene_tone="tense",
+            length_contract="LENGTH REQUIREMENT (HARD): ...",
+            context_summary="(First scene.)",
+            director_note="",
+            runtime_status="",
+            cliffhanger_instruction="",
+        )
+        assert "The Dock" in prompt
+        assert "Sam Vale" in prompt
+
+    def test_architect_prompt_has_no_orphan_placeholders(self):
+        # The architect prompt uses only {{ }} JSON braces and no {field}
+        # placeholders, so .format() with no kwargs must succeed.
+        rendered = rd_prompts.ARCHITECT_PROMPT.format()
+        assert "series_mode" in rendered
+        assert "recurring_cast" in rendered
+        assert "cliffhanger" in rendered
+
+    def test_character_profiler_formats(self):
+        prompt = rd_prompts.CHARACTER_PROFILER_PROMPT.format(
+            name="Sam Vale",
+            role="detective",
+            archetype="hardboiled detective",
+            description="A weary private eye.",
+            genre="noir mystery",
+            era="1940s",
+        )
+        assert "Sam Vale" in prompt
+        assert "1940s" in prompt
+
+    def test_director_prompts_format(self):
+        check = rd_prompts.DIRECTOR_CHECK_PROMPT.format(
+            scene_number=2,
+            total_scenes=5,
+            arc="Tension builds then resolves.",
+            current_mood="tense",
+            closing_strategy="Cliffhanger hook.",
+            recent_content="Sam found the note.",
+        )
+        assert "tense" in check
+
+        summary = rd_prompts.CONTEXT_SUMMARY_PROMPT.format(
+            transcript="Sam entered the dock office."
+        )
+        assert "Sam entered" in summary
