@@ -282,6 +282,87 @@ class TestSeriesCLI:
         assert "Inspectable" in out
         assert "rules!" in out
 
+    def test_export_materializes_bundle(self, monkeypatch, capsys, tmp_path):
+        from vox_romana.cli import series as series_cli
+        from vox_romana.core.catalog import Catalog
+
+        fake = Catalog(db_path=":memory:")
+        sid = fake.create_series(
+            title="Exportable", show_type="news", bible="be clear",
+        )
+        monkeypatch.setattr(series_cli, "Catalog", lambda: _ContextCatalog(fake))
+
+        series_cli.main([
+            "export", sid, "--bundle-dir", str(tmp_path),
+        ])
+        out = capsys.readouterr().out
+        bundle = tmp_path / "studio" / sid
+        assert bundle.exists()
+        assert (bundle / "studio.yaml").exists()
+        assert (bundle / "bible.md").exists()
+        assert (tmp_path / "studio" / f"{sid}.zip").exists()
+        assert "Bundle:" in out
+
+    def test_export_unknown_series_returns_nonzero(self, monkeypatch):
+        from vox_romana.cli import series as series_cli
+        from vox_romana.core.catalog import Catalog
+
+        fake = Catalog(db_path=":memory:")
+        monkeypatch.setattr(series_cli, "Catalog", lambda: _ContextCatalog(fake))
+
+        with pytest.raises(SystemExit):
+            series_cli.main(["export", "missing"])
+
+    def test_instantiate_runs_pipeline(self, monkeypatch, capsys, tmp_path):
+        from vox_romana.cli import series as series_cli
+        from vox_romana.core.catalog import Catalog
+        from vox_romana.studio import StudioInstantiation
+        from vox_romana.studio.prompts import StudioMeta
+        from vox_romana.core.audience import AudienceProfile
+
+        fake = Catalog(db_path=":memory:")
+
+        # Stub the instantiator to avoid real LLM calls.
+        class _FakeInstantiator:
+            def __init__(self, client):
+                pass
+
+            def instantiate(self, brief, draft_episode=True, topic=None):
+                # Pre-create the series so _cmd_instantiate can re-read it.
+                sid = fake.create_series(
+                    title="Inferred Show",
+                    show_type="podcast",
+                    tone="warm",
+                    bible="be warm",
+                    audience_profile=AudienceProfile(vocabulary_level="educated"),
+                )
+                return StudioInstantiation(
+                    meta=StudioMeta(
+                        title="Inferred Show",
+                        show_type="podcast",
+                        series_id="inferred-show",
+                        premise="A show.",
+                        tone="warm",
+                    ),
+                    series_id=sid,
+                    bible="be warm",
+                    audience=AudienceProfile(vocabulary_level="educated"),
+                    episode_brief=None,
+                )
+
+        monkeypatch.setattr(series_cli, "Catalog", lambda: _ContextCatalog(fake))
+        # _cmd_instantiate imports these locally, so patch the source modules.
+        monkeypatch.setattr("vox_romana.core.client.DeepSeekClient", MagicMock())
+        monkeypatch.setattr("vox_romana.studio.StudioInstantiator", _FakeInstantiator)
+
+        series_cli.main([
+            "instantiate", "a warm podcast", "--bundle-dir", str(tmp_path),
+        ])
+        out = capsys.readouterr().out
+        assert "Inferred Show" in out
+        # Bundle materialized under the slug.
+        assert (tmp_path / "studio" / "inferred-show" / "studio.yaml").exists()
+
 
 class _ContextCatalog:
     """Wrap an existing Catalog so `with Catalog() as cat:` reuses it."""

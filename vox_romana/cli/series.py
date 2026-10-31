@@ -328,6 +328,89 @@ def _cmd_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_instantiate(args: argparse.Namespace) -> int:
+    """Instantiate a studio from a one-sentence brief.
+
+    Runs the staged inference, registers the SeriesRecord, drafts episode 1
+    (unless ``--no-draft``), materializes a portable bundle, and zips it.
+    """
+    from vox_romana.core.client import DeepSeekClient
+    from vox_romana.studio import StudioInstantiator, materialize_bundle, zip_bundle
+
+    try:
+        client = DeepSeekClient()
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    instantiator = StudioInstantiator(client)
+    try:
+        result = instantiator.instantiate(
+            args.brief,
+            draft_episode=not args.no_draft,
+            topic=args.topic,
+        )
+    except ValueError as exc:
+        print(f"Error: studio inference failed: {exc}", file=sys.stderr)
+        return 1
+
+    meta = result.meta
+    print(f"Studio instantiated: {meta.title} [{meta.show_type}]")
+    print(f"  Series ID: {result.series_id}")
+    if meta.tone:
+        print(f"  Tone:      {meta.tone}")
+    print(f"  Slug:      {meta.series_id}")
+
+    # ── Materialize + zip the portable bundle ────────────────────────
+    with Catalog() as cat:
+        series = cat.get_series(result.series_id)
+    if series is None:
+        print(
+            f"Error: could not re-read series {result.series_id} from catalog.",
+            file=sys.stderr,
+        )
+        return 1
+
+    dest_root = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
+    bundle_dir = materialize_bundle(
+        series,
+        dest_root,
+        slug=meta.series_id,
+        episode_brief=result.episode_brief,
+    )
+    archive = zip_bundle(bundle_dir)
+    print(f"  Bundle:    {bundle_dir}")
+    print(f"  Zip:       {archive}")
+
+    if result.episode_brief is not None:
+        print(f"  Episode 1: {result.episode_brief.title}")
+
+    print(
+        "\nNext: run the pipeline with:\n"
+        f"  python run.py prompts/episode_1_brief.txt --series {result.series_id}"
+    )
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """Materialize + zip an existing series into a portable bundle."""
+    from vox_romana.studio import materialize_bundle, zip_bundle
+
+    with Catalog() as cat:
+        series = cat.get_series(args.series_id)
+        if series is None:
+            print(f"Error: unknown series: {args.series_id}", file=sys.stderr)
+            return 1
+
+    dest_root = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
+    bundle_dir = materialize_bundle(series, dest_root)
+    archive = zip_bundle(bundle_dir)
+
+    print(f"Bundle: {bundle_dir}")
+    print(f"Zip:    {archive}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vox_romana series",
@@ -489,6 +572,57 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp_next.set_defaults(func=_cmd_next)
+
+    sp_instantiate = sub.add_parser(
+        "instantiate",
+        help="Create a full studio (series) from a one-sentence brief.",
+    )
+    sp_instantiate.add_argument("brief", type=str, help="One-sentence studio brief.")
+    sp_instantiate.add_argument(
+        "--no-draft",
+        dest="no_draft",
+        action="store_true",
+        default=False,
+        help="Skip drafting episode 1's brief.",
+    )
+    sp_instantiate.add_argument(
+        "--topic",
+        dest="topic",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help="Optional topic constraint for episode 1.",
+    )
+    sp_instantiate.add_argument(
+        "--bundle-dir",
+        dest="bundle_dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Parent directory for the portable bundle (default: "
+            "current working directory)."
+        ),
+    )
+    sp_instantiate.set_defaults(func=_cmd_instantiate)
+
+    sp_export = sub.add_parser(
+        "export",
+        help="Materialize an existing series into a portable bundle + zip.",
+    )
+    sp_export.add_argument("series_id", type=str, help="Series UUID.")
+    sp_export.add_argument(
+        "--bundle-dir",
+        dest="bundle_dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Parent directory for the portable bundle (default: "
+            "current working directory)."
+        ),
+    )
+    sp_export.set_defaults(func=_cmd_export)
 
     return parser
 
