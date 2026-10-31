@@ -189,6 +189,23 @@ class TestParseArgs:
         assert args.duration == 30.0
         assert args.tolerance == 5.0
 
+    def test_radio_drama_flags(self, tmp_prompt):
+        """--type radio_drama with --era and --genre."""
+        args = parse_args([
+            str(tmp_prompt),
+            "--type", "radio_drama",
+            "--era", "1940s",
+            "--genre", "noir mystery",
+        ])
+        assert args.show_type == "radio_drama"
+        assert args.era == "1940s"
+        assert args.genre == "noir mystery"
+
+    def test_era_default_none(self, tmp_prompt):
+        args = parse_args([str(tmp_prompt)])
+        assert args.era is None
+        assert args.genre is None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ARGV BUILDERS
@@ -425,6 +442,10 @@ class TestContentTypeDetection:
     def test_audiobook_detection(self):
         """book_id key → 'audiobook'."""
         assert _detect_content_type({"book_id": "b1"}) == "audiobook"
+
+    def test_radio_drama_detection(self):
+        """drama_id key → 'radio_drama'."""
+        assert _detect_content_type({"drama_id": "rd1"}) == "radio_drama"
 
     def test_unknown_fallback(self):
         """No recognized key → 'unknown'."""

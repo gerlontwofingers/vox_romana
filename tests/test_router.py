@@ -309,6 +309,9 @@ class TestShowTypes:
     def test_news_in_types(self):
         assert "news" in SHOW_TYPES
 
+    def test_radio_drama_in_types(self):
+        assert "radio_drama" in SHOW_TYPES
+
     def test_is_tuple(self):
         assert isinstance(SHOW_TYPES, tuple)
 

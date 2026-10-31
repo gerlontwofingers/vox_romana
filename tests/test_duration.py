@@ -25,6 +25,7 @@ class TestGetWpm:
         assert get_wpm("news") == 165
         assert get_wpm("podcast") == 135  # Lowered from 150 to align with PODCAST_DEFAULT_SPEED=0.92
         assert get_wpm("audiobook") == 155
+        assert get_wpm("radio_drama") == 150
 
     def test_unknown_falls_back(self):
         assert get_wpm("unknown_type") == 150

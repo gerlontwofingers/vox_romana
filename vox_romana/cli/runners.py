@@ -521,7 +521,7 @@ def _write_crew_episodic(
     n_events = 0
     for attr in (
         "debate_events", "news_events", "podcast_events",
-        "audiobook_events", "lecture_events", "events",
+        "audiobook_events", "lecture_events", "drama_events", "events",
     ):
         events = getattr(result, attr, None)
         if events is not None:
@@ -1166,6 +1166,112 @@ def _run_lecture(brief: str, client: DeepSeekClient, args: argparse.Namespace) -
     return output_path
 
 
+def _run_radio_drama(brief: str, client: DeepSeekClient, args: argparse.Namespace) -> Path:
+    """Run the radio drama pipeline, return the output path.
+
+    Radio drama studio floor. The brief has been classified as a radio
+    drama by the router — this function handles bootstrap → conductor →
+    serializer.
+
+    Radio drama generation is scene-by-scene: a single scriptwriter agent
+    voices the full cast in each scene, with an announcer cold-open/sign-off
+    and era-styled music cues.
+    """
+    from vox_romana.shows.radio_dramas.bootstrap import RadioDramaBootstrap
+    from vox_romana.shows.radio_dramas.conductor import RadioDramaConductor
+    from vox_romana.shows.radio_dramas.serializer import RadioDramaSerializer
+
+    # ── Build overrides from CLI flags ───────────────────────────────
+    overrides = _resolve_duration(args, brief)
+    target_words = None
+    if "target_duration_minutes" in overrides:
+        target_words = estimate_total_words(
+            overrides["target_duration_minutes"], "radio_drama",
+            engine=args.engine,
+        )
+        overrides["target_words"] = target_words
+    if args.tone is not None:
+        overrides["tone"] = args.tone
+    if getattr(args, "era", None) is not None:
+        overrides["era"] = args.era
+    if getattr(args, "genre", None) is not None:
+        overrides["genre"] = args.genre
+    if args.max_retries is not None:
+        overrides["max_retries"] = args.max_retries
+    if args.allow_bootstrap_fabrications:
+        overrides["allow_bootstrap_fabrications"] = True
+    if getattr(args, "perspective", None):
+        overrides["perspective"] = args.perspective
+
+    # ── Bootstrap ────────────────────────────────────────────────────
+    log("Bootstrap (planning plot, casting, directing)...", quiet=args.quiet)
+    t0 = time.time()
+
+    reference_text = _read_reference_material(args)
+
+    bootstrap_kwargs = _build_bootstrap_kwargs(
+        args, overrides, reference_text=reference_text, target_words=target_words
+    )
+
+    bootstrap = RadioDramaBootstrap(client=client)
+    config = bootstrap.from_brief(brief, **bootstrap_kwargs)
+
+    t1 = time.time()
+    log(f"  Done in {t1 - t0:.1f}s", quiet=args.quiet)
+    log(f"  Title:   {config.title}", quiet=args.quiet)
+    log(f"  Genre:   {config.genre}", quiet=args.quiet)
+    log(f"  Era:     {config.era}", quiet=args.quiet)
+    log(f"  Cast:    {len(config.characters)} character(s)", quiet=args.quiet)
+    log(f"  Scenes:  {len(config.scenes)}", quiet=args.quiet)
+    log(f"  Series:  {config.series_mode}", quiet=args.quiet)
+    print()
+
+    # ── Conductor ────────────────────────────────────────────────────
+    log("Conductor (generating the drama)...", quiet=args.quiet)
+    t2 = time.time()
+
+    checkpoint_kwargs = _build_checkpoint_kwargs(
+        args, "radio_drama",
+        target_minutes=overrides.get("target_duration_minutes"),
+        num_segments=len(config.scenes),
+        quiet=args.quiet,
+    )
+    crew_members = _load_crew_members_from_args(args)
+    conductor = RadioDramaConductor(config, client=client, crew_members=crew_members, **checkpoint_kwargs)
+    result = conductor.run()
+
+    t3 = time.time()
+    log(f"  Done in {t3 - t2:.1f}s ({result.total_llm_calls} LLM calls)", quiet=args.quiet)
+    log(f"  Generated {len(result.drama_events)} events across {len(result.drama_scenes)} scenes", quiet=args.quiet)
+    _log_length_summary(
+        actual_words=_count_words_in_events(result.drama_events),
+        target_words=overrides.get("target_words") or target_words,
+        target_minutes=overrides.get("target_duration_minutes"),
+        content_type="radio_drama",
+        length_warnings=getattr(conductor, "_length_warnings", None),
+        quiet=args.quiet,
+        verbose=getattr(args, "verbose", False),
+    )
+    print()
+
+    # ── Serialize ────────────────────────────────────────────────────
+    log("Saving output...", quiet=args.quiet)
+
+    merged = result.to_merged_radio_drama()
+    pron = getattr(args, "pronunciation_overrides", {})
+    if pron:
+        merged = dataclasses.replace(merged, pronunciation_overrides=pron)
+    serializer = RadioDramaSerializer()
+
+    output_path = _build_output_path(args, "radio_drama")
+
+    serializer.save(merged, output_path)
+    _prepend_run_context(result, "radio_drama", args)
+    _write_production_log(output_path, result)
+    _write_crew_episodic(result, config, crew_members, client, args)
+    return output_path
+
+
 # ── Dispatch table ───────────────────────────────────────────────────────
 _RUNNERS = {
     "debate": _run_debate,
@@ -1173,6 +1279,7 @@ _RUNNERS = {
     "podcast": _run_podcast,
     "audiobook": _run_audiobook,
     "lecture": _run_lecture,
+    "radio_drama": _run_radio_drama,
 }
 
 
@@ -1364,6 +1471,7 @@ _CONTENT_TYPE_KEYS: dict[str, str] = {
     "podcast_id": "podcast",
     "book_id": "audiobook",
     "audiobook_id": "audiobook",
+    "drama_id": "radio_drama",
 }
 
 
@@ -1375,6 +1483,7 @@ def _detect_content_type(show_data: dict) -> str:
         show_id    → "news"
         podcast_id → "podcast"
         book_id    → "audiobook"
+        drama_id   → "radio_drama"
 
     Returns:
         A content type string, or "unknown" if no key matched.

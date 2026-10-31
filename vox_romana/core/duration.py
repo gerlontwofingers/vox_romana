@@ -53,6 +53,7 @@ WPM_DEFAULTS: dict[str, int] = {
     "podcast": 135,  # Lowered from 150 — aligned with PODCAST_DEFAULT_SPEED=0.92 in renderer.
     "audiobook": 155,
     "lecture": 145,
+    "radio_drama": 150,  # Scripted dialogue — between audiobook narration and debate.
 }
 
 # Per-engine WPM calibration. When the renderer engine is known at

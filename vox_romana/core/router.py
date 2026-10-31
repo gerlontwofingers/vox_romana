@@ -24,7 +24,7 @@ import re
 from .client import DeepSeekClient
 
 # ── Known show types ─────────────────────────────────────────────────────
-SHOW_TYPES = ("debate", "news", "audiobook", "podcast", "lecture")
+SHOW_TYPES = ("debate", "news", "audiobook", "podcast", "lecture", "radio_drama")
 
 # ── System prompt ────────────────────────────────────────────────────────
 ROUTER_SYSTEM_PROMPT = """\
@@ -60,6 +60,13 @@ Available show types:
     multi-host audio where the tone is conversational rather than
     adversarial. Key difference from debate: podcasts are collaborative
     conversations, not structured arguments.
+  - "radio_drama": A scripted multi-voice narrative fiction episode in the
+    radio-drama tradition (old-time radio serials, audio drama, noir,
+    sci-fi, horror, sitcom). Includes dramatized stories with a cast of
+    characters, scenes, an announcer cold-open/sign-off, and music/SFX
+    cues. Key difference from audiobook: radio dramas are MULTI-VOICE
+    scripted fiction (full cast, dialogue-driven scenes), while audiobooks
+    are single-narrator (or small-cast) narration of a longer work.
 
 Research detection — set needs_research to true when the brief:
   - Asks for real statistics, data, facts, evidence, or citations.
@@ -76,7 +83,7 @@ Research detection — set needs_research to true when the brief:
 
 Respond with ONLY a JSON object:
 {
-  "show_type": "<debate|news|audiobook|podcast|lecture>",
+  "show_type": "<debate|news|audiobook|podcast|lecture|radio_drama>",
   "confidence": <0.0-1.0>,
   "needs_research": <true|false>,
   "reasoning": "<one sentence explaining both decisions>"
@@ -98,10 +105,15 @@ Rules:
   discussion" (casual), "talk show", "roundtable" (conversational),
   or describes multiple hosts having a casual conversation, choose
   "podcast".
+- If it mentions "radio drama", "audio drama", "radio play", "old-time
+  radio", "dramatized", "scripted fiction", "cast of characters", "scenes",
+  "announcer", or describes a multi-voice fictional story performed as a
+  play, choose "radio_drama".
 - When ambiguous, lean toward "debate" if the brief emphasizes opposing
   viewpoints, "news" if it emphasizes information delivery, "audiobook"
-  if it emphasizes narration or storytelling, or "podcast" if it
-  emphasizes casual multi-host conversation.
+  if it emphasizes narration or storytelling, "podcast" if it
+  emphasizes casual multi-host conversation, or "radio_drama" if it
+  emphasizes performed multi-voice fiction.
 - When in doubt about research, lean toward true — it's better to have
   facts and not need them than to wing it without preparation.
 - Always respond with valid JSON. Nothing else.

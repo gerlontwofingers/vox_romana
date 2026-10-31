@@ -549,9 +549,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--type",
         type=str,
         default=None,
-        choices=["debate", "news", "podcast", "audiobook", "lecture"],
+        choices=["debate", "news", "podcast", "audiobook", "lecture", "radio_drama"],
         dest="show_type",
         help="Force a show type (skip the router).",
+    )
+
+    gen_group.add_argument(
+        "--era",
+        type=str,
+        default=None,
+        choices=["1940s", "1970s", "present", "future"],
+        dest="era",
+        help=(
+            "Radio drama only: era dial for announcer register, music style, "
+            "and vocabulary (default: 1940s)."
+        ),
+    )
+
+    gen_group.add_argument(
+        "--genre",
+        type=str,
+        default=None,
+        dest="genre",
+        help=(
+            "Radio drama only: genre knob (e.g. 'noir mystery', 'sci-fi', "
+            "'horror')."
+        ),
     )
 
     gen_group.add_argument(

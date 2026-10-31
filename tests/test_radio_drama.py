@@ -806,3 +806,22 @@ class TestRadioDramaConductor:
         conductor._context_log = ["Scene 1 — speakers: Sam Vale."]
         result = conductor._build_context_summary()
         assert "Scene 1" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Router + runners wiring (shot 5.1-e)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRadioDramaWiring:
+    def test_router_has_radio_drama(self):
+        from vox_romana.core.router import SHOW_TYPES
+        assert "radio_drama" in SHOW_TYPES
+
+    def test_runners_dispatch_table_has_radio_drama(self):
+        from vox_romana.cli.runners import _RUNNERS, _CONTENT_TYPE_KEYS
+        assert "radio_drama" in _RUNNERS
+        assert _CONTENT_TYPE_KEYS.get("drama_id") == "radio_drama"
+
+    def test_duration_wpm_has_radio_drama(self):
+        from vox_romana.core.duration import get_wpm
+        assert get_wpm("radio_drama") == 150
