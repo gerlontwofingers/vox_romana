@@ -52,6 +52,14 @@ RULES:
   but must not lecture.
 - Vary energy levels. Not every line needs to be high-energy. Mix up:
   reflective moments, excited tangents, quiet agreement, playful teasing.
+- SIGN-OFF IS OUTRO-ONLY: "Thanks for listening", "that's our show",
+  "until next time", "goodbye", and similar farewells are ONLY allowed in
+  the final OUTRO segment. In every other segment, never imply the episode
+  is ending — keep the conversation moving forward.
+- COLD OPENS ARE FORBIDDEN: never dive into the topic before the show and
+  tonight's topic are named. In the intro segment, every host must
+  introduce themselves in their own voice before substantive discussion
+  begins.
 
 CONVERSATION PHILOSOPHY:
 - This is NOT a debate. Hosts are exploring a topic together — "winning"
@@ -162,6 +170,7 @@ Continue the conversation.
 
 TOPIC: {segment_topic}
 LEAD HOST: {lead_host}
+SEGMENT TYPE: {segment_type}
 
 {length_contract}
 
@@ -176,7 +185,8 @@ CONTEXT (what's happened so far):
 
 Remember: respond with ONLY a JSON array of utterance objects. Each host \
 should contribute naturally. The lead host drives the segment but others \
-react, interject, and build on points.
+react, interject, and build on points. Unless this is the OUTRO segment, \
+do NOT sign off, thank the listener, or imply the episode is ending.
 """
 
 
@@ -189,9 +199,12 @@ react, interject, and build on points.
 INTRO_OVERLAY = """\
 INTRO STRUCTURE:
 - Open with energy and personality — hook the listener immediately.
-- Name the show and tonight's topic.
-- Each host should introduce themselves naturally (not robotically):
-  a quip, a tease, a personal connection to the topic.
+- FIRST, name the show AND tonight's topic in the very first utterance(s).
+  Do NOT start discussing the topic before both are named — a cold open
+  that dives straight into a story or argument is a bug.
+- Every host must introduce themselves in their own voice before any
+  substantive discussion: a quip, a tease, a personal connection to the
+  topic. The listener must learn who is on mic in this segment.
 - Build anticipation for what's coming. Tease a specific angle or hot take.
 - Keep it crisp — intros should run 3-6 speaker turns total.
 - On the VERY FIRST utterance object, include `"nonverbal": ["intro music"]`
@@ -242,6 +255,8 @@ OUTRO GUIDELINES:
 - Thank the listener naturally — don't be robotic about it.
 - Tease next episode or leave the listener with something to think about.
 - Sign off with the show name. Keep it warm and genuine.
+- This is the ONLY segment where sign-off language ("thanks for listening",
+  "until next time", "goodbye") is appropriate.
 - On the LAST utterance object, include `"nonverbal": ["outro music"]`
   to signal that outro music should play at the end of the show.
 """

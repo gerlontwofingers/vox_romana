@@ -38,6 +38,7 @@ from vox_romana.shows.podcast.bootstrap import PodcastBootstrap
 from vox_romana.shows.podcast.conductor import (
     PodcastConductor,
     PodcastConductorResult,
+    find_signoff_phrases,
 )
 from vox_romana.shows.podcast.config import (
     PodcastConfig,
@@ -1147,6 +1148,55 @@ class TestFactCheckExhaustedRewrite:
         assert all("This is line" in e["text"] for e in events)
         assert any("FACT_CHECK_WARN" in w for w in conductor._length_warnings)
         assert not any("FACT_CHECK_SCRUBBED" in w for w in conductor._length_warnings)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TestFalseSignoffCheck — mid-show sign-off detection (F-4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFalseSignoffCheck:
+    """Sign-offs are only legitimate in the outro; anything else is flagged."""
+
+    def _make_conductor(self):
+        return PodcastConductor(make_test_config(), client=Mock())
+
+    def test_find_signoff_phrases_detects(self):
+        phrases = find_signoff_phrases("Well, that's our show for today folks!")
+        assert "that's our show" in phrases
+
+    def test_find_signoff_phrases_case_insensitive(self):
+        phrases = find_signoff_phrases("THANKS FOR LISTENING, everyone.")
+        assert "thanks for listening" in phrases
+
+    def test_find_signoff_phrases_none_on_normal_speech(self):
+        # "this has been" is deliberately excluded — it appears in normal
+        # mid-show speech and would false-positive.
+        assert find_signoff_phrases("This has been a fascinating topic.") == []
+
+    def test_flags_signoff_in_non_outro_segment(self):
+        conductor = self._make_conductor()
+        events = [{"speaker_name": "The Maven", "text": "That's our show!"}]
+        conductor._check_false_signoff(
+            events, segment_type="deep_dive", segment_id="seg_001",
+        )
+        assert any("false sign-off" in w for w in conductor._length_warnings)
+        assert any("seg_001" in w for w in conductor._length_warnings)
+
+    def test_does_not_flag_outro_segment(self):
+        conductor = self._make_conductor()
+        events = [{"speaker_name": "The Maven", "text": "Thanks for listening!"}]
+        conductor._check_false_signoff(
+            events, segment_type="outro", segment_id="seg_002",
+        )
+        assert conductor._length_warnings == []
+
+    def test_skips_empty_text(self):
+        conductor = self._make_conductor()
+        events = [{"speaker_name": "The Maven", "text": ""}]
+        conductor._check_false_signoff(
+            events, segment_type="deep_dive", segment_id="seg_001",
+        )
+        assert conductor._length_warnings == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════

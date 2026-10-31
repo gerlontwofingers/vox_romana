@@ -109,6 +109,53 @@ _SEGMENT_RETRY_TEMPLATE = (
 )
 
 
+# ── Discourse check: mid-show false sign-off (F-4) ──────────────────────
+# Sign-off phrases that indicate the hosts are wrapping the episode up.
+# Only the final OUTRO segment may contain these — anywhere else they
+# signal a false mid-show sign-off. Matching is case-insensitive substring.
+# Deliberately conservative: no common mid-sentence phrase like
+# "this has been" that would false-positive on normal speech.
+SIGNOFF_PHRASES = (
+    "thanks for listening",
+    "thank you for listening",
+    "thanks for tuning in",
+    "thank you for tuning in",
+    "thanks for joining us",
+    "thank you for joining us",
+    "thanks for hanging out",
+    "that's our show",
+    "that is our show",
+    "that's all for today",
+    "that is all for today",
+    "that's all we have",
+    "that's a wrap",
+    "that wraps up",
+    "that wraps it up",
+    "that does it for",
+    "until next time",
+    "until next week",
+    "until next episode",
+    "see you next time",
+    "see you next week",
+    "see you next episode",
+    "catch you next time",
+    "we'll see you next time",
+    "we will see you next time",
+    "signing off",
+    "we're signing off",
+    "we are signing off",
+    "goodbye",
+    "good night",
+    "goodnight",
+)
+
+
+def find_signoff_phrases(text: str) -> list[str]:
+    """Return the sign-off phrases present in *text* (case-insensitive)."""
+    lowered = text.lower()
+    return [phrase for phrase in SIGNOFF_PHRASES if phrase in lowered]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PodcastConductorResult
 # ═══════════════════════════════════════════════════════════════════════════
@@ -578,6 +625,13 @@ class PodcastConductor(BaseConductor):
                 self._length_warnings.append(
                     f"[segment {seg_idx + 1}/{total_segments}] {warning}"
                 )
+
+            # ── Discourse check: mid-show false sign-off (F-4) ──────
+            self._check_false_signoff(
+                segment_events,
+                segment_type=segment.segment_type,
+                segment_id=seg_id,
+            )
 
             # ── Fact-check gate (blocking) ────────────────────────
             if self._fact_checker is not None and config.fact_check != "off":
@@ -1051,6 +1105,42 @@ class PodcastConductor(BaseConductor):
             })
 
         return events
+
+    # ═══════════════════════════════════════════════════════════════════
+    # DISCOURSE CHECKS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _check_false_signoff(
+        self,
+        events: list[dict],
+        *,
+        segment_type: str,
+        segment_id: str,
+    ) -> None:
+        """Flag (non-blocking) any mid-show sign-off language in a segment.
+
+        F-4: hosts occasionally drift into "thanks for listening / until
+        next time" territory before the outro, making the episode sound
+        like it's ending early. Sign-offs are only legitimate in the final
+        OUTRO segment, so every other segment is scanned and violations
+        are surfaced on the length-warnings channel — never mutating or
+        blocking generation.
+        """
+        if segment_type == "outro":
+            return
+        for evt in events:
+            text = evt.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            phrases = find_signoff_phrases(text)
+            if not phrases:
+                continue
+            speaker = evt.get("speaker_name") or "unknown host"
+            self._length_warnings.append(
+                f"[false sign-off] {segment_id} ({segment_type}) {speaker}: "
+                f"found mid-show sign-off phrase(s) {phrases!r} — sign-offs "
+                f"are only allowed in the OUTRO segment."
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # CONTEXT MANAGEMENT
