@@ -107,6 +107,8 @@ class PublishResult:
         txt_path:  Path to the generated TXT file (None if not requested).
         pdf_path:  Path to the generated PDF file (None if not requested
                    or weasyprint unavailable).
+        html_path: Path to the generated HTML file (None if not requested
+                   or jinja2 unavailable).
         show_type: The detected show type.
         language:  BCP-47 language code of the published document.
         sections:  How many body sections the document had.
@@ -116,6 +118,7 @@ class PublishResult:
 
     txt_path: Path | None = None
     pdf_path: Path | None = None
+    html_path: Path | None = None
     show_type: str = ""
     language: str = "en"
     sections: int = 0

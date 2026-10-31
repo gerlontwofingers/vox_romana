@@ -531,6 +531,14 @@ class TestPublishArgParsing:
         ])
         assert args.publish_format == "both"
 
+    def test_publish_format_html(self, tmp_json):
+        args = parse_args([
+            "--mode", "publish",
+            "--script-input", str(tmp_json),
+            "--publish-format", "html",
+        ])
+        assert args.publish_format == "html"
+
     def test_publish_output_parses(self, tmp_json, tmp_path):
         args = parse_args([
             "--mode", "publish",
@@ -842,6 +850,21 @@ class TestPublishModeExecution:
         text = out_file.read_text(encoding="utf-8")
         assert "CLI TEST DEBATE" in text
         assert "ALICE:" in text
+
+    def test_standalone_publish_mode_writes_html(self, tmp_path, capsys):
+        src = _write_debate_json(tmp_path)
+        dest = tmp_path / "out"
+        run_master.main([
+            "--mode", "publish",
+            "--script-input", str(src),
+            "--publish-format", "html",
+            "--publish-output", str(dest),
+        ])
+        out_file = dest / "cli_test_debate.html"
+        assert out_file.exists()
+        html = out_file.read_text(encoding="utf-8")
+        assert "<!DOCTYPE html>" in html
+        assert "CLI Test Debate" in html or "CLI TEST DEBATE" in html
 
     def test_standalone_publish_mode_banner(self, tmp_path, capsys):
         src = _write_debate_json(tmp_path)

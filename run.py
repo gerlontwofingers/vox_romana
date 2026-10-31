@@ -1167,11 +1167,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="publish_format",
         type=str,
         default="txt",
-        choices=["txt", "pdf", "both"],
-        metavar="{txt,pdf,both}",
+        choices=["txt", "pdf", "html", "both"],
+        metavar="{txt,pdf,html,both}",
         help=(
             "Output format(s) for publish mode.  "
             "'txt' (default) — plain UTF-8 text, always works.  "
+            "'html' — self-contained HTML document (requires jinja2).  "
             "'pdf' — requires weasyprint + jinja2 (pip install weasyprint jinja2).  "
             "'both' — TXT and PDF."
         ),
@@ -2419,9 +2420,9 @@ def _mode_publish(
         json_path: Path to the show JSON to publish.
         args:      Parsed namespace from parse_args().
     """
-    from vox_romana.publish import publish_document, PDF_AVAILABLE
+    from vox_romana.publish import publish_document, PDF_AVAILABLE, JINJA_AVAILABLE
 
-    fmt = args.publish_format  # "txt", "pdf", or "both"
+    fmt = args.publish_format  # "txt", "pdf", "html", or "both"
     if fmt == "both":
         formats: tuple[str, ...] = ("txt", "pdf")
     else:
@@ -2445,11 +2446,15 @@ def _mode_publish(
             print(f"  TXT → {result.txt_path}")
         if result.pdf_path:
             print(f"  PDF → {result.pdf_path}")
+        if result.html_path:
+            print(f"  HTML → {result.html_path}")
         if "pdf" in formats and not PDF_AVAILABLE:
             print(
                 "  (PDF requires: pip install weasyprint jinja2 "
                 "+ brew install pango)"
             )
+        if "html" in formats and not JINJA_AVAILABLE:
+            print("  (HTML requires: pip install jinja2)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2994,7 +2999,12 @@ def main(argv: list[str] | None = None) -> None:
         if args.script_input:
             print(f"  Script input: {args.script_input}")
         if args.mode == "publish" or args.publish:
-            fmt_label = {"txt": "TXT", "pdf": "PDF", "both": "TXT + PDF"}[args.publish_format]
+            fmt_label = {
+                "txt": "TXT",
+                "pdf": "PDF",
+                "html": "HTML",
+                "both": "TXT + PDF",
+            }[args.publish_format]
             print(f"  Publish format: {fmt_label}")
             if args.publish_output:
                 print(f"  Publish output: {args.publish_output}")

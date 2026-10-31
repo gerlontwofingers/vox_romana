@@ -9,12 +9,13 @@
    domains and have no shared code.
 
 Plain-text rendering is dependency-free and always available.  PDF
-rendering uses Jinja2 + WeasyPrint; both are imported lazily so that
-``vox_romana.publish`` itself stays import-cheap and so a missing
-WeasyPrint install merely disables PDF instead of crashing import.
+rendering uses Jinja2 + WeasyPrint; HTML rendering uses Jinja2 alone.  Both
+are imported lazily so that ``vox_romana.publish`` itself stays import-cheap
+and so a missing WeasyPrint install merely disables PDF instead of crashing
+import.
 
 There is also a high-level :func:`publish_document` convenience that
-loads a JSON file, formats it, and writes both TXT and PDF (as
+loads a JSON file, formats it, and writes TXT, HTML, and/or PDF (as
 requested) into a destination directory.
 """
 
@@ -45,6 +46,19 @@ def _check_pdf_available() -> bool:
 
 PDF_AVAILABLE: bool = _check_pdf_available()
 """True iff both ``weasyprint`` and ``jinja2`` import successfully."""
+
+
+def _check_jinja_available() -> bool:
+    """True iff ``jinja2`` imports successfully (HTML rendering only)."""
+    try:
+        import jinja2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+JINJA_AVAILABLE: bool = _check_jinja_available()
+"""True iff ``jinja2`` imports successfully — enough for HTML output."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,6 +240,43 @@ def render_pdf(doc: FormattedDocument, path: str | Path) -> Path:
     return out
 
 
+def render_html(doc: FormattedDocument, path: str | Path) -> Path:
+    """Render ``doc`` to a self-contained HTML file at ``path``.
+
+    The stylesheet is inlined into a ``<style>`` block so the produced file
+    is fully self-contained — no external CSS reference to break when the
+    file is moved, emailed, or opened from a different directory.
+
+    Args:
+        doc:  Formatted document.
+        path: Output HTML path.
+
+    Returns:
+        The resolved output path.
+
+    Raises:
+        RuntimeError: If Jinja2 isn't installed.
+    """
+    if not JINJA_AVAILABLE:
+        raise RuntimeError(
+            "HTML rendering requires 'jinja2'. Install with: pip install jinja2"
+        )
+
+    html_str = _render_html(doc)
+    if _CSS_FILE.exists():
+        css_text = _CSS_FILE.read_text(encoding="utf-8")
+        html_str = html_str.replace(
+            "</head>",
+            f"<style>\n{css_text}\n</style>\n</head>",
+            1,
+        )
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html_str, encoding="utf-8")
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # High-level convenience
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +319,8 @@ def publish_document(
     Args:
         src:       Path to a show JSON file.
         formats:   Iterable of formats to produce.  Currently supported:
-                   ``"txt"`` (always) and ``"pdf"`` (requires weasyprint).
+                   ``"txt"`` (always), ``"html"`` (requires jinja2), and
+                   ``"pdf"`` (requires weasyprint).
         dest_dir:  Where to write outputs.  Defaults to ``src``'s parent.
         root_lang: The project's root language (default ``"en"``).
                    When the document's language differs from this, a
@@ -284,11 +336,11 @@ def publish_document(
     language = doc.language  # already normalised by the formatter
 
     fmts = {f.lower() for f in formats}
-    unknown = fmts - {"txt", "pdf"}
+    unknown = fmts - {"txt", "pdf", "html"}
     if unknown:
         raise ValueError(
             f"Unknown publish formats: {sorted(unknown)} "
-            "(supported: 'txt', 'pdf')"
+            "(supported: 'txt', 'pdf', 'html')"
         )
 
     out_paths = _default_outputs(
@@ -307,6 +359,14 @@ def publish_document(
 
     if "txt" in fmts:
         result.txt_path = render_txt(doc, out_paths["txt"])
+
+    if "html" in fmts:
+        if JINJA_AVAILABLE:
+            result.html_path = render_html(doc, out_paths["html"])
+        else:
+            result.warnings.append(
+                "HTML skipped: jinja2 not installed."
+            )
 
     if "pdf" in fmts:
         if PDF_AVAILABLE:
