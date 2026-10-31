@@ -18,18 +18,19 @@ The pipeline mirrors the audiobook pattern:
     POST-PRODUCTION:
         serializer.py → Saves to JSON.
 
-NOTE (work in progress): conductor.py lands in shot 5.1-d. This __init__
-currently exports the config, models, serializer, prompts, and bootstrap
-that exist today.
+NOTE (work in progress): runners/CLI wiring lands in shot 5.1-e. This
+__init__ exports the config, models, serializer, prompts, bootstrap, and
+conductor that exist today.
 
 USAGE:
     from vox_romana.shows.radio_dramas import (
-        RadioDramaBootstrap, RadioDramaConfig, MergedRadioDrama,
-        RadioDramaSerializer,
+        RadioDramaBootstrap, RadioDramaConductor, RadioDramaConfig,
+        MergedRadioDrama, RadioDramaSerializer,
     )
 """
 
 from .bootstrap import RadioDramaBootstrap
+from .conductor import RadioDramaConductor, RadioDramaConductorResult
 from .config import (
     CharacterConfig,
     ERAS,
@@ -46,6 +47,8 @@ __all__ = [
     "ERAS",
     "MergedRadioDrama",
     "RadioDramaBootstrap",
+    "RadioDramaConductor",
+    "RadioDramaConductorResult",
     "RadioDramaConfig",
     "RadioDramaDirectorBrief",
     "RadioDramaEvent",

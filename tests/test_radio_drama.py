@@ -28,6 +28,8 @@ from vox_romana.shows.radio_dramas import (
     CharacterConfig,
     MergedRadioDrama,
     RadioDramaBootstrap,
+    RadioDramaConductor,
+    RadioDramaConductorResult,
     RadioDramaConfig,
     RadioDramaDirectorBrief,
     RadioDramaEvent,
@@ -654,3 +656,153 @@ class TestRadioDramaBootstrap:
         )
         assert config.era == "1970s"
         assert config.genre == "paranoid thriller"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Conductor (shot 5.1-d)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def make_scene_response(speakers: list[str], num_turns: int = 4) -> str:
+    """Build a canned JSON array response for a scene."""
+    filler = (
+        " The rain kept falling and every shadow in the doorway looked like a "
+        "man with a grudge, so we kept our voices low and our eyes on the "
+        "alley, waiting for the next pair of footsteps to give the game away "
+        "before the clock in the tower struck midnight."
+    )
+    turns = []
+    for i in range(num_turns):
+        speaker = speakers[i % len(speakers)]
+        turns.append({
+            "speaker_name": speaker,
+            "text": f"This is line {i + 1} from {speaker}.{filler}",
+            "tone": "tense" if i % 2 == 0 else "somber",
+            "volume": "moderate",
+            "pace": "medium",
+        })
+    return json.dumps(turns, indent=2)
+
+
+class TestRadioDramaConductor:
+    def _make_conductor(self, config=None):
+        return RadioDramaConductor(config or make_config(), client=Mock())
+
+    def test_build_agents_sets_system_prompt(self):
+        conductor = self._make_conductor()
+        conductor._build_agents()
+        assert "The Dock Street Case" in conductor._system_prompt
+        assert "Sam Vale" in conductor._system_prompt
+        assert "Golden Age of Radio" in conductor._system_prompt
+        assert conductor._session is not None
+
+    def test_parse_scene_response(self):
+        conductor = self._make_conductor()
+        raw = json.dumps([
+            {"speaker_name": "Sam Vale", "text": "The rain kept falling.", "tone": "tense"},
+            {"speaker_name": "Dolores Kane", "text": "You're lying.", "tone": "somber"},
+        ])
+        events = conductor._parse_scene_response(
+            raw, scene_id="scene_000", global_order_start=0,
+        )
+        assert len(events) == 2
+        assert events[0]["speaker_name"] == "Sam Vale"
+        assert events[1]["speaker_name"] == "Dolores Kane"
+        assert events[0]["scene_id"] == "scene_000"
+        assert events[0]["global_order"] == 0
+        assert events[1]["global_order"] == 1
+
+    def test_parse_scene_fallback_on_bad_json(self):
+        conductor = self._make_conductor()
+        events = conductor._parse_scene_response(
+            "not json at all", scene_id="scene_000", global_order_start=0,
+        )
+        assert len(events) == 1
+        # Falls back to the announcer name.
+        assert events[0]["speaker_name"] == "The Announcer"
+
+    def test_parse_scene_issue_flag_stripped(self):
+        conductor = self._make_conductor()
+        raw = json.dumps([
+            {
+                "speaker_name": "Sam Vale",
+                "text": "Hello.",
+                "issue_flag": "The outline contradicts the setting.",
+            },
+        ])
+        events = conductor._parse_scene_response(
+            raw, scene_id="scene_000", global_order_start=0,
+        )
+        assert "issue_flag" not in events[0]
+        rendered = conductor._consume_pending_issue_reports()
+        assert "character:Sam Vale" in rendered
+
+    def test_full_run_produces_result(self):
+        config = make_config(num_scenes=2)
+        # Small explicit targets keep the canned responses above the 70%
+        # retry threshold so this test exercises wiring, not length logic.
+        for scene in config.scenes:
+            scene.target_words = 150
+        conductor = self._make_conductor(config)
+        conductor._build_agents()
+
+        host_names = ["Sam Vale", "Dolores Kane"]
+        responses = [
+            make_scene_response(host_names, num_turns=3),
+            make_scene_response(host_names, num_turns=3),
+        ]
+        call_idx = [0]
+
+        def mock_send(msg):
+            idx = call_idx[0]
+            call_idx[0] += 1
+            return responses[idx] if idx < len(responses) else responses[-1]
+
+        conductor._session.send = mock_send
+
+        raw_events = conductor._run_turn_loop()
+        result = conductor._package_result(raw_events)
+
+        assert isinstance(result, RadioDramaConductorResult)
+        assert len(result.drama_events) == 6
+        assert len(result.drama_scenes) == 2
+        assert result.drama_scenes[0].title == "Scene 1"
+
+    def test_to_merged_radio_drama_voice_maps(self):
+        config = make_config(series_mode="serial", series_id="dock-street")
+        conductor = self._make_conductor(config)
+        conductor._drama_id = "test_123"
+
+        result = RadioDramaConductorResult(
+            config=config,
+            events=[],
+            transcript=[],
+            total_llm_calls=1,
+            drama_events=[],
+            drama_scenes=[],
+            drama_id="test_123",
+        )
+        merged = result.to_merged_radio_drama()
+        assert isinstance(merged, MergedRadioDrama)
+        assert merged.drama_id == "test_123"
+        assert merged.series_mode == "serial"
+        assert merged.series_id == "dock-street"
+        assert merged.voice_casting["Sam Vale"] == "male"
+        assert merged.voice_casting["Dolores Kane"] == "female"
+        assert "The Announcer" in merged.voice_casting
+
+    def test_summarize_scene(self):
+        config = make_config()
+        events = [
+            {"speaker_name": "Sam Vale", "text": "Hello, detective."},
+            {"speaker_name": "Dolores Kane", "text": "Don't trust him."},
+        ]
+        scene = config.scenes[0]
+        summary = RadioDramaConductor._summarize_scene(events, scene)
+        assert "Scene 1" in summary
+        assert "Sam Vale" in summary
+
+    def test_build_context_summary(self):
+        conductor = self._make_conductor()
+        conductor._context_log = ["Scene 1 — speakers: Sam Vale."]
+        result = conductor._build_context_summary()
+        assert "Scene 1" in result
